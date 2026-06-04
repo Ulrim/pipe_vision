@@ -1,0 +1,15 @@
+# ===== AIVIS data-ops deps (CLAUDE.md §5 M16, 부록 A) =====
+# data-ops 모듈(labeling/retrain) + MES 연계 어댑터 의존성.
+
+# 공용 스키마(단일 진실원). 모노레포 빌드 시 경로 설치:
+#   pip install -e ../../packages/shared-types/python
+# (aivis_types: DefectCode/CameraView/Verdict/LogCategory 등 enum 재사용)
+
+# backend(api)의 SQLAlchemy 모델/세션을 import 재사용한다(정의 변경 없음).
+SQLAlchemy==2.0.36
+
+# MES rest 모드 전송(외부 MES 통합 단계). 미설정 시 FakeMesTransport 폴백.
+httpx==0.28.1
+
+# --- test only ---
+pytest==8.3.4
