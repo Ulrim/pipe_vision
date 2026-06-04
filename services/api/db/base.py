@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
-from ..core.config import get_settings
+from core.config import get_settings
 
 
 class Base(DeclarativeBase):
@@ -39,7 +39,7 @@ def get_db() -> Iterator[Session]:
 
 def init_db() -> None:
     """sqlite/개발 환경에서 테이블 생성. 운영(postgres)은 Alembic 마이그레이션 사용."""
-    from . import models  # noqa: F401  (모델 등록)
+    from db import models  # noqa: F401  (모델 등록)
     from sqlalchemy import event
 
     if get_settings().is_sqlite:

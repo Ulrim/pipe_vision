@@ -21,8 +21,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base
-from .types import JsonB, StringArray
+from db.base import Base
+from db.types import JsonB, StringArray
 
 
 class ItemMaster(Base):

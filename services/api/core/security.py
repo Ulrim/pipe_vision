@@ -10,7 +10,7 @@ from passlib.context import CryptContext
 
 from aivis_types import Role
 
-from .config import get_settings
+from core.config import get_settings
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login", auto_error=False)
