@@ -1,0 +1,135 @@
+# ===== AIVIS CI (CLAUDE.md §3, §8 P0) =====
+# Owned by devops. Defensive by design: source files are filled in by other agents
+# across phases, so every job guards on the presence of its target files and skips
+# (without failing) when a component is not yet implemented.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------- Python: lint (ruff) + tests (pytest) ----------------
+  python:
+    name: python (lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: python -m pip install --upgrade pip ruff pytest
+
+      # Lint every Python component that exists. Ruff is a no-op on empty trees.
+      - name: Ruff lint
+        run: |
+          set -e
+          targets=""
+          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+            if [ -d "$d" ] && find "$d" -name '*.py' -print -quit | grep -q .; then
+              targets="$targets $d"
+            fi
+          done
+          if [ -n "$targets" ]; then
+            echo "Linting:$targets"
+            ruff check $targets
+          else
+            echo "No Python sources yet; skipping ruff."
+          fi
+
+      # Install each component's declared deps (requirements.txt / pyproject) when present.
+      - name: Install component dependencies
+        run: |
+          set -e
+          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+            if [ -f "$d/requirements.txt" ]; then
+              echo "Installing $d/requirements.txt"
+              pip install -r "$d/requirements.txt" || true
+            fi
+            if [ -f "$d/pyproject.toml" ]; then
+              echo "Installing $d (pyproject, editable)"
+              pip install -e "$d" || true
+            fi
+          done
+
+      # Run pytest only where test files exist.
+      - name: Pytest
+        run: |
+          set -e
+          ran=0
+          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+            if [ -d "$d" ] && find "$d" \( -name 'test_*.py' -o -name '*_test.py' -o -name 'tests' -type d \) -print -quit | grep -q .; then
+              echo "::group::pytest $d"
+              pytest "$d" -q
+              echo "::endgroup::"
+              ran=1
+            fi
+          done
+          # Top-level tests/ tree owned by the qa agent.
+          if [ -d tests ] && find tests -name 'test_*.py' -print -quit | grep -q .; then
+            echo "::group::pytest tests"
+            pytest tests -q
+            echo "::endgroup::"
+            ran=1
+          fi
+          if [ "$ran" -eq 0 ]; then
+            echo "No Python tests yet; skipping pytest."
+          fi
+
+  # ---------------- Node: build + lint for frontends and shared TS types ----------------
+  node:
+    name: node (build + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build / lint each Node package
+        run: |
+          set -e
+          for d in apps/hmi apps/dashboard packages/shared-types/ts; do
+            if [ -f "$d/package.json" ]; then
+              echo "::group::$d"
+              ( cd "$d"
+                if [ -f package-lock.json ]; then npm ci; else npm install; fi
+                # Run lint/build scripts only if they are defined in package.json.
+                if npm run | grep -qE '^[[:space:]]*lint'; then npm run lint; fi
+                if npm run | grep -qE '^[[:space:]]*build'; then npm run build; fi
+              )
+              echo "::endgroup::"
+            else
+              echo "No package.json in $d yet; skipping."
+            fi
+          done
+
+  # ---------------- Compose: validate docker-compose syntax ----------------
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate base + GPU override syntax
+        run: |
+          set -e
+          # A minimal .env so variable interpolation resolves during validation.
+          [ -f .env ] || cp .env.example .env
+          docker compose -f docker-compose.yml config -q
+          docker compose -f docker-compose.yml -f docker-compose.gpu.yml config -q
+          echo "Compose files are valid."
