@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aivis-types"
+version = "0.1.0"
+description = "AIVIS shared schema (single source of truth) for vision / api / data-ops. Mirrors packages/shared-types/ts."
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.5,<3",
+]
+
+[tool.setuptools]
+packages = ["aivis_types"]
