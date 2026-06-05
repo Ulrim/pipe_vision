@@ -10,12 +10,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aivis_types import KpiManual, KpiSummary, Role
 
+from core import report as report_gen
 from core.security import CurrentUser, require_min_role
 from db.base import get_db
 from db.models import Inspection, KpiManual as KpiManualRow
@@ -44,17 +46,22 @@ def _rate(numer: int, denom: int, factor: float) -> float:
     return (numer / denom) * factor
 
 
-@router.get("/summary", response_model=KpiSummary)
-def kpi_summary(
-    period: str = Query(..., description="대상 월 YYYY-MM"),
-    db: Session = Depends(get_db),
-):
-    """월별 KPI 자동 산출 (§1.1)."""
+def _current_period() -> str:
+    """당월 'YYYY-MM' (UTC)."""
+    now = datetime.now(timezone.utc)
+    return f"{now.year:04d}-{now.month:02d}"
+
+
+def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspection]]:
+    """§1.1 산출식으로 월별 KPI 요약 + 대상 inspection 행을 함께 반환.
+
+    KpiSummary 응답 엔드포인트와 리포트 생성기가 공유하는 단일 산출 경로
+    (산출식 일관성 보장)."""
     start, end = _month_bounds(period)
     base = select(Inspection).where(
         Inspection.inspected_at >= start, Inspection.inspected_at < end
     )
-    rows = db.execute(base).scalars().all()
+    rows = list(db.execute(base).scalars().all())
 
     total_inspected = len(rows)  # 총 검사수량
 
@@ -94,7 +101,7 @@ def kpi_summary(
     # 수기 KPI(있으면 함께 노출): 해당 월 1일 키.
     manual = db.get(KpiManualRow, datetime(start.year, start.month, 1))
 
-    return KpiSummary(
+    summary = KpiSummary(
         period=f"{start.year:04d}-{start.month:02d}",
         total_inspected=total_inspected,
         defect_count=defect_count,
@@ -112,6 +119,18 @@ def kpi_summary(
         workload_index=(float(manual.workload_index) if manual and manual.workload_index is not None else None),
         lead_time_days=(float(manual.lead_time_days) if manual and manual.lead_time_days is not None else None),
     )
+    return summary, rows
+
+
+@router.get("/summary", response_model=KpiSummary)
+def kpi_summary(
+    period: str = Query(..., description="대상 월 YYYY-MM"),
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """월별 KPI 자동 산출 (§1.1). 로그인 필요(operator+)."""
+    summary, _rows = _compute_summary(period, db)
+    return summary
 
 
 @router.post("/manual", response_model=KpiManual, status_code=status.HTTP_200_OK)
@@ -141,24 +160,39 @@ def upsert_kpi_manual(
     )
 
 
+_MEDIA_TYPES = {
+    "pdf": "application/pdf",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+
 @router.get("/report")
 def kpi_report(
-    period: str = Query(..., description="대상 월 YYYY-MM"),
+    period: str | None = Query(None, description="대상 월 YYYY-MM (미지정 시 당월)"),
     fmt: str = Query("pdf", pattern="^(pdf|xlsx)$"),
     db: Session = Depends(get_db),
     _user: CurrentUser = Depends(require_min_role(Role.QUALITY)),
 ):
-    """월간 품질 리포트 (stub). 실제 PDF/XLSX 생성은 P4 에서 구현(M12 DoD).
+    """월간 품질 리포트 생성 (M12 DoD).
 
-    현재는 산출된 KPI 요약 JSON 을 반환해 대시보드가 미리보기로 사용한다.
+    §1.1 KPI(공정불량률 ppm / 검사불량률 % / 자동검사율 / 저장·연계율) +
+    불량유형별 집계 + 일자별 검사/불량 표를 PDF(reportlab) / XLSX(openpyxl)
+    파일로 생성해 첨부 다운로드로 반환한다. period 미지정 시 당월.
     """
-    summary = kpi_summary(period=period, db=db)
-    return Response(
-        content=summary.model_dump_json(),
-        media_type="application/json",
+    period = period or _current_period()
+    summary, rows = _compute_summary(period, db)
+
+    if fmt == "pdf":
+        content = report_gen.render_pdf(summary, rows)
+    else:
+        content = report_gen.render_xlsx(summary, rows)
+
+    filename = f"aivis_kpi_{summary.period}.{fmt}"
+    return StreamingResponse(
+        iter([content]),
+        media_type=_MEDIA_TYPES[fmt],
         headers={
-            "X-Report-Format": fmt,
-            "X-Report-Status": "stub",
-            "Content-Disposition": f'inline; filename="aivis_kpi_{period}.json"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
         },
     )

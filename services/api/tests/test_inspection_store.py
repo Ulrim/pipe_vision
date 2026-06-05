@@ -43,8 +43,8 @@ def test_store_and_query(client, auth):
     assert body["status"] == "stored"
     assert body["id"] > 0
 
-    # 필터 조회: lot
-    r = client.get("/inspection", params={"lot": "LOT001"})
+    # 필터 조회: lot (조회는 로그인 필요 operator+)
+    r = client.get("/inspection", headers=auth("op1"), params={"lot": "LOT001"})
     assert r.status_code == 200
     rows = r.json()
     assert len(rows) >= 1
@@ -56,8 +56,9 @@ def test_query_filters(client, auth):
     _make_item(client, auth)
     client.post("/inspection", json=_insp(lot="LOTNG", final_verdict="NG",
                                           defect_codes=["LEN"]))
-    # verdict 필터
-    r = client.get("/inspection", params={"verdict": "NG", "lot": "LOTNG"})
+    # verdict 필터 (조회는 로그인 필요)
+    r = client.get("/inspection", headers=auth("op1"),
+                   params={"verdict": "NG", "lot": "LOTNG"})
     assert r.status_code == 200
     rows = r.json()
     assert all(x["final_verdict"] == "NG" for x in rows)
@@ -79,7 +80,7 @@ def test_images_and_review(client, auth):
     )
     insp_id = r.json()["id"]
 
-    img = client.get(f"/inspection/{insp_id}/images")
+    img = client.get(f"/inspection/{insp_id}/images", headers=auth("op1"))
     assert img.status_code == 200
     assert img.json()["raw_image_path"] == "raw/x.jpg"
 

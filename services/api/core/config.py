@@ -42,6 +42,21 @@ class Settings:
         )
         self.seed_on_startup: bool = _bool("AIVIS_SEED_ON_STARTUP", True)
 
+        # 연속 NG 알람 임계 (M6). cam_id 단위 연속 NG 가 이 값 이상이면
+        # /ws/live 로 consecutive_ng 알람 브로드캐스트.
+        self.consec_ng_threshold: int = max(
+            1, int(os.getenv("AIVIS_CONSEC_NG_THRESHOLD", "3"))
+        )
+
+        # 검사워커(POST /inspection) 내부 호출용 서비스 토큰(M14).
+        # 설정 시 X-Service-Token 헤더(또는 Bearer)로 내부 호출을 인증한다.
+        # 미설정(기본)이면 내부 POST /inspection 은 화이트리스트(무인증) 허용.
+        self.service_token: str | None = os.getenv("AIVIS_SERVICE_TOKEN") or None
+
+    @property
+    def consec_ng_threshold_value(self) -> int:
+        return self.consec_ng_threshold
+
     @property
     def is_sqlite(self) -> bool:
         return self.database_url.startswith("sqlite")

@@ -28,13 +28,22 @@ router = APIRouter(prefix="/master/items", tags=["master"])
 
 
 @router.get("", response_model=list[ItemMasterSchema])
-def list_items(db: Session = Depends(get_db)):
+def list_items(
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """기준정보 목록 조회. 로그인 필요(operator+)."""
     rows = db.execute(select(ItemMaster).order_by(ItemMaster.item_code)).scalars().all()
     return [item_to_schema(r) for r in rows]
 
 
 @router.get("/{item_code}", response_model=ItemMasterSchema)
-def get_item(item_code: str, db: Session = Depends(get_db)):
+def get_item(
+    item_code: str,
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """기준정보 단건 조회. 로그인 필요(operator+)."""
     row = db.get(ItemMaster, item_code)
     if not row:
         raise HTTPException(status_code=404, detail="품목 없음")

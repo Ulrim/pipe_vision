@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -101,3 +102,28 @@ def require_min_role(minimum: Role):
         return user
 
     return _guard
+
+
+def require_internal(
+    x_service_token: Optional[str] = Header(None, alias="X-Service-Token"),
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> None:
+    """검사워커(내부 호출) 전용 가드 (M14).
+
+    인증 정책:
+    - `AIVIS_SERVICE_TOKEN` 미설정(기본): 내부 POST 는 화이트리스트로 무인증 허용.
+      (단일 호스트 토폴로지 §4 에서 vision 워커가 사내 네트워크에서 호출.)
+    - 설정된 경우: `X-Service-Token` 헤더 또는 Bearer 토큰이 일치해야 허용,
+      아니면 401. 운영 시 서비스 토큰을 주입해 외부 호출을 차단한다.
+    """
+    settings = get_settings()
+    expected = settings.service_token
+    if not expected:
+        return None
+    presented = x_service_token or token
+    if presented != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="내부 서비스 토큰이 필요합니다(POST /inspection).",
+        )
+    return None

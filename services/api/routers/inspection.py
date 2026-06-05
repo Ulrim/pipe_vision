@@ -21,10 +21,16 @@ from core import local_queue
 from core.config import get_settings
 from core.inspection_service import save_inspection
 from core.logging import write_log
-from core.security import CurrentUser, require_role
+from core.security import (
+    CurrentUser,
+    require_internal,
+    require_min_role,
+    require_role,
+)
 from db.base import SessionLocal, get_db
 from db.models import Inspection
 from db.serialize import inspection_to_schema
+from ws.alarm import tracker
 from ws.hub import hub, make_event
 
 router = APIRouter(prefix="/inspection", tags=["inspection"])
@@ -39,10 +45,27 @@ def _save_with_backup(result: InspectionResult) -> Optional[InspectionResult]:
     db = SessionLocal()
     try:
         row = save_inspection(db, result, mes_mode=settings.mes_mode)
-        return inspection_to_schema(row)
-    except Exception:
+        saved = inspection_to_schema(row)
+        # 저장 성공 로그(M15: db 카테고리).
+        write_log(
+            db,
+            category=LogCategory.DB,
+            message=f"inspection.store ok id={row.id} lot={row.lot} verdict={row.final_verdict}",
+        )
+        return saved
+    except Exception as exc:
         db.rollback()
-        # 로컬 큐 백업 후 None (호출자가 202 로 응답).
+        # 저장 실패 로그(M15: error 카테고리). 로그 적재 자체도 실패하면 무시.
+        try:
+            write_log(
+                db,
+                category=LogCategory.ERROR,
+                level="ERROR",
+                message=f"inspection.store fail lot={result.lot}: {exc}",
+            )
+        except Exception:
+            db.rollback()
+        # 로컬 큐 백업 후 None (호출자가 status=queued 로 응답).
         local_queue.backup(result)
         return None
     finally:
@@ -50,10 +73,18 @@ def _save_with_backup(result: InspectionResult) -> Optional[InspectionResult]:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_inspection(result: InspectionResult):
+async def create_inspection(
+    result: InspectionResult,
+    _internal: None = Depends(require_internal),
+):
     """검사워커가 결과를 적재(서버 내부 호출). 저장 실패 시 로컬 큐 백업.
 
+    인증: 내부용 엔드포인트. `AIVIS_SERVICE_TOKEN` 설정 시 X-Service-Token/Bearer
+    일치 필요, 미설정 시 사내 화이트리스트 허용(§4 단일 호스트 토폴로지).
+
     저장 성공 시 WS /ws/live 로 검사결과(+NG 알람)를 브로드캐스트한다(M6).
+    cam_id 단위 연속 NG 가 임계(AIVIS_CONSEC_NG_THRESHOLD, 기본 3) 이상이면
+    consecutive_ng 알람을 추가 브로드캐스트한다.
     """
     saved = _save_with_backup(result)
     if saved is None:
@@ -67,10 +98,40 @@ async def create_inspection(result: InspectionResult):
     # 실시간 푸시(연결된 HMI 없으면 no-op).
     payload = saved.model_dump(mode="json")
     await hub.broadcast(make_event("inspection", payload))
-    if saved.final_verdict == Verdict.NG.value or saved.final_verdict == "NG":
+
+    is_ng = saved.final_verdict in (Verdict.NG.value, "NG")
+    # cam_id 단위 연속 NG 카운터 갱신(OK 수신 시 0 리셋).
+    consec = tracker.record(saved.cam_id, "NG" if is_ng else "OK")
+
+    if is_ng:
+        # 단일 NG 알람(기존 동작 유지).
         await hub.broadcast(
-            make_event("alarm", {"id": saved.id, "lot": saved.lot, "defect_codes": payload.get("defect_codes")})
+            make_event(
+                "alarm",
+                {
+                    "kind": "ng",
+                    "id": saved.id,
+                    "lot": saved.lot,
+                    "cam_id": saved.cam_id,
+                    "defect_codes": payload.get("defect_codes"),
+                },
+            )
         )
+        # 연속 NG 임계 도달 시 추가 알람(M6).
+        threshold = get_settings().consec_ng_threshold
+        if consec >= threshold:
+            await hub.broadcast(
+                make_event(
+                    "alarm",
+                    {
+                        "kind": "consecutive_ng",
+                        "cam_id": saved.cam_id,
+                        "count": consec,
+                        "threshold": threshold,
+                    },
+                )
+            )
+
     return {"status": "stored", "id": saved.id, "inspection": saved}
 
 
@@ -102,8 +163,9 @@ def list_inspections(
     to: Optional[datetime] = Query(None),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
 ):
-    """LOT/품목/기간/판정 필터 조회 (M8). 서버 페이지네이션."""
+    """LOT/품목/기간/판정 필터 조회 (M8). 서버 페이지네이션. 로그인 필요(operator+)."""
     stmt = select(Inspection)
     if lot:
         stmt = stmt.where(Inspection.lot == lot)
@@ -121,7 +183,11 @@ def list_inspections(
 
 
 @router.get("/{insp_id}", response_model=InspectionResult)
-def get_inspection(insp_id: int, db: Session = Depends(get_db)):
+def get_inspection(
+    insp_id: int,
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
     row = db.get(Inspection, insp_id)
     if not row:
         raise HTTPException(status_code=404, detail="검사결과 없음")
@@ -129,8 +195,12 @@ def get_inspection(insp_id: int, db: Session = Depends(get_db)):
 
 
 @router.get("/{insp_id}/images", response_model=InspectionImages)
-def get_inspection_images(insp_id: int, db: Session = Depends(get_db)):
-    """원본/결과 이미지 경로 (M8)."""
+def get_inspection_images(
+    insp_id: int,
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """원본/결과 이미지 경로 (M8). 로그인 필요(operator+)."""
     row = db.get(Inspection, insp_id)
     if not row:
         raise HTTPException(status_code=404, detail="검사결과 없음")

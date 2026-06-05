@@ -50,12 +50,13 @@ def test_kpi_formulas(client, auth):
     # 오검 1건: AI=OK, manual=NG (위 OK0 를 재확인 처리로 만들기 위해 새 행 추가 대신
     # 별도 행 1건 더 넣고 재확인). -> 총 건수를 10으로 유지하려고 위 10건만 사용:
     # 오검 1건: OK0 을 재확인 처리해 AI=OK, manual=NG 로 만든다(총건수 10 유지).
-    rows = client.get("/inspection", params={"lot": "OK0"}).json()
+    rows = client.get("/inspection", headers=auth("op1"), params={"lot": "OK0"}).json()
     ok0 = rows[0]["id"]
     client.patch(f"/inspection/{ok0}/review", headers=auth("qa1"),
                  json={"manual_verdict": "NG", "review_flag": False})
 
-    summary = client.get("/kpi/summary", params={"period": "2026-05"}).json()
+    summary = client.get("/kpi/summary", headers=auth("op1"),
+                         params={"period": "2026-05"}).json()
     total = summary["total_inspected"]
     # 실제 적재된 총건수 기준으로 산출식 일관성 검증.
     assert total == 10
@@ -83,14 +84,16 @@ def test_kpi_miss_count(client, auth):
         "mes_synced": False, "proc_time_ms": 90,
     })
     assert r.status_code == 201, r.text
-    s = client.get("/kpi/summary", params={"period": "2026-04"}).json()
+    s = client.get("/kpi/summary", headers=auth("op1"),
+                   params={"period": "2026-04"}).json()
     assert s["total_inspected"] == 1
     assert s["miss_count"] == 1
     assert s["inspection_defect_rate_pct"] == 1 / 1 * 100
 
 
-def test_kpi_empty_period_no_divzero(client):
-    s = client.get("/kpi/summary", params={"period": "2030-01"}).json()
+def test_kpi_empty_period_no_divzero(client, auth):
+    s = client.get("/kpi/summary", headers=auth("op1"),
+                   params={"period": "2030-01"}).json()
     assert s["total_inspected"] == 0
     assert s["process_defect_ppm"] == 0.0
     assert s["storage_mes_rate_pct"] == 0.0
@@ -105,7 +108,8 @@ def test_kpi_manual_upsert(client, auth):
     assert r.status_code == 200
     assert r.json()["claim_count"] == 3
     # summary 에 수기값 노출
-    s = client.get("/kpi/summary", params={"period": "2026-05"}).json()
+    s = client.get("/kpi/summary", headers=auth("op1"),
+                   params={"period": "2026-05"}).json()
     assert s["claim_count"] == 3
     assert s["lead_time_days"] == 5.0
 
