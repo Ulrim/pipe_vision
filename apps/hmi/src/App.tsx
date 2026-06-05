@@ -7,11 +7,14 @@ import { useState } from "react";
 import type { InspectionResult } from "@aivis/shared-types";
 import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useLiveStore } from "@/store/liveStore";
+import { useAuthStore } from "@/store/authStore";
 import { ConnectionIndicator } from "@/components/ConnectionIndicator";
 import { AlarmBanner } from "@/components/AlarmBanner";
 import { InspectionCard } from "@/components/InspectionCard";
 import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
+import { AuthStatus } from "@/components/AuthStatus";
+import { LoginModal } from "@/components/LoginModal";
 
 export default function App() {
   useLiveSocket();
@@ -19,13 +22,20 @@ export default function App() {
   const feed = useLiveStore((s) => s.feed);
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
 
+  // 헤더의 로그인 버튼으로 띄운 로그인 모달(쓰기 액션과 무관한 선(先)로그인).
+  // 재확인 중에는 ReviewDialog 가 자체 LoginModal 을 렌더하므로 중복 표시를 막는다.
+  const loginPromptOpen = useAuthStore((s) => s.loginPromptOpen);
+
   return (
     <div className="min-h-full bg-gray-100 p-4 md:p-6">
       <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-hmi-lg font-black text-gray-900">
           AIVIS 실시간 검사
         </h1>
-        <ConnectionIndicator />
+        <div className="flex flex-wrap items-center gap-3">
+          <ConnectionIndicator />
+          <AuthStatus />
+        </div>
       </header>
 
       <div className="mb-4">
@@ -48,6 +58,9 @@ export default function App() {
           onClose={() => setReviewing(null)}
         />
       )}
+
+      {/* 헤더 로그인 버튼으로 연 모달(재확인 다이얼로그가 닫혀 있을 때만). */}
+      {loginPromptOpen && !reviewing && <LoginModal />}
     </div>
   );
 }

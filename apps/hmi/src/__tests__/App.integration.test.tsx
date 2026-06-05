@@ -3,9 +3,11 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import App from "@/App";
 import { useLiveStore, CONSECUTIVE_NG_THRESHOLD } from "@/store/liveStore";
+import { useAuthStore } from "@/store/authStore";
 import { MockWebSocket } from "./mockWebSocket";
 import { makeResult, makeNg } from "./factories";
 import type { InspectionResult } from "@aivis/shared-types";
+import { Role } from "@aivis/shared-types";
 
 function renderApp() {
   const qc = new QueryClient({
@@ -28,6 +30,12 @@ function resetStore() {
     lastAlarm: null,
     consecutiveAlarmActive: false,
     soundEnabled: false, // 테스트에서 비프 비활성
+  });
+  // 쓰기(재확인)는 인증을 요구한다(§7.4) → 기본 작업자 세션을 주입.
+  // (미인증/401 유도 흐름은 auth.test.tsx 에서 별도 검증.)
+  useAuthStore.setState({
+    session: { token: "test-token", role: Role.OPERATOR, username: "tester" },
+    loginPromptOpen: false,
   });
 }
 

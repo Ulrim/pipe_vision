@@ -4,9 +4,12 @@
  */
 import type {
   InspectionResult,
+  LoginRequest,
   ReviewUpdate,
+  TokenResponse,
 } from "@aivis/shared-types";
 import { API_BASE } from "@/lib/config";
+import { getAuthToken } from "@/store/authStore";
 
 export class ApiError extends Error {
   constructor(
@@ -18,11 +21,25 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
+interface RequestOptions {
+  /** true 면 현재 토큰을 Authorization: Bearer 로 첨부(쓰기/보호 엔드포인트). */
+  auth?: boolean;
+}
+
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string>) ?? {}),
+  };
+  if (opts.auth) {
+    const token = getAuthToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
   if (!res.ok) {
     let detail = res.statusText;
     try {
@@ -34,6 +51,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, detail);
   }
   return (await res.json()) as T;
+}
+
+/**
+ * POST /auth/login — JSON 본문 로그인. 토큰/역할 응답.
+ * (인증 헤더 불필요.)
+ */
+export function login(body: LoginRequest): Promise<TokenResponse> {
+  return request<TokenResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
 
 export interface InspectionQuery {
@@ -60,14 +88,19 @@ export function fetchInspections(
 
 /**
  * PATCH /inspection/{id}/review — NG 재확인 결과 입력(M10).
+ * operator+ 권한 필요 → Authorization: Bearer 첨부(auth:true).
  * 응답은 갱신된 InspectionResult.
  */
 export function submitReview(
   id: number,
   body: ReviewUpdate,
 ): Promise<InspectionResult> {
-  return request<InspectionResult>(`/inspection/${id}/review`, {
-    method: "PATCH",
-    body: JSON.stringify(body),
-  });
+  return request<InspectionResult>(
+    `/inspection/${id}/review`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    },
+    { auth: true },
+  );
 }
