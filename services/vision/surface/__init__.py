@@ -21,7 +21,12 @@ from .classical import (
     score_oil,
     score_scratch,
 )
-from .model import SurfaceModel, OnnxSurfaceModel
+from .model import (
+    ClassicalSurfaceModel,
+    OnnxSurfaceModel,
+    SurfaceModel,
+    resolve_model_path,
+)
 
 __all__ = [
     "analyze_surface",
@@ -31,5 +36,7 @@ __all__ = [
     "SurfaceScores",
     "ScratchLocation",
     "SurfaceModel",
+    "ClassicalSurfaceModel",
     "OnnxSurfaceModel",
+    "resolve_model_path",
 ]

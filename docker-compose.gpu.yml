@@ -15,9 +15,11 @@
 services:
   vision:
     build:
-      context: ./services/vision
+      # Root context (matches base compose) so the GPU build can also COPY
+      # packages/shared-types/python (aivis_types).
+      context: .
       # GPU build (CUDA base + onnxruntime-gpu). Provided by the vision-ai agent.
-      dockerfile: Dockerfile.gpu
+      dockerfile: services/vision/Dockerfile.gpu
     environment:
       # Tell the inference layer to prefer the CUDA/TensorRT execution provider.
       AIVIS_ONNX_PROVIDER: cuda

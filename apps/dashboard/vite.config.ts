@@ -9,9 +9,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),
-      "@aivis/shared-types": fileURLToPath(
-        new URL("./src/shared-types/index.ts", import.meta.url),
-      ),
+      // @aivis/shared-types is resolved as an npm workspace package
+      // (packages/shared-types/ts). No vendored copy / alias needed.
     },
   },
   build: {

@@ -81,20 +81,36 @@ pipe_vision/
 └── tests/                    # [qa] e2e / FAT / SAT 검증 하니스
 ```
 
+## 프론트엔드 (npm workspaces)
+
+`apps/hmi` 와 `apps/dashboard` 는 단일 npm workspaces 트리로 묶이며, 공용 타입
+`@aivis/shared-types`(`packages/shared-types/ts`)를 워크스페이스 패키지로 공유한다
+(vendored 사본 없음). 루트 `package-lock.json` 이 단일 진실원이다.
+
+```bash
+npm install            # 루트에서 전 워크스페이스 설치 (앱 단독 설치 금지)
+npm run build          # hmi + dashboard 빌드
+npm run test           # 전 앱 테스트
+npm run lint           # 전 앱 lint
+npm run typecheck      # shared-types 타입 검사
+npm run ci             # typecheck → lint → test → build
+```
+
+> Docker 빌드 컨텍스트는 모노레포 **루트**다(프론트는 워크스페이스, api/vision 은
+> `packages/shared-types/python`(aivis_types) 설치 때문). 자세한 사유는
+> [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §빌드 컨텍스트 정책.
+
 ## 오프라인(현장) 설치
 
 현장 산업용 PC는 인터넷이 제한될 수 있다. 인터넷이 가능한 빌드 머신에서 이미지를 사전
-빌드·저장하고, 현장 PC로 옮겨 로드한다.
+빌드·저장하고, 현장 PC로 옮겨 로드한다. 스크립트 제공:
 
 ```bash
 # 빌드 머신 (인터넷 가능)
-docker compose build
-docker save -o aivis-images.tar \
-  $(docker compose config --images)
+./scripts/offline-save.sh aivis-offline-images.tar          # CPU (--gpu 로 vision GPU 포함)
 
 # 현장 산업용 PC (오프라인)
-docker load -i aivis-images.tar
-docker compose up -d
+./scripts/offline-load.sh aivis-offline-images.tar          # load + up -d
 ```
 
 ## 볼륨 / 데이터 백업
@@ -106,13 +122,17 @@ docker compose up -d
 | `images` | api/vision 공유 이미지 작업 영역 |
 
 ```bash
-# DB 백업
-docker compose exec -T postgres pg_dump -U aivis aivis > backup_$(date +%Y%m%d).sql
-
-# 이미지(MinIO) 볼륨 백업
-docker run --rm -v pipe_vision_minio-data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/minio_$(date +%Y%m%d).tar.gz -C /data .
+./scripts/backup.sh                                  # DB(sql.gz) + MinIO(tar.gz) → ./backups
+./scripts/restore.sh --db backups/db_*.sql.gz        # 복구
+./scripts/restore.sh --minio backups/minio_*.tar.gz
 ```
+
+## 운영 / 사용자 문서
+
+- [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) — 설치·환경변수·백업/복구·헬스체크·GPU·sim↔genicam·트러블슈팅
+- [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) — 작업자 HMI / 관리자 대시보드 / KPI 리포트 / 역할별 권한
+- [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — 런타임 토폴로지·7단계 파이프라인·소유권 경계
+- [`docs/API.md`](./docs/API.md) · [`docs/DATA_MODEL.md`](./docs/DATA_MODEL.md)
 
 ---
 

@@ -20,7 +20,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@aivis/shared-types": ["./src/shared-types/index.ts"]
+      "@aivis/shared-types": ["../../packages/shared-types/ts/src/index.ts"]
     }
   },
   "include": ["src"]

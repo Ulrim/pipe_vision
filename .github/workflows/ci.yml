@@ -100,24 +100,42 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
 
-      - name: Build / lint each Node package
+      # Single npm workspaces tree at the repo root. The root package-lock.json is the
+      # single source of truth (apps/* + packages/shared-types/ts; no per-app lockfiles).
+      - name: Install workspace (npm ci)
         run: |
           set -e
-          for d in apps/hmi apps/dashboard packages/shared-types/ts; do
-            if [ -f "$d/package.json" ]; then
-              echo "::group::$d"
-              ( cd "$d"
-                if [ -f package-lock.json ]; then npm ci; else npm install; fi
-                # Run lint/build scripts only if they are defined in package.json.
-                if npm run | grep -qE '^[[:space:]]*lint'; then npm run lint; fi
-                if npm run | grep -qE '^[[:space:]]*build'; then npm run build; fi
-              )
-              echo "::endgroup::"
-            else
-              echo "No package.json in $d yet; skipping."
-            fi
-          done
+          if [ ! -f package.json ]; then
+            echo "No root package.json (workspaces) yet; skipping node job."
+            exit 0
+          fi
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+
+      - name: Typecheck shared-types
+        run: |
+          set -e
+          [ -f package.json ] || exit 0
+          if npm run | grep -qE '^[[:space:]]*typecheck'; then npm run typecheck; fi
+
+      - name: Lint workspaces
+        run: |
+          set -e
+          [ -f package.json ] || exit 0
+          if npm run | grep -qE '^[[:space:]]*lint'; then npm run lint; fi
+
+      - name: Test workspaces
+        run: |
+          set -e
+          [ -f package.json ] || exit 0
+          if npm run | grep -qE '^[[:space:]]*test'; then npm run test; fi
+
+      - name: Build workspaces
+        run: |
+          set -e
+          [ -f package.json ] || exit 0
+          if npm run | grep -qE '^[[:space:]]*build'; then npm run build; fi
 
   # ---------------- Compose: validate docker-compose syntax ----------------
   compose:

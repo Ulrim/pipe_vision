@@ -90,25 +90,110 @@ class FileWatchTrigger(TriggerSource):
             time.sleep(self.poll_interval_s)
 
 
-class DigitalIOTrigger(TriggerSource):  # pragma: no cover - 통합 단계 스텁
-    """실물 디지털 IO 트리거 (P7). 산업용 PC DI 채널 결선."""
+class TriggerSDKError(NotImplementedError):
+    """실물 트리거 SDK/드라이버(IO·MQTT) 미구성 시 발생.
+
+    NotImplementedError 계열이라 기존 '스텁 미구현' 핸들링과 호환되며,
+    메시지에 필요한 패키지/환경변수를 담아 통합 단계 안내를 제공한다.
+    """
+
+
+class DigitalIOTrigger(TriggerSource):
+    """실물 디지털 IO 트리거 (P7). 산업용 PC DI 채널 결선.
+
+    원칙(§6.1): 생성은 항상 성공한다. 실제 IO 드라이버는 환경마다 다르므로
+    (Advantech/Contec/USB-DIO 등) 동적 import 로 감싼다. wait_for_trigger
+    시점에 드라이버 미구성이면 안내 예외(TriggerSDKError).
+
+    환경변수:
+    - AIVIS_DIO_DRIVER : IO 드라이버 식별자(통합 시 결선).
+    - AIVIS_DIO_CHANNEL: DI 채널 번호(미지정 시 channel 인자).
+
+    통합 단계 작업 목록(TODO):
+    1. _open_driver(): 벤더 IO SDK 동적 import + 디바이스/채널 오픈.
+    2. wait_for_trigger(): 채널 상승 에지를 폴링/인터럽트 대기(타임아웃 적용).
+    """
 
     def __init__(self, channel: Optional[int] = None) -> None:
-        self.channel = channel
+        env_ch = os.environ.get("AIVIS_DIO_CHANNEL")
+        self.channel = channel if channel is not None else (
+            int(env_ch) if env_ch is not None else None
+        )
+        self.driver_name = os.environ.get("AIVIS_DIO_DRIVER")
+        self._handle = None
 
-    def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
-        raise NotImplementedError(
-            "DigitalIOTrigger 는 P7 통합 단계에서 IO 드라이버로 결선한다."
+    def _open_driver(self):  # pragma: no cover - 통합 단계
+        raise TriggerSDKError(
+            "DigitalIOTrigger: 디지털 IO 드라이버 미구성. 실카메라 통합 시 "
+            "산업용 PC DI 드라이버(예: Advantech/Contec)를 결선하고 "
+            "AIVIS_DIO_DRIVER/AIVIS_DIO_CHANNEL 을 지정하라. "
+            "개발/테스트는 TimerTrigger/FileWatchTrigger 사용."
         )
 
+    def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
+        if self._handle is None:
+            self._open_driver()  # 미구성이면 안내 예외.
+        # TODO(P7): 채널 상승 에지 대기(타임아웃 적용) → True/False.
+        raise TriggerSDKError("DigitalIOTrigger.wait_for_trigger: IO 결선 필요(P7).")
 
-class MqttTrigger(TriggerSource):  # pragma: no cover - 통합 단계 스텁
-    """MQTT 이벤트 트리거 (P7). 내부 이벤트 버스 토픽 구독."""
 
-    def __init__(self, topic: Optional[str] = None) -> None:
-        self.topic = topic
+class MqttTrigger(TriggerSource):
+    """MQTT 이벤트 트리거 (P7). 내부 이벤트 버스 토픽 구독.
+
+    원칙(§6.1): 생성은 항상 성공한다. paho-mqtt 는 동적 import 로 감싸
+    **미설치 환경에서도 import/생성 시 죽지 않는다**. connect()/wait 시점에
+    미설치/미연결이면 안내 예외(TriggerSDKError).
+
+    환경변수:
+    - AIVIS_MQTT_HOST (기본 localhost), AIVIS_MQTT_PORT (기본 1883)
+    - AIVIS_MQTT_TRIGGER_TOPIC (기본 인자 topic)
+
+    통합 단계 작업 목록(TODO):
+    1. connect(): paho.mqtt.client.Client() 생성 + connect(host,port) +
+       subscribe(topic) + loop_start(). on_message 에서 _event 셋.
+    2. wait_for_trigger(): _event 를 timeout 까지 대기(threading.Event).
+    """
+
+    def __init__(
+        self,
+        topic: Optional[str] = None,
+        *,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+    ) -> None:
+        self.topic = topic or os.environ.get("AIVIS_MQTT_TRIGGER_TOPIC")
+        self.host = host or os.environ.get("AIVIS_MQTT_HOST", "localhost")
+        self.port = int(port if port is not None else os.environ.get("AIVIS_MQTT_PORT", 1883))
+        self._client = None
+        self._connected = False
+
+    def _require_paho(self):
+        """paho-mqtt 동적 import. 미설치면 안내 예외."""
+        try:
+            import paho.mqtt.client as mqtt  # type: ignore
+        except ImportError as exc:
+            raise TriggerSDKError(
+                "MqttTrigger: paho-mqtt 미설치. 실 트리거 통합 시 "
+                "`pip install paho-mqtt` 하라. 개발/테스트는 "
+                "TimerTrigger/FileWatchTrigger 사용."
+            ) from exc
+        return mqtt
+
+    def connect(self) -> None:  # pragma: no cover - 통합 단계
+        """MQTT 브로커 연결 + 토픽 구독(통합 단계 결선)."""
+        mqtt = self._require_paho()  # 미설치면 여기서 안내 예외.
+        if not self.topic:
+            raise TriggerSDKError(
+                "MqttTrigger: 구독 토픽 미지정(AIVIS_MQTT_TRIGGER_TOPIC)."
+            )
+        # TODO(P7): Client 생성/connect/subscribe/loop_start + on_message 핸들러.
+        raise TriggerSDKError(
+            f"MqttTrigger.connect: MQTT 결선 필요(P7) "
+            f"(host={self.host}, port={self.port}, topic={self.topic})."
+        )
 
     def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
-        raise NotImplementedError(
-            "MqttTrigger 는 P7 통합 단계에서 MQTT 클라이언트로 결선한다."
-        )
+        if not self._connected:
+            self.connect()  # 미설치/미연결이면 안내 예외.
+        # TODO(P7): threading.Event 를 timeout 까지 대기.
+        raise TriggerSDKError("MqttTrigger.wait_for_trigger: MQTT 결선 필요(P7).")

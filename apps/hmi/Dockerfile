@@ -1,27 +1,38 @@
 # ===== AIVIS hmi frontend (React + Vite -> nginx static serving) =====
-# Owned by devops. Application source (package.json, src) is owned by the
-# dashboard-frontend agent and assumed filled in later.
+# Owned by devops. Built from the MONOREPO ROOT context (npm workspaces) so the
+# build can resolve the @aivis/shared-types workspace package
+# (packages/shared-types/ts). See docker-compose.yml: build.context: .
+#
+# Application source (package.json, src) is owned by the hmi-frontend agent.
 
 # ---------- build stage ----------
 FROM node:20-alpine AS build
-WORKDIR /app
+WORKDIR /repo
 
-# Install deps first for layer caching. Supports npm/pnpm/yarn lockfiles if present.
-COPY package*.json ./
-RUN npm ci || npm install
+# Workspace manifests first for layer caching (lockfile-aware install).
+COPY package.json package-lock.json ./
+COPY apps/hmi/package.json apps/hmi/
+COPY apps/dashboard/package.json apps/dashboard/
+COPY packages/shared-types/ts/package.json packages/shared-types/ts/
 
-# Build the static bundle (Vite -> /app/dist).
-COPY . .
-RUN npm run build
+# Install the whole workspace deterministically (hoisted node_modules).
+RUN npm ci
+
+# Sources needed to build the hmi bundle: the app + the shared-types package.
+COPY packages/shared-types/ts/ packages/shared-types/ts/
+COPY apps/hmi/ apps/hmi/
+
+# Build the static bundle (Vite -> apps/hmi/dist).
+RUN npm run build --workspace @aivis/hmi
 
 # ---------- runtime stage ----------
 FROM nginx:1.27-alpine AS runtime
 
-# SPA routing + gzip config.
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# SPA routing + gzip + /healthz config.
+COPY apps/hmi/nginx.conf /etc/nginx/conf.d/default.conf
 
 # Static assets produced by the build stage.
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /repo/apps/hmi/dist /usr/share/nginx/html
 
 EXPOSE 80
 

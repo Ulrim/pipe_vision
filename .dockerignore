@@ -1,0 +1,70 @@
+# ===== AIVIS root .dockerignore =====
+# Build contexts are the monorepo root (see docker-compose.yml). Keep the context
+# lean and reproducible: never ship local node_modules / venvs / build outputs /
+# datasets / secrets into the image build. Each Dockerfile COPYs exactly what it
+# needs and installs deps from lockfiles.
+
+# Version control / CI
+.git
+.github
+.gitignore
+
+# Python local artifacts
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+.venv/
+.venv_qa/
+**/venv/
+**/*.egg-info/
+**/.coverage
+**/htmlcov/
+
+# Local SQLite dev DBs (api uses postgres in compose)
+**/*.db
+**/*.sqlite
+**/*.sqlite3
+services/api/aivis_dev.db
+services/api/local_queue/
+
+# Node local artifacts (Dockerfiles run a clean `npm ci`)
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/.vite/
+**/*.tsbuildinfo
+**/coverage/
+
+# Datasets / operational images (mounted as volumes at runtime, never baked in)
+dataset/
+datasets/
+data/
+images/
+raw/
+result/
+review/
+
+# Secrets / env (provided at runtime via env_file / environment)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ML model artifacts (delivered/mounted separately, not committed)
+*.onnx
+*.pt
+*.pth
+*.engine
+
+# Docs / editor / OS noise (not needed inside images)
+docs/
+*.md
+!services/*/README.md
+.idea/
+.vscode/
+.DS_Store

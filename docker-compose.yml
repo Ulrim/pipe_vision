@@ -53,8 +53,9 @@ services:
   # ---------------- API (FastAPI: results, master, kpi, auth, mes, ws) ----------------
   api:
     build:
-      context: ./services/api
-      dockerfile: Dockerfile
+      # Root context so the build can COPY packages/shared-types/python (aivis_types).
+      context: .
+      dockerfile: services/api/Dockerfile
     restart: unless-stopped
     env_file:
       - .env
@@ -85,8 +86,9 @@ services:
   # ---------------- Vision worker (acquisition -> preprocess -> infer -> verdict) ----------------
   vision:
     build:
-      context: ./services/vision
-      dockerfile: Dockerfile
+      # Root context so the build can COPY packages/shared-types/python (aivis_types).
+      context: .
+      dockerfile: services/vision/Dockerfile
     restart: unless-stopped
     env_file:
       - .env
@@ -114,8 +116,9 @@ services:
   # ---------------- HMI (operator UI, static nginx) ----------------
   hmi:
     build:
-      context: ./apps/hmi
-      dockerfile: Dockerfile
+      # Root context so the build can resolve the @aivis/shared-types workspace package.
+      context: .
+      dockerfile: apps/hmi/Dockerfile
     restart: unless-stopped
     ports:
       - "5173:80"
@@ -134,8 +137,9 @@ services:
   # ---------------- Dashboard (admin UI, static nginx) ----------------
   dashboard:
     build:
-      context: ./apps/dashboard
-      dockerfile: Dockerfile
+      # Root context so the build can resolve the @aivis/shared-types workspace package.
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
     restart: unless-stopped
     ports:
       - "5174:80"
