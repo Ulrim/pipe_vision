@@ -103,17 +103,17 @@ npm run ci             # typecheck → lint → test → build
 ## 클라우드 데모 배포
 
 인터넷에서 접근 가능한 데모는 프론트=Vercel, 백엔드(api)+검사워커(vision)=Render(Docker),
-DB=Neon(PostgreSQL) 조합으로 띄운다. 이미지 스토리지(R2/S3)는 선택이며 현재 코드는 경로
-문자열만 저장하므로 데모에는 불필요하다.
+DB=Supabase(PostgreSQL, Supavisor **Session 풀러**) 조합으로 띄운다. 이미지 스토리지(R2/S3)는
+선택이며 현재 코드는 경로 문자열만 저장하므로 데모에는 불필요하다.
 
 - 배포 메타: 루트 [`render.yaml`](./render.yaml)(Render Blueprint),
   [`apps/hmi/vercel.json`](./apps/hmi/vercel.json) · [`apps/dashboard/vercel.json`](./apps/dashboard/vercel.json).
 - 단계별 따라하기 가이드: [`deploy/DEPLOYMENT.md`](./deploy/DEPLOYMENT.md)
-  (Neon → Render(api/worker[+watchdog], `alembic upgrade head`) → Vercel(hmi/dashboard) →
+  (Supabase → Render(api/worker[+watchdog], `alembic upgrade head`) → Vercel(hmi/dashboard) →
   CORS 연결 → 스모크/트러블슈팅).
 
 ```
-Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdog])  ↔  Neon(PostgreSQL)
+Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdog])  ↔  Supabase(PostgreSQL)
 ```
 
 > 주의: Render free 서비스는 유휴 시 슬립(콜드스타트), 운영 postgres는 lifespan이 테이블을

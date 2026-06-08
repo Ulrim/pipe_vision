@@ -23,18 +23,19 @@
             │  aivis-vision (worker)   ── sim 카메라 → 검사 → api 로 결과 POST        │
             │  aivis-mes-watchdog (worker, 선택) ── mes_synced=false 재연계          │
             └───────────────┬───────────────────────────────────────────────────────┘
-                            │ postgresql+psycopg (sslmode=require)
+                            │ postgresql+psycopg (sslmode=require, Session 풀러)
                             ▼
-                   ┌──────────────────┐
-                   │  Neon PostgreSQL │  (외부, 무료 티어)
-                   └──────────────────┘
+                   ┌───────────────────────┐
+                   │  Supabase PostgreSQL  │  (외부, 무료 티어 · Supavisor 풀러)
+                   └───────────────────────┘
 ```
 
 - **프론트엔드**: Vercel 프로젝트 2개(hmi, dashboard). 정적 SPA, 히스토리 폴백.
 - **백엔드**: Render Blueprint(`render.yaml`)로 api(web) + vision(worker) + (선택)
   mes-watchdog(worker)를 한 번에 배포.
-- **DB**: Neon PostgreSQL(외부). `DATABASE_URL`을 Render에 수동 입력한다(Render가 Neon을
-  프로비저닝하지 않으므로 `sync:false`).
+- **DB**: Supabase PostgreSQL(외부). `DATABASE_URL`을 Render에 수동 입력한다(Render가
+  Supabase를 프로비저닝하지 않으므로 `sync:false`). **반드시 Supavisor "Session 풀러"
+  연결을 쓴다**(아래 1단계 — Render는 IPv4라 Supabase Direct(IPv6) 연결이 안 됨).
 - **이미지 스토리지(R2/S3)는 선택이며 데모에서는 불필요하다.** 현재 코드는 이미지 **경로
   문자열만** DB에 저장하고 실제 객체 업로드는 미구현이다. 따라서 데모는 placeholder 경로로
   충분하며, MinIO/R2/S3를 붙이지 않아도 KPI·이력·실시간 카드가 모두 동작한다.
@@ -45,22 +46,37 @@
 
 ---
 
-## 1) Neon PostgreSQL
+## 1) Supabase PostgreSQL
 
-1. https://neon.tech 가입 → **New Project** 생성(region은 Render와 가까운 곳 권장).
-2. 대시보드 **Connection string**에서 연결 문자열을 복사한다. Neon 기본 형식은
-   `postgresql://USER:PASSWORD@HOST/DB?sslmode=require` 이다.
-3. **드라이버 접두사를 반드시 `postgresql+psycopg://` 로 교체**한다(api는 psycopg를 쓴다 —
-   api Dockerfile이 `libpq5`를 설치하고 requirements가 psycopg를 사용). 최종 형태:
+1. https://supabase.com 가입 → **New project** 생성. **Database Password**를 강하게 설정하고
+   따로 보관한다(이 비번이 `DATABASE_URL`에 들어간다 — API 키와 다름). Region은 Render와
+   가까운 곳 권장.
+2. **연결 문자열은 반드시 "Session 풀러"(Supavisor)를 쓴다.** 프로젝트 상단 **Connect** 버튼
+   (또는 **Project Settings → Database → Connection string**) → **Session pooler** 탭에서
+   복사한다. 형식은 대략 아래와 같다(포트 **5432**, 호스트가 `…pooler.supabase.com`):
 
    ```
-   postgresql+psycopg://USER:PASSWORD@HOST/DB?sslmode=require
+   postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres
    ```
 
-   - `sslmode=require` 는 유지한다(Neon은 SSL 필수).
-   - Neon "pooled" 호스트(`-pooler`)와 "direct" 호스트 둘 다 가능. 마이그레이션 안정성을
-     위해 direct 호스트를 써도 되고, 데모는 pooled로도 동작한다.
-4. 이 문자열을 다음 단계에서 Render의 `DATABASE_URL`(api, mes-watchdog)에 입력한다.
+   > **왜 Direct가 아니라 Session 풀러인가**: Supabase의 Direct 연결
+   > (`db.<ref>.supabase.co:5432`)은 **IPv6 전용**이라, 아웃바운드가 IPv4인 Render에서
+   > 연결되지 않는다. Supavisor 풀러는 **IPv4**를 제공한다. 그중 **Session 모드(5432)** 는
+   > prepared statement를 지원해 영속 컨테이너(Render api/worker)와 Alembic 마이그레이션에
+   > 모두 안전하다. **Transaction 풀러(6543)는 쓰지 마라** — prepared statement가 비활성이라
+   > psycopg에서 별도 설정이 필요하다.
+
+3. **드라이버 접두사를 `postgresql+psycopg://` 로 교체**하고 `?sslmode=require` 를 붙인다
+   (api는 psycopg v3를 쓰고 Supabase는 SSL 필수). 비밀번호에 특수문자(`@ : / ?` 등)가 있으면
+   **URL 인코딩**한다. 최종 형태:
+
+   ```
+   postgresql+psycopg://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+   ```
+
+   - 데이터베이스 이름은 Supabase 기본값 `postgres` 다.
+   - 우리 테이블은 `public` 스키마에 생성된다(Supabase의 `auth`/`storage` 스키마와 무관).
+4. 이 문자열을 다음 단계에서 Render의 `DATABASE_URL`(api, mes-watchdog)에 **동일하게** 입력한다.
 
 ---
 
@@ -78,13 +94,13 @@
 
    | 서비스 | 키 | 예시 / 출처 | 설명 |
    |---|---|---|---|
-   | api | `DATABASE_URL` | `postgresql+psycopg://…?sslmode=require` | 1)에서 만든 Neon URL |
+   | api | `DATABASE_URL` | `postgresql+psycopg://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require` | 1)에서 만든 Supabase **Session 풀러** URL |
    | api | `ALLOWED_ORIGINS` | (3단계 후 입력) | Vercel 두 도메인 콤마목록. CORS |
    | aivis-shared | `JWT_SECRET` | 자동생성(generateValue) | JWT 서명키. api/worker 공유 |
    | aivis-shared | `AIVIS_SERVICE_TOKEN` | 자동생성 | 워커→api `X-Service-Token`. 동일값 |
    | aivis-shared | `AIVIS_SEED_ADMIN_USER` | `admin` | 시드 관리자 계정 |
    | aivis-shared | `AIVIS_SEED_ADMIN_PASSWORD` | 강한 임의값 | 시드 관리자 비번(데모용, 교체 권장) |
-   | mes-watchdog | `DATABASE_URL` | api와 동일 Neon URL | 워치독도 같은 DB |
+   | mes-watchdog | `DATABASE_URL` | api와 동일 Supabase URL | 워치독도 같은 DB |
 
    Blueprint가 고정값으로 넣는 키(확인용, 입력 불필요):
    - api: `AIVIS_SEED_ON_STARTUP=true`, `AIVIS_SEED_DEMO_ITEM=true`,
@@ -98,7 +114,8 @@
    라이브 전환 직전에 실행된다(이미지 WORKDIR `/app` = services/api 이므로 `alembic.ini` +
    `alembic/` 가 그 자리에 있다). 운영 postgres는 테이블을 자동 생성하지 않으므로 이 단계가
    **반드시** 성공해야 한다. 첫 배포 로그에서 `alembic upgrade head` 가 OK인지 확인한다.
-   - preDeploy 단계가 실패하면 배포가 중단된다 → `DATABASE_URL`/Neon 접근부터 점검.
+   - preDeploy 단계가 실패하면 배포가 중단된다 → `DATABASE_URL`/Supabase 접근부터 점검.
+     특히 **Session 풀러(5432, IPv4)** 가 아니면 Render에서 연결 자체가 안 될 수 있다.
 
 5. **검증**:
    - `GET https://aivis-api.onrender.com/health` → `{"status":"ok", ...}` (콜드스타트 시
@@ -193,8 +210,9 @@
 
 - **Render free 슬립·콜드스타트**: api web이 유휴 시 슬립 → 첫 접속 30~60초 지연. worker도
   free 티어 한도(시간/리소스) 영향. 안정 데모는 starter 유료 권장.
-- **Neon free 한도**: 스토리지/컴퓨트 한도와 유휴 자동 일시정지가 있다. 장시간 무접속 후
-  첫 쿼리가 느릴 수 있다.
+- **Supabase free 한도**: 무료 프로젝트는 **약 1주간 비활성 시 자동 일시정지(pause)** 되며,
+  재개하려면 대시보드에서 수동 restore가 필요하다(데모를 오래 방치하면 DB가 멈춤). 스토리지/
+  대역폭 한도도 있다. 상시 데모는 유료 플랜 또는 주기적 접속으로 paused를 피한다.
 - **스코프 외(CLAUDE.md §2)**: 실카메라/조명/트리거 HW, MES 본체는 데모에 포함하지 않는다.
   데모는 `AIVIS_CAMERA=sim` 합성 데이터 + `MES_MODE=table`(내부 스테이징) 로 동작한다.
 - **이미지 스토리지**: R2/S3는 선택이며 현재 미배선이다(경로 문자열만 저장). 데모는 placeholder
@@ -212,7 +230,9 @@
 |---|---|---|
 | 브라우저 콘솔 CORS 차단 | `ALLOWED_ORIGINS` 에 Vercel 도메인 누락/슬래시 포함 | 4)대로 정확히 입력 후 api 재배포 |
 | WS 연결 실패 / mixed content | `VITE_WS_URL` 이 `ws://` 이거나 `/ws/live` 누락 | `wss://aivis-api.onrender.com/ws/live` 로 설정 후 재배포 |
-| 첫 접속 매우 느림 | Render free 슬립 콜드스타트 / Neon 깨우기 | 정상. 재시도 또는 starter 업그레이드 |
+| 첫 접속 매우 느림 | Render free 슬립 콜드스타트 / Supabase 깨우기 | 정상. 재시도 또는 starter 업그레이드 |
+| DB 연결 타임아웃/거부 | Supabase **Direct(IPv6)** URL 사용 또는 Transaction 풀러(6543) | **Session 풀러(5432, `…pooler.supabase.com`)** URL로 교체 |
+| `prepared statement` 관련 오류 | Transaction 풀러(6543) 사용 | Session 풀러(5432)로 교체 |
 | api 5xx, 테이블 없음 | 마이그레이션 미실행 | api 배포 로그의 `alembic upgrade head` 확인, 실패 시 `DATABASE_URL` 점검 |
 | 워커 로그에 item 못 찾음 / FK 오류 | HP12 item_master 부재 | api `AIVIS_SEED_DEMO_ITEM=true` 확인(워커 `AIVIS_ITEM_CODE`와 일치) |
 | 워커가 api에 접속 못함 | `AIVIS_API_URL` 스킴 누락 | `http://aivis-api:8000`(스킴 포함) 인지 확인 |

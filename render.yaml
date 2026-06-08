@@ -6,9 +6,12 @@
 #                  shows a 100% MES linkage rate on the dashboard.
 #
 # The frontend (apps/hmi, apps/dashboard) is deployed to Vercel — see
-# deploy/DEPLOYMENT.md. PostgreSQL is Neon (external, free tier) — its
+# deploy/DEPLOYMENT.md. PostgreSQL is Supabase (external, free tier) — its
 # DATABASE_URL is entered by hand (sync:false) because Render does not
-# provision Neon.
+# provision Supabase. IMPORTANT: use the Supabase "Session pooler" connection
+# (port 5432, host *.pooler.supabase.com, IPv4) — Render is IPv4-only and the
+# Supabase Direct connection is IPv6-only. Do NOT use the Transaction pooler
+# (6543). See deploy/DEPLOYMENT.md step 1.
 #
 # Deploy: Render Dashboard -> New -> Blueprint -> point at this repo's render.yaml.
 #
@@ -41,8 +44,9 @@ services:
     preDeployCommand: alembic upgrade head
     autoDeploy: true
     envVars:
-      # --- Neon Postgres (entered by hand; psycopg URL form, see DEPLOYMENT.md) ---
-      # postgresql+psycopg://USER:PASSWORD@HOST/DB?sslmode=require
+      # --- Supabase Postgres (entered by hand; psycopg URL, see DEPLOYMENT.md) ---
+      # Use the SESSION POOLER (5432, IPv4):
+      # postgresql+psycopg://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
       - key: DATABASE_URL
         sync: false
       # --- CORS: comma-separated Vercel domains (set AFTER the Vercel deploy) ---
