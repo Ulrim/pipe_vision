@@ -100,6 +100,25 @@ npm run ci             # typecheck → lint → test → build
 > `packages/shared-types/python`(aivis_types) 설치 때문). 자세한 사유는
 > [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §빌드 컨텍스트 정책.
 
+## 클라우드 데모 배포
+
+인터넷에서 접근 가능한 데모는 프론트=Vercel, 백엔드(api)+검사워커(vision)=Render(Docker),
+DB=Neon(PostgreSQL) 조합으로 띄운다. 이미지 스토리지(R2/S3)는 선택이며 현재 코드는 경로
+문자열만 저장하므로 데모에는 불필요하다.
+
+- 배포 메타: 루트 [`render.yaml`](./render.yaml)(Render Blueprint),
+  [`apps/hmi/vercel.json`](./apps/hmi/vercel.json) · [`apps/dashboard/vercel.json`](./apps/dashboard/vercel.json).
+- 단계별 따라하기 가이드: [`deploy/DEPLOYMENT.md`](./deploy/DEPLOYMENT.md)
+  (Neon → Render(api/worker[+watchdog], `alembic upgrade head`) → Vercel(hmi/dashboard) →
+  CORS 연결 → 스모크/트러블슈팅).
+
+```
+Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdog])  ↔  Neon(PostgreSQL)
+```
+
+> 주의: Render free 서비스는 유휴 시 슬립(콜드스타트), 운영 postgres는 lifespan이 테이블을
+> 자동 생성하지 않으므로 `alembic upgrade head` 가 필요하다(api `preDeployCommand` 처리).
+
 ## 오프라인(현장) 설치
 
 현장 산업용 PC는 인터넷이 제한될 수 있다. 인터넷이 가능한 빌드 머신에서 이미지를 사전
