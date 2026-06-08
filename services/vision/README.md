@@ -17,6 +17,7 @@
 | `surface/`     | M4 | 유분기/변색/스크래치 고전 CV 폴백(+`OnnxSurfaceModel`). 임계는 ItemMaster에서. 모델 미배포/미설치/로드실패 시 자동 폴백 |
 | `verdict/`     | M5 | 길이+표면 통합 OK/NG, defect_codes 합집합(2종↑ MULTI), confidence, review_flag |
 | `pipeline.py`  | —  | 오케스트레이션 + `to_inspection_result` 매핑(HTTP 전송은 backend 책임) |
+| `worker/`      | §4 | **검사 워커 런타임 루프**(`python -m worker`): 트리거→grab→pipeline→POST /inspection. 기동 시퀀스(API readiness·ItemMaster 확보)·재시도·graceful 종료·헬스파일 |
 | `tools/gen_synthetic.py` | — | 데이터셋 없이 테스트 자립용 합성 파이프 이미지 생성 |
 | `models/`      | §6.3 | 학습/ONNX export 산출물 배포 위치(미배포 시 고전 CV 폴백) |
 
@@ -62,6 +63,63 @@ PY
 ```
 
 `AIVIS_CAMERA` 스위치: `sim`(기본, SimulatorCamera) / `genicam`(P7 실카메라, 벤더 SDK 결선).
+
+## 검사 워커 (`worker/`, `python -m worker`)
+
+`services/vision/Dockerfile` 의 `CMD ["python","-m","worker"]` 가 기동하는 **검사
+런타임 루프**다(CLAUDE.md §4). 컨테이너는 `services/vision/*` 를 `/app` 에 flat
+COPY 하므로 `worker/_bootstrap.py` 가 두 import 레이아웃을 흡수한다:
+dev/테스트는 `vision.*` 패키지, 컨테이너 flat 은 현재 디렉터리를 `vision` 패키지로
+합성 등록(상대 import `from .length import ...` 가 동작하도록).
+
+루프: `트리거(주기) → camera.grab() → InspectionPipeline.run(frame, item) →
+to_inspection_result(...) → POST {AIVIS_API_URL}/inspection`. `proc_time_ms` 포함.
+**어떤 단계 예외에도 루프는 죽지 않고**(로그 후 계속) 성공/실패 카운트를 주기 로깅한다.
+
+기동 시퀀스(견고):
+1. **API readiness 폴링** — `GET /health` 가 `status=ok` 될 때까지 지수 백오프
+   재시도(무한 대기 금지, `AIVIS_API_WAIT_TIMEOUT_S` 초과 시 종료코드 1).
+2. **ItemMaster 확보** — `GET /master/items/{code}`. 이 GET 은 operator+ JWT
+   가드라 service token 으로 안 통하면 `AIVIS_SEED_ADMIN_USER/PASSWORD` 로
+   `POST /auth/login` 하여 Bearer 를 확보해 재시도한다. 404(미시드)면 backend 가
+   데모 품목을 시드한다고 가정해 잠시 재시도(역시 타임아웃 한계 존재).
+3. **합성 데이터셋 자립** — `AIVIS_DATASET_DIR` 가 비었거나 없으면
+   `tools.gen_synthetic` 으로 합성 이미지 폴더를 자동 생성해 데모가 항상 돈다.
+4. **헬스 파일** — 첫 루프 준비 시 `/tmp/vision_ready` 생성(Dockerfile
+   healthcheck 계약 `test -f /tmp/vision_ready`), 종료 시 제거.
+5. **graceful 종료** — `SIGTERM`/`SIGINT` 수신 시 진행 중 루프를 마치고 정리 후 종료.
+
+### 환경변수
+
+| 변수 | 기본 | 설명 |
+|---|---|---|
+| `AIVIS_CAMERA` | `sim` | `sim`\|`genicam`. factory 로 어댑터 선택 |
+| `AIVIS_DATASET_DIR` | (없음) | SimulatorCamera 리플레이 폴더. 비었으면 합성 자동 생성 |
+| `AIVIS_API_URL` | `http://api:8000` | 결과 POST/조회 대상 backend |
+| `AIVIS_SERVICE_TOKEN` | (없음) | 설정 시 `POST /inspection` 에 `X-Service-Token`+`Bearer` 첨부 |
+| `AIVIS_ITEM_CODE` | `HP12` | 검사 대상 품목(ItemMaster 조회 키) |
+| `AIVIS_WORKER_INTERVAL_MS` | `1500` | 트리거 간격(ms). 0=최고속(배치/스모크) |
+| `AIVIS_LOT` | `LOT{YYYYMMDD}` | 미설정 시 날짜 기반 자동 |
+| `AIVIS_CAM_ID` | `CAM1` | 카메라 식별자 |
+| `AIVIS_SHIFT` / `AIVIS_OPERATOR` | (없음) | 선택 메타 |
+| `AIVIS_SEED_ADMIN_USER` / `AIVIS_SEED_ADMIN_PASSWORD` | `admin` / `admin1234` | master GET 인증 폴백용 로그인 |
+| `AIVIS_API_WAIT_TIMEOUT_S` / `AIVIS_ITEM_WAIT_TIMEOUT_S` | `120` | readiness/ItemMaster 폴링 한계 |
+| `AIVIS_HTTP_TIMEOUT_MS` | `5000` | httpx 요청 타임아웃 |
+| `AIVIS_WORKER_LOG_EVERY` | `10` | 진행 로그 주기(루프 수) |
+| `AIVIS_READY_FILE` | `/tmp/vision_ready` | healthcheck 파일 경로 |
+| `AIVIS_WORKER_MAX_ITER` | `0` | 최대 루프 수(0=무한). 데모/스모크 유한 종료용 |
+
+### 실행
+
+```bash
+# 온프레미스(compose) / 클라우드 데모 공통. AIVIS_DATASET_DIR 미설정이면 합성 자립.
+export AIVIS_CAMERA=sim
+export AIVIS_API_URL=http://localhost:8000
+export AIVIS_ITEM_CODE=HP12
+python -m worker            # 컨테이너 flat 레이아웃 기준(CMD 와 동일)
+# 또는 dev 레이아웃:  PYTHONPATH=services python -m vision.worker  는 불필요 —
+# worker 가 부트스트랩하므로 services/vision 에서 `python -m worker` 면 된다.
+```
 
 ## 카메라/트리거 HAL (§6.1)
 

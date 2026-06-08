@@ -99,6 +99,11 @@
 | WS | `/ws/live` | 공개 | 검사결과/알람 실시간 푸시. 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |
 
+## 배포 환경변수 (클라우드 데모)
+- `ALLOWED_ORIGINS`: CORS 허용 출처 콤마 목록(예 `https://aivis-hmi.vercel.app,https://aivis-dashboard.vercel.app`). 미설정 시 `*`(모든 출처, credentials 불가). 명시 목록이면 `allow_credentials=True`.
+- `AIVIS_SEED_DEMO_ITEM`(기본 `false`): 데모 배포에서 `true`로 켜면 `item_master`에 데모 품목 1건을 멱등 시드(워커 검사결과 FK 충족).
+- `AIVIS_DEMO_ITEM_CODE`(기본 `HP12`): 데모 시드 품목코드.
+
 ## 공용 스키마 (packages/shared-types)
 `InspectionResult`, `ItemMaster(+Create/Update)`, `ReviewUpdate`, `InspectionImages`,
 `LengthResult`, `SurfaceResult`, `VerdictResult`(비전 파이프라인),

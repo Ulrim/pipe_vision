@@ -6,6 +6,7 @@ opencv-python-headless>=4.9,<5
 numpy>=1.26,<2.2
 onnxruntime>=1.17,<2          # ONNX 표면 모델 배포(P7+). 미배포 시 고전 CV 폴백.
 pydantic>=2.5,<3              # aivis_types 스키마(이미 의존). 명시 고정.
+httpx>=0.27,<1               # 검사 워커(worker)가 backend(POST /inspection 등) 호출.
 
 # 개발/테스트
 pytest>=8.0

@@ -53,6 +53,32 @@ class Settings:
         # 미설정(기본)이면 내부 POST /inspection 은 화이트리스트(무인증) 허용.
         self.service_token: str | None = os.getenv("AIVIS_SERVICE_TOKEN") or None
 
+        # CORS 교차 출처 허용 목록(클라우드 데모: 프론트=Vercel, 백엔드=Render 등).
+        # ALLOWED_ORIGINS 콤마 구분 목록. 미설정 시 개발 편의로 ["*"] 허용.
+        self.allowed_origins: list[str] = self._parse_origins(
+            os.getenv("ALLOWED_ORIGINS")
+        )
+
+        # 데모 품목 시드(item_master FK 충족). 데모 배포에서 True 로 켠다.
+        self.seed_demo_item: bool = _bool("AIVIS_SEED_DEMO_ITEM", False)
+        self.demo_item_code: str = os.getenv("AIVIS_DEMO_ITEM_CODE", "HP12")
+
+    @staticmethod
+    def _parse_origins(raw: str | None) -> list[str]:
+        """ALLOWED_ORIGINS 파싱: 콤마 분리, 공백 트림, 빈값 제거.
+
+        미설정/전체 공백이면 ["*"](모든 출처 허용, credentials 불가).
+        """
+        if raw is None:
+            return ["*"]
+        origins = [o.strip() for o in raw.split(",") if o.strip()]
+        return origins or ["*"]
+
+    @property
+    def cors_allow_credentials(self) -> bool:
+        """명시 출처 목록이면 credentials 허용. "*" 이면 불가(스펙 충돌 회피)."""
+        return self.allowed_origins != ["*"]
+
     @property
     def consec_ng_threshold_value(self) -> int:
         return self.consec_ng_threshold
