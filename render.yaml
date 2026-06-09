@@ -22,8 +22,12 @@
 #     reliable demo upgrade the api to a paid "starter" instance, or accept the
 #     cold start. The vision worker (background) keeps the DB populated and will
 #     also be subject to free-tier limits.
-#   * Object storage (R2/S3) is NOT wired here. The current code only persists
-#     image PATH strings (no real upload), so the demo works with placeholders.
+#   * Image storage: the cloud demo uses SUPABASE STORAGE (object storage),
+#     NOT the local "images" volume. On the single-host compose, api+vision share
+#     a local disk volume; on Render they are SEPARATE containers that cannot share
+#     a local disk -> Supabase Storage is REQUIRED so the worker can upload and the
+#     api can proxy-serve inspection images. Set AIVIS_STORAGE_BACKEND=supabase on
+#     BOTH api and vision (same SUPABASE_URL / SERVICE_ROLE_KEY / BUCKET).
 #
 # After first deploy run the DB migration: the api `preDeployCommand` runs
 # `alembic upgrade head` (postgres lifespan does NOT auto-create tables).
@@ -52,6 +56,19 @@ services:
       # --- CORS: comma-separated Vercel domains (set AFTER the Vercel deploy) ---
       - key: ALLOWED_ORIGINS
         sync: false
+      # --- Image storage (Supabase Storage) ---
+      # Cloud is split containers: api + vision cannot share a local disk volume
+      # (unlike the single-host compose), so Supabase Storage is REQUIRED. The
+      # worker uploads inspection images; the api proxy-serves them. Both services
+      # MUST use the SAME backend / URL / key / bucket.
+      - key: AIVIS_STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: inspection-images
       # --- shared secrets / demo seed (group below) ---
       - fromGroup: aivis-shared
       # --- demo seed flags so the worker's FK target (HP12) exists ---
@@ -90,6 +107,17 @@ services:
       # Inspection cadence (ms between sim triggers).
       - key: AIVIS_WORKER_INTERVAL_MS
         value: "1500"
+      # --- Image storage (Supabase Storage) ---
+      # Worker UPLOADS inspection images here (split containers cannot share a
+      # local disk volume in the cloud). MUST match the api's backend/URL/key/bucket.
+      - key: AIVIS_STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: inspection-images
       # Leave AIVIS_DATASET_DIR unset -> worker auto-synthesizes frames.
       # service token + seed admin (login fallback for GET /master) from group.
       - fromGroup: aivis-shared

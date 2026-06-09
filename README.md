@@ -103,8 +103,12 @@ npm run ci             # typecheck → lint → test → build
 ## 클라우드 데모 배포
 
 인터넷에서 접근 가능한 데모는 프론트=Vercel, 백엔드(api)+검사워커(vision)=Render(Docker),
-DB=Supabase(PostgreSQL, Supavisor **Session 풀러**) 조합으로 띄운다. 이미지 스토리지(R2/S3)는
-선택이며 현재 코드는 경로 문자열만 저장하므로 데모에는 불필요하다.
+DB=Supabase(PostgreSQL, Supavisor **Session 풀러**) 조합으로 띄운다. 이미지 스토리지는
+**클라우드에서 Supabase Storage 를 사용한다**: 로컬 compose 와 달리 클라우드는 api·vision 이
+**분리된 컨테이너**라 로컬 디스크 볼륨을 공유할 수 없으므로 객체 스토리지가 필수다(워커가
+업로드, api 가 프록시 서빙). `AIVIS_STORAGE_BACKEND=supabase` 와 `SUPABASE_*` 키를 api·vision
+양쪽에 동일하게 설정한다(`render.yaml`/`deploy/DEPLOYMENT.md` 참조). 로컬 compose 는 기본
+`AIVIS_STORAGE_BACKEND=local`(공유 `images` 볼륨)로 동작한다.
 
 - 배포 메타: 루트 [`render.yaml`](./render.yaml)(Render Blueprint),
   [`apps/hmi/vercel.json`](./apps/hmi/vercel.json) · [`apps/dashboard/vercel.json`](./apps/dashboard/vercel.json).
