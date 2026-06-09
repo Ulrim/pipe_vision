@@ -1,6 +1,9 @@
 /**
  * AIVIS 작업자 HMI 메인 화면 (CLAUDE.md §5 M6/M10).
- * - WS /ws/live 구독(자동 재연결).
+ * - 사내 도구 전환: 전체 로그인 게이트(미인증 시 진입 차단).
+ *   토큰이 없으면 LoginScreen 만 렌더, 있을 때만 검사 화면을 렌더한다.
+ *   로그아웃/토큰 만료(401·WS 1008)로 세션이 폐기되면 다시 로그인 화면으로 복귀.
+ * - WS /ws/live 구독(자동 재연결, ?token= 으로 JWT 인증).
  * - 최신 검사결과 카드 + NG 알람 배너 + 최근 이력 + 재확인 다이얼로그.
  */
 import { useState } from "react";
@@ -14,17 +17,27 @@ import { InspectionCard } from "@/components/InspectionCard";
 import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { AuthStatus } from "@/components/AuthStatus";
-import { LoginModal } from "@/components/LoginModal";
+import { LoginScreen } from "@/components/LoginScreen";
 
 export default function App() {
+  // 전체 로그인 게이트: 세션(토큰)이 없으면 본문 대신 로그인 화면만 렌더.
+  // 로그인/로그아웃/만료 시 session 변화로 게이트가 자동 전환된다.
+  const session = useAuthStore((s) => s.session);
+  if (!session) {
+    return <LoginScreen />;
+  }
+  return <AppShell />;
+}
+
+/**
+ * 인증된 본문. 게이트를 통과(토큰 보유)했을 때만 마운트되므로,
+ * useLiveSocket 은 항상 유효한 토큰으로 WS 에 연결한다.
+ */
+function AppShell() {
   useLiveSocket();
   const latest = useLiveStore((s) => s.latest);
   const feed = useLiveStore((s) => s.feed);
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
-
-  // 헤더의 로그인 버튼으로 띄운 로그인 모달(쓰기 액션과 무관한 선(先)로그인).
-  // 재확인 중에는 ReviewDialog 가 자체 LoginModal 을 렌더하므로 중복 표시를 막는다.
-  const loginPromptOpen = useAuthStore((s) => s.loginPromptOpen);
 
   return (
     <div className="min-h-full bg-gray-100 p-4 md:p-6">
@@ -58,9 +71,6 @@ export default function App() {
           onClose={() => setReviewing(null)}
         />
       )}
-
-      {/* 헤더 로그인 버튼으로 연 모달(재확인 다이얼로그가 닫혀 있을 때만). */}
-      {loginPromptOpen && !reviewing && <LoginModal />}
     </div>
   );
 }

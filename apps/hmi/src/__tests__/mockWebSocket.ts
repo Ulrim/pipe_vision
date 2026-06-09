@@ -42,9 +42,13 @@ export class MockWebSocket {
     );
   }
 
-  triggerServerClose() {
+  /**
+   * 서버측 종료를 시뮬레이트한다. code 미지정 시 정상 종료(재연결 대상),
+   * code=1008 등 지정 시 정책 위반(인증 실패) 종료를 흉내낸다.
+   */
+  triggerServerClose(code?: number) {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.(new CloseEvent("close"));
+    this.onclose?.(new CloseEvent("close", code != null ? { code } : undefined));
   }
 
   static last(): MockWebSocket {

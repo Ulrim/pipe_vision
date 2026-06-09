@@ -19,3 +19,16 @@ export function resolveWsUrl(): string {
 }
 
 export const WS_URL: string = resolveWsUrl();
+
+/**
+ * WS URL 에 JWT 를 query 로 부착(`?token=<JWT>`).
+ * 백엔드 /ws/live?token= 에서 검증(유효해야 accept, 아니면 1008 close).
+ * - 토큰은 URL 인코딩.
+ * - 이미 query 가 있으면 `&` 로 연결.
+ * - 토큰이 비어 있으면 원본 URL 그대로 반환(부착 안 함).
+ */
+export function withWsToken(baseUrl: string, token: string | null): string {
+  if (!token) return baseUrl;
+  const sep = baseUrl.includes("?") ? "&" : "?";
+  return `${baseUrl}${sep}token=${encodeURIComponent(token)}`;
+}

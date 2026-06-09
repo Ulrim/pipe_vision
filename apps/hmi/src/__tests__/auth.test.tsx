@@ -147,31 +147,26 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
     );
   });
 
-  it("미인증 재확인 → 로그인 모달 → 로그인 성공 후 Bearer 첨부로 재시도된다", async () => {
-    const ng = makeNg({ id: 88 });
-    const updated: InspectionResult = { ...ng, review_flag: false };
-    const { fetchMock, seen } = makeFetchMock(updated);
+  it("전체 로그인 게이트: 미인증이면 앱 본문 대신 로그인 화면만 렌더된다", async () => {
+    const { fetchMock } = makeFetchMock(makeNg({ id: 88 }));
     vi.stubGlobal("fetch", fetchMock);
 
     renderApp();
-    const ws = MockWebSocket.last();
-    ws.triggerOpen();
-    ws.triggerMessage({ event: "inspection", data: ng });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("open-review")).toBeInTheDocument(),
-    );
-    fireEvent.click(screen.getByTestId("open-review"));
-    fireEvent.click(screen.getByTestId("review-ng"));
-    // 미인증 → submit 은 review 를 호출하지 않고 로그인 모달을 띄운다.
-    fireEvent.click(screen.getByTestId("review-submit"));
+    // 로그인 화면만 보이고, 검사 화면(헤더/연결 인디케이터)은 렌더되지 않는다.
+    expect(screen.getByTestId("login-screen")).toBeInTheDocument();
+    expect(screen.queryByText("AIVIS 실시간 검사")).toBeInTheDocument(); // 로그인 화면 제목
+    expect(screen.queryByRole("status")).not.toBeInTheDocument(); // ConnectionIndicator 없음
+    // 미인증이므로 WS 연결 시도조차 없다(토큰 없음).
+    expect(MockWebSocket.instances.length).toBe(0);
+  });
 
-    await waitFor(() =>
-      expect(screen.getByTestId("login-modal")).toBeInTheDocument(),
-    );
-    expect(seen.some((s) => s.url.includes("/review"))).toBe(false);
+  it("로그인 게이트 통과: 로그인 성공 시 앱 본문이 렌더되고 WS URL 에 token 이 실린다", async () => {
+    const { fetchMock } = makeFetchMock(makeNg({ id: 88 }));
+    vi.stubGlobal("fetch", fetchMock);
 
-    // 로그인 입력 → 성공 → 보류했던 재확인 자동 재시도.
+    renderApp();
+
     fireEvent.change(screen.getByTestId("login-username"), {
       target: { value: "kim" },
     });
@@ -180,12 +175,40 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
     });
     fireEvent.click(screen.getByTestId("login-submit"));
 
-    await waitFor(() => {
-      const review = seen.find((s) => s.url.includes("/review"));
-      expect(review?.auth).toBe("Bearer tok-abc");
-    });
+    // 세션 저장 → 게이트 통과 → 본문 마운트 → WS 연결(토큰 부착).
     await waitFor(() =>
-      expect(useLiveStore.getState().latest?.review_flag).toBe(false),
+      expect(screen.getByRole("status")).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
+    const ws = MockWebSocket.last();
+    expect(ws.url).toContain("/ws/live");
+    expect(ws.url).toContain("token=tok-abc");
+    expect(screen.queryByTestId("login-screen")).not.toBeInTheDocument();
+  });
+
+  it("WS 1008(인증 실패) close → 세션 폐기 → 로그인 화면으로 복귀", async () => {
+    const { fetchMock } = makeFetchMock(makeNg({ id: 88 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // 인증된 상태로 시작.
+    useAuthStore.getState().setSession(TOKEN_RES);
+    renderApp();
+    const ws = MockWebSocket.last();
+    ws.triggerOpen();
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toBeInTheDocument(),
+    );
+
+    // 백엔드가 토큰을 거부 → 1008 Policy Violation 으로 닫음.
+    ws.triggerServerClose(1008);
+
+    // 세션 폐기 + 로그인 화면 복귀, 재연결 폭주 없음.
+    await waitFor(() =>
+      expect(useAuthStore.getState().session).toBeNull(),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("login-screen")).toBeInTheDocument(),
     );
   });
 
