@@ -7,10 +7,10 @@ import { renderApp } from "@/test/utils";
 
 // 엔드포인트 모킹(네트워크 차단).
 const fetchInspections = vi.fn();
-const fetchInspectionImages = vi.fn();
+const fetchInspectionImageBlob = vi.fn();
 vi.mock("@/api/endpoints", () => ({
   fetchInspections: (...a: unknown[]) => fetchInspections(...a),
-  fetchInspectionImages: (...a: unknown[]) => fetchInspectionImages(...a),
+  fetchInspectionImageBlob: (...a: unknown[]) => fetchInspectionImageBlob(...a),
 }));
 
 import { InspectionsPage } from "./InspectionsPage";
@@ -25,8 +25,9 @@ const row: InspectionResult = {
 
 beforeEach(() => {
   fetchInspections.mockReset();
-  fetchInspectionImages.mockReset();
-  fetchInspectionImages.mockResolvedValue({ id: 7, raw_image_path: "raw/x.jpg", result_image_path: "result/x.jpg" });
+  fetchInspectionImageBlob.mockReset();
+  // 상세 모달이 raw/result 이미지를 인증 fetch→Blob→objectURL 로 표시.
+  fetchInspectionImageBlob.mockResolvedValue(new Blob(["x"], { type: "image/jpeg" }));
 });
 
 describe("InspectionsPage", () => {
@@ -55,12 +56,15 @@ describe("InspectionsPage", () => {
     });
   });
 
-  it("행 클릭 시 상세 모달 + 이미지 경로 조회", async () => {
+  it("행 클릭 시 상세 모달 + raw/result 이미지 인증 조회", async () => {
     fetchInspections.mockResolvedValue([row]);
     renderApp(<InspectionsPage />);
     await userEvent.click(await screen.findByText("LOT-A"));
     expect(await screen.findByTestId("insp-detail")).toBeInTheDocument();
     expect(screen.getByTestId("detail-defects")).toHaveTextContent("LEN");
-    await waitFor(() => expect(fetchInspectionImages).toHaveBeenCalledWith(7));
+    await waitFor(() => {
+      expect(fetchInspectionImageBlob).toHaveBeenCalledWith(7, "result");
+      expect(fetchInspectionImageBlob).toHaveBeenCalledWith(7, "raw");
+    });
   });
 });

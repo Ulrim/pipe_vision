@@ -12,7 +12,7 @@ import type {
   LoginRequest,
   TokenResponse,
 } from "@aivis/shared-types";
-import { requestJson, requestBlob, toQuery } from "./client";
+import { requestJson, requestBlob, requestImageBlob, toQuery } from "./client";
 
 /* ---------------- 인증 (§7 7) ---------------- */
 export function login(body: LoginRequest): Promise<TokenResponse> {
@@ -48,6 +48,20 @@ export function fetchInspection(id: number): Promise<InspectionResult> {
 /** GET /inspection/{id}/images — 원본/결과 이미지 경로. */
 export function fetchInspectionImages(id: number): Promise<InspectionImages> {
   return requestJson<InspectionImages>(`/inspection/${id}/images`);
+}
+
+/** 검사 이미지 종류(raw=원본, result=판정 오버레이). */
+export type InspectionImageKind = "raw" | "result";
+
+/**
+ * GET /inspection/{id}/images/{kind} — 이미지 바이트(image/jpeg, JWT 필요).
+ * <img src> 는 Authorization 헤더를 못 싣으므로 fetch→Blob→objectURL 경로 사용.
+ */
+export function fetchInspectionImageBlob(
+  id: number,
+  kind: InspectionImageKind,
+): Promise<Blob> {
+  return requestImageBlob(`/inspection/${id}/images/${kind}`);
 }
 
 /* ---------------- KPI (M12, §1.1) ---------------- */

@@ -1,7 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import type { InspectionResult } from "@aivis/shared-types";
-import { fetchInspectionImages } from "@/api/endpoints";
+import type { InspectionImageKind } from "@/api/endpoints";
 import { VerdictBadge } from "@/components/VerdictBadge";
+import { useAuthedImage } from "@/hooks/useAuthedImage";
+import { triggerBlobDownload } from "@/lib/download";
 import { fmtNum, fmtDateTime } from "@/lib/format";
 
 /** M8/M11 — 검사 단건 상세(이미지 경로 + 길이값 + 불량유형 + 처리속도). */
@@ -12,11 +13,7 @@ export function InspectionDetail({
   row: InspectionResult;
   onClose: () => void;
 }): JSX.Element {
-  const { data: images } = useQuery({
-    queryKey: ["inspection-images", row.id],
-    queryFn: () => fetchInspectionImages(row.id as number),
-    enabled: row.id != null,
-  });
+  const id = (row.id ?? null) as number | null;
 
   return (
     <div
@@ -39,10 +36,14 @@ export function InspectionDetail({
           </button>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
-          {/* 이미지 placeholder (raw/result 경로) */}
-          <ImagePane label="원본" path={images?.raw_image_path ?? row.raw_image_path} />
-          <ImagePane label="판정 오버레이" path={images?.result_image_path ?? row.result_image_path} />
+        {/* 판정 오버레이(크게) + 원본(보조) — 인증 fetch→Blob→objectURL. */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="md:col-span-2">
+            <AuthedImagePane id={id} kind="result" label="판정 오버레이" lot={row.lot} />
+          </div>
+          <div className="md:col-span-1">
+            <AuthedImagePane id={id} kind="raw" label="원본" lot={row.lot} />
+          </div>
         </div>
 
         <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-3">
@@ -76,15 +77,60 @@ export function InspectionDetail({
   );
 }
 
-function ImagePane({ label, path }: { label: string; path?: string | null }): JSX.Element {
+function AuthedImagePane({
+  id,
+  kind,
+  label,
+  lot,
+}: {
+  id: number | null;
+  kind: InspectionImageKind;
+  label: string;
+  lot: string;
+}): JSX.Element {
+  const { url, loading, status, error, blob } = useAuthedImage(id, kind);
+
+  const onDownload = (): void => {
+    if (!blob) return;
+    triggerBlobDownload(blob, `${lot}_${id}_${kind}.jpg`);
+  };
+
   return (
     <div>
-      <div className="mb-1 text-xs font-medium text-slate-500">{label}</div>
-      <div className="flex aspect-video items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50 text-xs text-slate-400">
-        {path ? (
-          <span className="break-all px-2 text-center font-mono">{path}</span>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-xs font-medium text-slate-500">{label}</span>
+        {url && (
+          <button
+            type="button"
+            className="text-xs text-brand hover:underline"
+            onClick={onDownload}
+            data-testid={`img-download-${kind}`}
+          >
+            다운로드
+          </button>
+        )}
+      </div>
+      <div
+        className="flex aspect-video items-center justify-center overflow-hidden rounded border border-slate-200 bg-slate-50 text-xs text-slate-400"
+        data-testid={`img-pane-${kind}`}
+      >
+        {loading ? (
+          <span data-testid={`img-loading-${kind}`}>불러오는 중…</span>
+        ) : url ? (
+          <img
+            src={url}
+            alt={label}
+            className="h-full w-full object-contain"
+            data-testid={`img-${kind}`}
+          />
         ) : (
-          <span>이미지 없음</span>
+          <span data-testid={`img-empty-${kind}`}>
+            {error && status === 404
+              ? "이미지 없음"
+              : error
+                ? "이미지를 불러오지 못했습니다"
+                : "이미지 없음"}
+          </span>
         )}
       </div>
     </div>

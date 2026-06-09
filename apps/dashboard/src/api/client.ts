@@ -76,6 +76,24 @@ export async function requestBlob(
   return { blob, filename };
 }
 
+/**
+ * 이미지 바이트 요청(검사 raw/result, image/jpeg). Authorization 헤더 첨부.
+ * 401/403/404 등은 ApiError(status) 로 변환 → 호출측이 placeholder 처리.
+ */
+export async function requestImageBlob(
+  path: string,
+  init?: RequestInit,
+): Promise<Blob> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: authHeaders(init?.headers),
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, res.statusText);
+  }
+  return res.blob();
+}
+
 /** Content-Disposition 에서 filename 추출(RFC 5987 filename* 우선). */
 export function parseFilename(disposition: string): string | null {
   const star = /filename\*=(?:UTF-8'')?([^;]+)/i.exec(disposition);
