@@ -43,6 +43,7 @@
 | GET | `/inspection?lot=&item=&from=&to=&verdict=&limit=&offset=` | operator+ | 필터 조회(서버 페이지네이션) |
 | GET | `/inspection/{id}` | operator+ | 단건 조회 |
 | GET | `/inspection/{id}/images` | operator+ | 원본/결과 이미지 경로 → `InspectionImages` |
+| GET | `/inspection/{id}/images/{kind}` | operator+ | 원본/결과 이미지 **바이트** 스트리밍(`kind`=raw\|result, `image/jpeg`). 공유 볼륨 `AIVIS_IMAGES_DIR` 하위 상대경로를 traversal 안전하게 서빙. 경로 없음/파일 부재/escape 시 404 |
 | PATCH | `/inspection/{id}/review` | operator+ | NG 재확인 결과 입력(`manual_verdict`, `review_flag` 해제) |
 
 ### 내부 호출 인증 — POST /inspection (M14)

@@ -1,10 +1,12 @@
 """검사결과 적재/조회/이미지/재확인 라우터 (CLAUDE.md §5 M7,M8,M10, §7.4)."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -208,6 +210,55 @@ def get_inspection_images(
         id=row.id,
         raw_image_path=row.raw_image_path,
         result_image_path=row.result_image_path,
+    )
+
+
+def _safe_image_path(rel: str) -> str:
+    """images_dir 기준 상대경로 rel 을 안전하게 절대경로로 해석.
+
+    경로 traversal 방지(M8 보안): realpath(join) 가 realpath(images_dir) 하위가
+    아니면 None 취급(상위 노출 차단). rel 에 `..` 나 절대경로가 섞여도 escape 불가.
+    반환: 검증 통과한 절대경로. 검증 실패 시 빈 문자열.
+    """
+    images_dir = get_settings().images_dir
+    base = os.path.realpath(images_dir)
+    target = os.path.realpath(os.path.join(base, rel))
+    # base 자체이거나 base 하위여야 함. os.sep 접두 검사로 형제 디렉터리(prefix) 오탐 방지.
+    if target != base and not target.startswith(base + os.sep):
+        return ""
+    return target
+
+
+@router.get("/{insp_id}/images/{kind}")
+def get_inspection_image_bytes(
+    insp_id: int,
+    kind: str = Path(..., pattern="^(raw|result)$"),
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """원본/결과 이미지 **바이트 스트리밍** (M8). 로그인 필요(operator+).
+
+    kind = raw|result. 비전 워커가 공유 볼륨(AIVIS_IMAGES_DIR) 하위에 저장한
+    JPEG 를 인증 하에 반환한다. 경로는 DB 의 상대경로를 traversal 안전하게 해석한다.
+    경로 미지정/파일 부재/escape 시도 시 404.
+    """
+    row = db.get(Inspection, insp_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="검사결과 없음")
+
+    rel = row.raw_image_path if kind == "raw" else row.result_image_path
+    if not rel:
+        raise HTTPException(status_code=404, detail=f"{kind} 이미지 경로 없음")
+
+    abs_path = _safe_image_path(rel)
+    if not abs_path or not os.path.isfile(abs_path):
+        # escape 시도/파일 부재를 동일하게 404 처리(경로 존재 여부 정보 노출 회피).
+        raise HTTPException(status_code=404, detail=f"{kind} 이미지 파일 없음")
+
+    return FileResponse(
+        abs_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 

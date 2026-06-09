@@ -32,6 +32,11 @@ class Settings:
             os.path.join(os.path.dirname(os.path.dirname(__file__)), "local_queue"),
         )
 
+        # 검사 이미지 루트 디렉터리 (M8). 비전 워커가 공유 볼륨의 이 경로 아래
+        # raw/, result/, review/ 로 JPEG 를 저장하고, inspection.raw_image_path/
+        # result_image_path 에는 이 디렉터리 기준 상대경로가 저장된다.
+        self.images_dir: str = os.getenv("AIVIS_IMAGES_DIR", "/data/images")
+
         # MES 연계 모드: table(스테이징 테이블) | rest (§7.3).
         self.mes_mode: str = os.getenv("MES_MODE", "table")
 
