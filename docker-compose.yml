@@ -65,6 +65,9 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-aivis-minio}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-aivis-minio}
       JWT_SECRET: ${JWT_SECRET:-change-me}
+      # Shared image dir: vision writes raw/result/review JPEGs, api reads & serves
+      # from the same path. MUST match the vision service (same images volume).
+      AIVIS_IMAGES_DIR: ${AIVIS_IMAGES_DIR:-/data/images}
     volumes:
       - images:/data/images
     ports:
@@ -97,6 +100,9 @@ services:
       AIVIS_CAMERA: ${AIVIS_CAMERA:-sim}
       AIVIS_DATASET_DIR: ${AIVIS_DATASET_DIR:-/data/dataset}
       AIVIS_API_URL: ${AIVIS_API_URL:-http://api:8000}
+      # Shared image dir: vision writes raw/result/review JPEGs here; api reads &
+      # serves from the same path. MUST match the api service (same images volume).
+      AIVIS_IMAGES_DIR: ${AIVIS_IMAGES_DIR:-/data/images}
     volumes:
       - images:/data/images
       # Mount a host dataset folder for the simulator camera (read-only).
