@@ -56,6 +56,9 @@ class WorkerConfig:
     ready_file: str = "/tmp/vision_ready"
     # 최대 루프 수(0=무한). 테스트/데모 스모크에서 유한 종료에 사용.
     max_iterations: int = 0
+    # 검사 이미지 저장 루트(§6.4). 하위 raw/ result/ review/ 자동 생성.
+    # 로컬 파일시스템만(MinIO/S3 업로드는 backend 책임).
+    images_dir: str = "/data/images"
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -80,6 +83,7 @@ class WorkerConfig:
             log_every=_env_int("AIVIS_WORKER_LOG_EVERY", 10),
             ready_file=_env("AIVIS_READY_FILE", "/tmp/vision_ready") or "/tmp/vision_ready",
             max_iterations=_env_int("AIVIS_WORKER_MAX_ITER", 0),
+            images_dir=_env("AIVIS_IMAGES_DIR", "/data/images") or "/data/images",
         )
 
     @property

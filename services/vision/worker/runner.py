@@ -27,6 +27,10 @@ from ._bootstrap import (
     create_trigger,
     to_inspection_result,
 )
+
+# _bootstrap 이 vision 패키지 경로를 보강한 뒤 import (flat/패키지 양립).
+from vision.imaging import save_inspection_images  # noqa: E402
+
 from .client import ApiClient
 from .config import WorkerConfig
 from .dataset import ensure_dataset
@@ -136,15 +140,32 @@ class Worker:
                 log.warning("프레임 취득 실패: %s", grab.error)
                 self.failure += 1
                 return False
+            inspected_at = datetime.now(timezone.utc)
+            # proc_time_ms KPI(<300ms) 에 이미지 I/O 가 포함되지 않도록
+            # 판정(pipeline.run) 을 먼저 끝낸 뒤 raw/result 를 저장한다.
             verdict = self.pipeline.run(grab.frame, self.item)
+            saved = save_inspection_images(
+                grab.frame,
+                verdict,
+                images_dir=self.cfg.images_dir,
+                lot=self.cfg.lot,
+                item_code=self.cfg.item_code,
+                inspected_at=inspected_at,
+                item=self.item,
+            )
+            if saved.error:
+                # 디스크 쓰기 실패는 검사결과 적재를 막지 않는다(경로 None 로 진행).
+                log.warning("이미지 저장 실패(계속 진행): %s", saved.error)
             result = to_inspection_result(
                 verdict,
                 lot=self.cfg.lot,
                 item_code=self.cfg.item_code,
                 cam_id=self.cfg.cam_id,
-                inspected_at=datetime.now(timezone.utc),
+                inspected_at=inspected_at,
                 shift=self.cfg.shift,
                 operator=self.cfg.operator,
+                raw_image_path=saved.raw_image_path,
+                result_image_path=saved.result_image_path,
             )
             ok, detail = self.client.post_inspection(result)
         except Exception as exc:  # noqa: BLE001

@@ -267,6 +267,52 @@ def test_worker_runs_loops_and_posts(tmp_path):
     assert not Path(cfg.ready_file).exists()
 
 
+def test_worker_posts_image_paths(tmp_path):
+    """run_once 가 raw/result 를 저장하고 POST 페이로드에 상대경로를 싣는다(§6.4)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    images_dir = tmp_path / "images"
+    cfg = _cfg(
+        tmp_path, max_iterations=1, images_dir=str(images_dir), lot="LOTIMG"
+    )
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    worker.run_once()
+    assert len(backend.posted) == 1
+    body = backend.posted[0]
+    raw = body["raw_image_path"]
+    result = body["result_image_path"]
+    assert raw and raw.startswith("raw/") and not Path(raw).is_absolute()
+    assert result and result.startswith("result/")
+    # 파일명 §6.4: LOT_Item_<17자리>_<OK|NG>.jpg
+    assert (images_dir / raw).exists()
+    assert (images_dir / result).exists()
+    assert Path(raw).name.startswith("LOTIMG_HP12_")
+    worker.shutdown()
+
+
+def test_worker_survives_image_dir_unwritable(tmp_path, monkeypatch):
+    """이미지 저장 실패해도 검사결과는 적재된다(경로 None, 루프 생존)."""
+    import vision.imaging.save as save_mod
+
+    def boom(path, image):
+        raise OSError("read-only fs")
+
+    monkeypatch.setattr(save_mod, "_imwrite", boom)
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, max_iterations=1, images_dir=str(tmp_path / "ro"))
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    ok = worker.run_once()
+    assert ok is True
+    assert len(backend.posted) == 1
+    body = backend.posted[0]
+    assert body["raw_image_path"] is None
+    assert body["result_image_path"] is None
+    worker.shutdown()
+
+
 def test_worker_ready_file_written_during_loop(tmp_path):
     backend = FakeBackend(master_requires_auth=True)
     client = _client(backend)
