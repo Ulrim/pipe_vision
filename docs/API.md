@@ -97,13 +97,14 @@
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
 | POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
-| WS | `/ws/live` | 공개 | 검사결과/알람 실시간 푸시. 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
+| WS | `/ws/live?token=<JWT>` | 로그인 | 검사결과/알람 실시간 푸시. `token` 쿼리에 JWT 필요(무효/누락 시 accept 전 `1008` close). 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |
 
 ## 배포 환경변수 (클라우드 데모)
 - `ALLOWED_ORIGINS`: CORS 허용 출처 콤마 목록(예 `https://aivis-hmi.vercel.app,https://aivis-dashboard.vercel.app`). 미설정 시 `*`(모든 출처, credentials 불가). 명시 목록이면 `allow_credentials=True`.
 - `AIVIS_SEED_DEMO_ITEM`(기본 `false`): 데모 배포에서 `true`로 켜면 `item_master`에 데모 품목 1건을 멱등 시드(워커 검사결과 FK 충족).
 - `AIVIS_DEMO_ITEM_CODE`(기본 `HP12`): 데모 시드 품목코드.
+- 이미지 스토리지 백엔드: `AIVIS_STORAGE_BACKEND`(기본 `local`=공유 볼륨 FileResponse, `supabase`=Supabase Storage 오브젝트를 JWT 가드 뒤에서 프록시). `supabase` 모드는 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`(기본 `inspection-images`)을 사용하며, DB 상대경로(raw/...\|result/...)를 오브젝트 키로 서빙한다.
 
 ## 공용 스키마 (packages/shared-types)
 `InspectionResult`, `ItemMaster(+Create/Update)`, `ReviewUpdate`, `InspectionImages`,

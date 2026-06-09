@@ -5,8 +5,9 @@ import os
 from datetime import datetime
 from typing import Optional
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -250,6 +251,11 @@ def get_inspection_image_bytes(
     if not rel:
         raise HTTPException(status_code=404, detail=f"{kind} 이미지 경로 없음")
 
+    settings = get_settings()
+    if settings.storage_backend == "supabase":
+        return _serve_supabase(rel, kind, settings)
+
+    # backend == local (기본): 공유 볼륨 FileResponse + traversal 가드.
     abs_path = _safe_image_path(rel)
     if not abs_path or not os.path.isfile(abs_path):
         # escape 시도/파일 부재를 동일하게 404 처리(경로 존재 여부 정보 노출 회피).
@@ -257,6 +263,38 @@ def get_inspection_image_bytes(
 
     return FileResponse(
         abs_path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+def _serve_supabase(rel: str, kind: str, settings) -> StreamingResponse:
+    """Supabase Storage 오브젝트를 JWT 가드 뒤에서 프록시 스트리밍 (M8).
+
+    DB 상대경로(raw/...|result/...)를 오브젝트 키로 사용해 service_role 키로
+    인증된 GET 을 수행한다. 공개 리다이렉트 대신 바이트를 직접 프록시하여
+    이미지 접근에 우리 JWT 가드를 강제한다. 미설정/404/타임아웃/예외는 404.
+    """
+    if not settings.supabase_url or not settings.supabase_service_role_key:
+        raise HTTPException(status_code=404, detail=f"{kind} 이미지 스토리지 미설정")
+
+    base = settings.supabase_url.rstrip("/")
+    key = rel.lstrip("/")
+    url = f"{base}/storage/v1/object/{settings.supabase_storage_bucket}/{key}"
+    headers = {
+        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        "apikey": settings.supabase_service_role_key,
+    }
+    try:
+        resp = httpx.get(url, headers=headers, timeout=10.0)
+    except httpx.HTTPError:
+        raise HTTPException(status_code=404, detail=f"{kind} 이미지 조회 실패")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=404, detail=f"{kind} 이미지 파일 없음")
+
+    return StreamingResponse(
+        iter([resp.content]),
         media_type="image/jpeg",
         headers={"Cache-Control": "private, max-age=86400"},
     )

@@ -37,6 +37,18 @@ class Settings:
         # result_image_path 에는 이 디렉터리 기준 상대경로가 저장된다.
         self.images_dir: str = os.getenv("AIVIS_IMAGES_DIR", "/data/images")
 
+        # 이미지 스토리지 백엔드: local(공유 볼륨 FileResponse) | supabase
+        # (Supabase Storage 오브젝트 프록시). 클라우드(Render 분리 컨테이너)에서는
+        # 워커가 쓴 파일을 api 가 못 읽으므로 supabase 백엔드로 전환한다.
+        self.storage_backend: str = os.getenv("AIVIS_STORAGE_BACKEND", "local")
+        self.supabase_url: str | None = os.getenv("SUPABASE_URL") or None
+        self.supabase_service_role_key: str | None = (
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY") or None
+        )
+        self.supabase_storage_bucket: str = os.getenv(
+            "SUPABASE_STORAGE_BUCKET", "inspection-images"
+        )
+
         # MES 연계 모드: table(스테이징 테이블) | rest (§7.3).
         self.mes_mode: str = os.getenv("MES_MODE", "table")
 
