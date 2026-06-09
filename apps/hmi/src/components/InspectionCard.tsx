@@ -61,8 +61,9 @@ export function InspectionCard({ result, onReview }: InspectionCardProps) {
       </header>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-        <ImageView label="원본" path={result.raw_image_path} />
-        <ImageView label="판정 결과" path={result.result_image_path} />
+        {/* 판정 오버레이(result) 우선 노출, 원본(raw) 보조. */}
+        <ImageView label="판정 결과" inspectionId={result.id} kind="result" />
+        <ImageView label="원본" inspectionId={result.id} kind="raw" />
       </div>
 
       <div className="grid grid-cols-3 gap-3 text-center">

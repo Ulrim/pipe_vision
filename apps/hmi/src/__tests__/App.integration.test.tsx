@@ -121,8 +121,18 @@ describe("App 통합 (WS → 카드 / NG 알람 / 재확인 PATCH)", () => {
       manual_verdict: ng.final_verdict,
       review_flag: false,
     };
+    const reviewMock = vi.fn();
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      expect(String(input)).toContain("/inspection/77/review");
+      const url = String(input);
+      // ImageView(useAuthedImage)가 검사 이미지 바이트를 요청한다 → 빈 응답으로 흘려보냄.
+      if (url.includes("/images/")) {
+        return new Response(new Blob([]), {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        });
+      }
+      reviewMock();
+      expect(url).toContain("/inspection/77/review");
       expect(init?.method).toBe("PATCH");
       const body = JSON.parse(String(init?.body));
       expect(body.manual_verdict).toBe("NG");
@@ -148,7 +158,7 @@ describe("App 통합 (WS → 카드 / NG 알람 / 재확인 PATCH)", () => {
     fireEvent.click(screen.getByTestId("review-ng"));
     fireEvent.click(screen.getByTestId("review-submit"));
 
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(reviewMock).toHaveBeenCalledTimes(1));
     await waitFor(() =>
       expect(useLiveStore.getState().latest?.review_flag).toBe(false),
     );
