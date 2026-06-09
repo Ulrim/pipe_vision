@@ -205,6 +205,7 @@ class Worker:
             self.cfg.lot,
             self.cfg.interval_ms,
         )
+        self.cfg.warn_if_misconfigured(log)
         if not self.startup():
             return 1
 

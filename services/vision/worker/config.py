@@ -57,12 +57,22 @@ class WorkerConfig:
     # 최대 루프 수(0=무한). 테스트/데모 스모크에서 유한 종료에 사용.
     max_iterations: int = 0
     # 검사 이미지 저장 루트(§6.4). 하위 raw/ result/ review/ 자동 생성.
-    # 로컬 파일시스템만(MinIO/S3 업로드는 backend 책임).
     images_dir: str = "/data/images"
+    # 이미지 스토리지 백엔드(local|supabase, 기본 local). 클라우드(Render)
+    # 분리 배포에서는 supabase 로 두어 api 가 동일 키로 이미지를 읽는다.
+    # 실제 분기/업로드는 vision.imaging.save 가 env(StorageSettings)로 처리하며,
+    # 워커는 여기서 설정을 스냅샷·검증(미설정 경고)만 한다.
+    storage_backend: str = "local"
+    supabase_url: str | None = None
+    supabase_key: str | None = None
+    supabase_bucket: str = "inspection-images"
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
         lot = _env("AIVIS_LOT") or f"LOT{date.today().strftime('%Y%m%d')}"
+        storage_backend = (
+            _env("AIVIS_STORAGE_BACKEND", "local") or "local"
+        ).lower()
         return cls(
             camera_mode=(_env("AIVIS_CAMERA", "sim") or "sim").lower(),
             dataset_dir=_env("AIVIS_DATASET_DIR"),
@@ -84,8 +94,32 @@ class WorkerConfig:
             ready_file=_env("AIVIS_READY_FILE", "/tmp/vision_ready") or "/tmp/vision_ready",
             max_iterations=_env_int("AIVIS_WORKER_MAX_ITER", 0),
             images_dir=_env("AIVIS_IMAGES_DIR", "/data/images") or "/data/images",
+            storage_backend=storage_backend,
+            supabase_url=_env("SUPABASE_URL"),
+            supabase_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
+            supabase_bucket=_env("SUPABASE_STORAGE_BUCKET", "inspection-images")
+            or "inspection-images",
         )
 
     @property
     def interval_s(self) -> float:
         return max(0.0, self.interval_ms / 1000.0)
+
+    @property
+    def supabase_configured(self) -> bool:
+        """supabase 백엔드에 필수 자격(URL+KEY)이 모두 있는지."""
+        return bool(self.supabase_url and self.supabase_key)
+
+    def warn_if_misconfigured(self, log) -> None:
+        """storage_backend=supabase 인데 자격 미설정이면 명확히 경고한다.
+
+        업로드 분기 자체는 save.py(StorageSettings/build_backend)가 안전하게
+        local 폴백하지만, 운영자가 의도와 다른 동작을 즉시 인지하도록 워커
+        기동 시점에 한 번 경고를 남긴다.
+        """
+        if self.storage_backend == "supabase" and not self.supabase_configured:
+            log.warning(
+                "AIVIS_STORAGE_BACKEND=supabase 이지만 SUPABASE_URL/"
+                "SUPABASE_SERVICE_ROLE_KEY 미설정 → 이미지 업로드는 local "
+                "디스크로 폴백된다(클라우드 api 가 못 읽을 수 있음)"
+            )
