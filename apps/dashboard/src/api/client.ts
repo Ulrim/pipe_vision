@@ -4,7 +4,7 @@
  * 인증 토큰은 auth 스토어에서 읽어 Authorization 헤더로 첨부(§7 7).
  */
 import { API_BASE } from "@/lib/env";
-import { getToken } from "@/store/auth";
+import { getToken, useAuthStore } from "@/store/auth";
 
 export class ApiError extends Error {
   constructor(
@@ -24,6 +24,17 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
   };
 }
 
+/**
+ * 401(토큰 만료/무효) 공통 처리(§14 RBAC): auth 스토어를 비워
+ * ProtectedRoute(App.tsx)가 /login 으로 리다이렉트하도록 만든다.
+ * 미로그인 상태(토큰 없음)에서의 401 은 무시(중복 clear 방지).
+ */
+function handleUnauthorized(status: number): void {
+  if (status === 401 && getToken()) {
+    useAuthStore.getState().clear();
+  }
+}
+
 /** JSON 요청. 4xx/5xx 는 ApiError 로 변환(detail 우선). */
 export async function requestJson<T>(
   path: string,
@@ -37,6 +48,7 @@ export async function requestJson<T>(
     }),
   });
   if (!res.ok) {
+    handleUnauthorized(res.status);
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -61,6 +73,7 @@ export async function requestBlob(
     headers: authHeaders(init?.headers),
   });
   if (!res.ok) {
+    handleUnauthorized(res.status);
     let detail = res.statusText;
     try {
       const body = await res.json();
@@ -89,6 +102,7 @@ export async function requestImageBlob(
     headers: authHeaders(init?.headers),
   });
   if (!res.ok) {
+    handleUnauthorized(res.status);
     throw new ApiError(res.status, res.statusText);
   }
   return res.blob();
