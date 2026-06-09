@@ -5,7 +5,6 @@ DB 트랜잭션 저장이 실패하면 검사결과 JSON 을 파일로 백업해
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid

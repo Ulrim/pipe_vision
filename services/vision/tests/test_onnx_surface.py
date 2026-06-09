@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import numpy as np
 from aivis_types import SurfaceResult
 
 from vision.surface import OnnxSurfaceModel, resolve_model_path

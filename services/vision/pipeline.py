@@ -27,7 +27,6 @@ from aivis_types import (
 
 from .length import measure_length
 from .preprocess import preprocess
-from .surface import analyze_surface
 from .surface.model import ClassicalSurfaceModel, SurfaceModel
 from .verdict import combine_verdict
 

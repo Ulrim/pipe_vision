@@ -1,7 +1,6 @@
 """파이프라인 오케스트레이션 테스트 — 전체 <300ms, 결정성, 매핑, sim 연동."""
 from __future__ import annotations
 
-import os
 
 from aivis_types import DefectCode, InspectionResult, Verdict
 

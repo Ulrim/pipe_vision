@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from sqlalchemy import JSON
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
-from sqlalchemy.types import Text, TypeDecorator
+from sqlalchemy.types import Text
 
 
 # Postgres 에선 TEXT[], 그 외(sqlite)에선 JSON 으로 list[str] 저장.

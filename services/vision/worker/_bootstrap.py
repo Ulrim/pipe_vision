@@ -15,7 +15,6 @@ flat 모드일 때 /app(현재 작업 디렉터리 또는 worker 패키지의 �
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 

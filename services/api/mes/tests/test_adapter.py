@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
 
 from db.models import Inspection, MesQualityIf
 from mes.adapter import MesAdapter, make_idem_key_from_row
 from mes.config import MesConfig
-from mes.transport import FakeMesTransport, MesTransportError
+from mes.transport import FakeMesTransport
 
 
 def _table_cfg(**over) -> MesConfig:
@@ -118,4 +117,4 @@ def test_rest_mode_permanent_failure_logged(db):
     db.refresh(row)
     assert row.mes_synced is False
     logs = db.query(SysLog).filter_by(category="mes", level="ERROR").all()
-    assert any(key in (l.message or "") for l in logs)
+    assert any(key in (entry.message or "") for entry in logs)

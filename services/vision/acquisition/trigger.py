@@ -181,7 +181,7 @@ class MqttTrigger(TriggerSource):
 
     def connect(self) -> None:  # pragma: no cover - 통합 단계
         """MQTT 브로커 연결 + 토픽 구독(통합 단계 결선)."""
-        mqtt = self._require_paho()  # 미설치면 여기서 안내 예외.
+        self._require_paho()  # 미설치면 여기서 안내 예외.
         if not self.topic:
             raise TriggerSDKError(
                 "MqttTrigger: 구독 토픽 미지정(AIVIS_MQTT_TRIGGER_TOPIC)."

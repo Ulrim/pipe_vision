@@ -69,7 +69,6 @@ def make_image(
     cls: OK / LEN_PLUS / LEN_MINUS / SCR / OIL / DIS / MULTI
     """
     cls = cls.upper()
-    rng = np.random.default_rng(seed + 777)
 
     # LEN 결함은 길이 자체를 바꾼다.
     eff_len = pipe_len_px

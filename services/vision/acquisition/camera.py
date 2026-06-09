@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import os
-import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Optional
@@ -316,7 +315,7 @@ class GenICamCamera(CameraAdapter):
 
         SDK 미설치/미구성이면 _require_sdk() 가 GenICamSDKError 를 던진다.
         """
-        sdk = self._require_sdk()
+        self._require_sdk()
         # TODO(P7): 실제 디바이스 오픈 결선.
         #   harvesters:
         #     h = sdk.Harvester(); h.add_file(self.cti_path); h.update()

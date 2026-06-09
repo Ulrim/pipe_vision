@@ -9,7 +9,6 @@ get_settings lru_cache 주의: routers.inspection.get_settings 를 monkeypatch.
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 
 import pytest

@@ -42,7 +42,7 @@ def export(
     반환: 생성된 onnx 경로. torch 미설치 시 명확한 안내 예외.
     """
     try:
-        import torch  # type: ignore
+        import torch  # type: ignore  # noqa: F401  (가용성 체크 — 미설치 시 ImportError)
     except ImportError as exc:  # pragma: no cover - 학습 환경에서만 실행
         raise RuntimeError(
             "export_surface_onnx 는 학습 환경에서 실행한다(torch 필요). "

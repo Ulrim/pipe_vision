@@ -151,9 +151,12 @@ def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
         title=f"AIVIS KPI {summary.period}",
     )
     styles = getSampleStyleSheet()
-    h1 = styles["Title"]; h1.fontName = font_bold
-    h2 = styles["Heading2"]; h2.fontName = font_bold
-    body = styles["Normal"]; body.fontName = font
+    h1 = styles["Title"]
+    h1.fontName = font_bold
+    h2 = styles["Heading2"]
+    h2.fontName = font_bold
+    body = styles["Normal"]
+    body.fontName = font
 
     story = []
     story.append(Paragraph(_lab("title", korean_ok), h1))

@@ -1,7 +1,6 @@
 """M1 취득/HAL 테스트 (AIVIS_CAMERA=sim)."""
 from __future__ import annotations
 
-import os
 
 import numpy as np
 import pytest

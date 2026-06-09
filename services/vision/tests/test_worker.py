@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 import httpx
-import pytest
 
 _SERVICES_DIR = Path(__file__).resolve().parents[2]
 if str(_SERVICES_DIR) not in sys.path:

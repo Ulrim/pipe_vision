@@ -1,8 +1,6 @@
 """M2 전처리 테스트 — ROI 결정성(편차 ≤2px), 영역 구분."""
 from __future__ import annotations
 
-import cv2
-import numpy as np
 
 from vision.preprocess import preprocess
 from vision.tools.gen_synthetic import make_image
