@@ -294,11 +294,41 @@ def save_result(
 
 @dataclass(frozen=True)
 class ImageSaveResult:
-    """이미지 저장 결과 묶음. 경로는 images_dir 기준 상대경로(없으면 None)."""
+    """이미지 저장 결과 묶음. 경로는 images_dir 기준 상대경로(없으면 None).
+
+    pending_images: 원격 업로드에 실패해 스풀(디스크 버퍼)로 우회한 키 목록.
+    키는 결정적이므로 나중 업로드로 그대로 복구된다(경로는 payload 에 유지).
+    """
 
     raw_image_path: Optional[str] = None
     result_image_path: Optional[str] = None
     error: Optional[str] = None
+    pending_images: tuple[str, ...] = ()
+
+
+def _put_or_spool(
+    backend: StorageBackend,
+    key: str,
+    jpeg: bytes,
+    pending_sink,
+    pending: list,
+) -> str:
+    """backend.put 시도 → 실패 시 pending_sink(스풀)에 바이트 보존 후 키 유지.
+
+    sink 마저 없으면(또는 sink 저장 실패) 예외를 그대로 올린다(기존 graceful
+    경로 — 경로 None 으로 POST). sink 성공 시 키를 pending 목록에 추가한다.
+    """
+    try:
+        return backend.put(key, jpeg)
+    except Exception as exc:  # noqa: BLE001
+        if pending_sink is None:
+            raise
+        saved = pending_sink(key, jpeg)
+        if saved is None:
+            raise
+        log.warning("이미지 업로드 실패(%s) → 스풀 보존: %s", exc, key)
+        pending.append(key)
+        return key
 
 
 def _save_via_backend(
@@ -312,29 +342,39 @@ def _save_via_backend(
     verdict: str,
     review: bool,
     item,
+    pending_sink=None,
 ) -> ImageSaveResult:
     """JPEG 인코딩 후 스토리지 백엔드(supabase 등)에 업로드.
 
     반환하는 상대경로(키)는 로컬 모드와 동일하다: raw/<name>, result/<name>.
     review 면 review/<name> 키도 업로드(보조 — 실패해도 주 경로는 유지).
+    pending_sink((key, jpeg) -> str|None)가 있으면 업로드 실패 시 바이트를
+    스풀에 보존하고 키를 pending_images 로 보고한다(경로는 그대로 유지).
     """
     fname = build_filename(lot, item_code, ts, verdict)
     raw_key = f"{_RAW}/{fname}"
     result_key = f"{_RESULT}/{fname}"
 
-    raw_path: Optional[str] = None
-    result_path: Optional[str] = None
-    raw_path = backend.put(raw_key, encode_jpeg(frame))
+    pending: list = []
+    raw_path = _put_or_spool(
+        backend, raw_key, encode_jpeg(frame), pending_sink, pending
+    )
     overlay = render_overlay(frame, result, item=item)
     overlay_jpeg = encode_jpeg(overlay)
-    result_path = backend.put(result_key, overlay_jpeg)
+    result_path = _put_or_spool(
+        backend, result_key, overlay_jpeg, pending_sink, pending
+    )
     if review:
         try:
             backend.put(f"{_REVIEW}/{fname}", overlay_jpeg)
         except Exception as exc:  # noqa: BLE001
             # review 사본은 보조 — 주 result 업로드가 성공했으면 막지 않는다.
             log.warning("review 사본 업로드 실패(무시): %s", exc)
-    return ImageSaveResult(raw_image_path=raw_path, result_image_path=result_path)
+    return ImageSaveResult(
+        raw_image_path=raw_path,
+        result_image_path=result_path,
+        pending_images=tuple(pending),
+    )
 
 
 def save_inspection_images(
@@ -347,6 +387,7 @@ def save_inspection_images(
     inspected_at: Optional[datetime] = None,
     item=None,
     storage: Optional[StorageBackend] = None,
+    pending_sink=None,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
 
@@ -355,6 +396,8 @@ def save_inspection_images(
       - local(기본): images_dir 하위 raw/ result/ review/ 디스크 저장(기존 동작).
       - supabase: JPEG 인코딩 후 Supabase Storage REST 업로드. 키(상대경로) 동일.
     storage 백엔드를 직접 주입하면 env 분기를 건너뛴다(테스트/통합용).
+    pending_sink((key, jpeg) -> str|None)가 있으면 원격 업로드 실패 시 바이트를
+    스풀에 보존하고 pending_images 로 보고한다(오프라인 대비 — 워커 스풀 연동).
 
     I/O 실패는 잡아서 error 에 담고 경로는 None 으로 둔다(검사결과 적재를 절대
     막지 않는다 — 워커는 경로 None 이라도 POST 한다 — graceful 정책 유지).
@@ -384,6 +427,7 @@ def save_inspection_images(
                 verdict=verdict,
                 review=review,
                 item=item,
+                pending_sink=pending_sink,
             )
         # local 디스크 경로(기존 동작 그대로).
         raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict)

@@ -175,29 +175,39 @@ class ApiClient:
         return None
 
     # --- 결과 적재 ---
-    def post_inspection(self, result: InspectionResult) -> tuple[bool, str]:
-        """POST /inspection. (ok, detail). 절대 raise 하지 않는다.
+    def post_inspection_json(self, payload: dict) -> tuple[int, str]:
+        """POST /inspection (payload dict). (status_code, detail). raise 금지.
 
-        ok=True 는 2xx(stored/queued 포함). 네트워크 예외/4xx/5xx 는 (False, detail).
+        status_code 0 = 네트워크/전송 오류(연결 거부·타임아웃 등) — 호출자가
+        스풀(재시도) 대상 여부를 분류할 수 있게 HTTP 코드를 그대로 돌려준다.
+        스풀 재전송(spool.flush)도 이 메서드를 post_fn 으로 쓴다.
         """
         try:
             resp = self._http.post(
                 "/inspection",
-                json=result.model_dump(mode="json"),
+                json=payload,
                 headers=self._service_headers(),
             )
         except httpx.HTTPError as exc:
-            return False, f"POST 예외: {type(exc).__name__}: {exc}"
+            return 0, f"POST 예외: {type(exc).__name__}: {exc}"
         if resp.status_code in (200, 201):
             try:
                 body: Any = resp.json()
                 status = body.get("status", "stored")
                 ident = body.get("id")
-                return True, f"status={status} id={ident}"
+                return resp.status_code, f"status={status} id={ident}"
             except Exception:  # noqa: BLE001
-                return True, f"status={resp.status_code}"
+                return resp.status_code, f"status={resp.status_code}"
         # backend 가 저장 실패 시 200+queued 를 줄 수도 있으나, 그 외 코드는 실패.
-        return False, f"status={resp.status_code} body={resp.text[:200]}"
+        return resp.status_code, f"status={resp.status_code} body={resp.text[:200]}"
+
+    def post_inspection(self, result: InspectionResult) -> tuple[bool, str]:
+        """POST /inspection. (ok, detail). 절대 raise 하지 않는다.
+
+        ok=True 는 2xx(stored/queued 포함). 네트워크 예외/4xx/5xx 는 (False, detail).
+        """
+        status, detail = self.post_inspection_json(result.model_dump(mode="json"))
+        return status in (200, 201), detail
 
     def close(self) -> None:
         try:
