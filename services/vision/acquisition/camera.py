@@ -3,9 +3,10 @@
 실물 카메라 없이 전 파이프라인을 개발/검증하기 위한 CameraAdapter 인터페이스.
 - SimulatorCamera : 샘플 이미지 폴더를 트리거마다 순차 리플레이(개발/테스트 전용).
 - GenICamCamera   : GigE/USB3 Vision 실카메라. 통합 단계(P7)에서 벤더 SDK 결선.
+- PiCameraAdapter : Raspberry Pi Camera v3(Sony IMX708) + picamera2. 최종 배포 HW.
 
-환경변수 AIVIS_CAMERA=sim|genicam 으로 스위치(factory.py).
-모든 테스트는 AIVIS_CAMERA=sim 으로 통과해야 한다.
+환경변수 AIVIS_CAMERA=sim|genicam|picam 으로 스위치(factory.py).
+모든 테스트는 AIVIS_CAMERA=sim 으로 통과해야 한다(picamera2 미설치 CI 포함).
 """
 from __future__ import annotations
 
@@ -28,6 +29,24 @@ class GenICamSDKError(CameraError, NotImplementedError):
     CameraError(취득 실패 계열) 이면서 NotImplementedError(미결선 스텁) 이다.
     → AcquisitionService.grab_with_retry 의 CameraError 핸들링 경로와
       "스텁 미구현" 의미를 동시에 만족한다. 메시지에 필요한 SDK/환경변수를 담는다.
+    """
+
+
+class PiCameraError(CameraError):
+    """Raspberry Pi Camera(picamera2) 취득/설정 실패(런타임).
+
+    GenICamCamera 와 달리 PiCameraAdapter 는 Raspberry Pi 상에서 **실제로
+    동작**하는 어댑터다(스텁 아님). 따라서 취득 실패는 순수 취득 오류이지
+    "미구현" 이 아니므로 NotImplementedError 를 상속하지 않는다.
+    """
+
+
+class PiCameraSDKError(PiCameraError):
+    """picamera2/libcamera 미설치 또는 하드웨어 미가용 시 안내 예외.
+
+    PiCameraError(=CameraError) 계열이라 grab_with_retry 재시도 경로와
+    호환된다. GenICamSDKError 와 유사하나 NotImplementedError 는 아니다
+    (라즈베리파이에서는 실제 동작하기 때문). 메시지에 설치 안내를 담는다.
     """
 
 
@@ -410,3 +429,328 @@ class GenICamCamera(CameraAdapter):
         self._acquirer = None
         self._harvester = None
         self._connected = False
+
+
+# =====================================================================
+# Raspberry Pi Camera v3 (Sony IMX708) + picamera2 어댑터 — 최종 배포 HW
+# =====================================================================
+#
+# capture_recipe(벤더 중립, item_master.capture_recipe) → picamera2 컨트롤 매핑.
+# picamera2 는 라즈베리파이 전용(apt: python3-picamera2)이라 requirements.txt 에
+# 넣지 않는다. 아래 순수 함수는 libcamera/hardware 없이 동작하므로 CI 에서 단위
+# 테스트 가능하다. 실제 enum 해석(AfMode 등)은 configure() 에서 libcamera 를
+# 동적 import 한 뒤 문자열 토큰 → controls.*Enum 으로 변환한다.
+#
+#   recipe 키          → picamera2 컨트롤        (값/단위)
+#   exposure_us        → ExposureTime            (마이크로초, int; 0=자동)
+#   analogue_gain      → AnalogueGain            (배수, float; 0=자동)
+#   gain_db            → AnalogueGain            (dB → 10**(db/20) 배수 변환)
+#   af_mode            → AfMode                  ("Manual"/"Auto"/"Continuous")
+#   lens_position      → LensPosition            (디옵터, float; 0=무한대)
+#   af_speed           → AfSpeed                 ("Fast"/"Normal")
+#   awb_enable         → AwbEnable               (bool)
+#   brightness         → Brightness              (float, passthrough)
+#   contrast           → Contrast                (float, passthrough)
+#   saturation         → Saturation              (float, passthrough)
+#   sharpness          → Sharpness               (float, passthrough)
+#   "PiCam.<Node>"     → <Node>                  (raw passthrough)
+#
+# width/height 는 컨트롤이 아니라 still-config 의 size 이므로 여기서 제외한다.
+#
+# 길이 계측 반복성을 위해 레시피에서 af_mode="manual" + 고정 lens_position 을
+# 권장한다(오토포커스 흔들림 → 스케일 변동 방지).
+
+_RECIPE_TO_PICAM = {
+    "exposure_us": "ExposureTime",
+    "analogue_gain": "AnalogueGain",
+    "awb_enable": "AwbEnable",
+    "brightness": "Brightness",
+    "contrast": "Contrast",
+    "saturation": "Saturation",
+    "sharpness": "Sharpness",
+    "lens_position": "LensPosition",
+}
+
+# af_mode / af_speed 토큰 정규화(대소문자·별칭 흡수). 실제 enum 은 configure 에서.
+_AF_MODE_TOKENS = {
+    "manual": "Manual",
+    "auto": "Auto",
+    "continuous": "Continuous",
+}
+_AF_SPEED_TOKENS = {
+    "fast": "Fast",
+    "normal": "Normal",
+}
+
+# 컨트롤이 아닌 키(config size 로 처리) → 매핑 결과에서 제외.
+_PICAM_NON_CONTROL_KEYS = ("width", "height")
+
+
+def map_recipe_to_picamera(recipe: dict) -> dict:
+    """capture_recipe(벤더 중립) → picamera2 컨트롤 dict.
+
+    순수 함수(하드웨어/libcamera 불필요) — 단위테스트 대상.
+    - AfMode/AfSpeed 는 이 단계에서 **정규 문자열**("Manual"/"Fast" 등)로만
+      보관한다. 실제 controls.AfModeEnum/AfSpeedEnum 해석은 configure() 가
+      libcamera 를 import 한 뒤 수행한다(순수성 유지).
+    - gain_db 는 analogue_gain 이 없을 때만 10**(db/20) 배수로 환산.
+    - "PiCam." 접두 키는 raw passthrough(`PiCam.NoiseReductionMode` → 노드명).
+    - width/height 는 컨트롤이 아니라 config size → 제외. 알 수 없는 키 무시.
+    """
+    controls: dict = {}
+    src = dict(recipe or {})
+    for key, val in src.items():
+        if key in _PICAM_NON_CONTROL_KEYS:
+            continue
+        if key == "exposure_us":
+            controls["ExposureTime"] = int(val)
+        elif key == "analogue_gain":
+            controls["AnalogueGain"] = float(val)
+        elif key == "af_mode":
+            token = _AF_MODE_TOKENS.get(str(val).strip().lower())
+            if token is not None:
+                controls["AfMode"] = token
+        elif key == "af_speed":
+            token = _AF_SPEED_TOKENS.get(str(val).strip().lower())
+            if token is not None:
+                controls["AfSpeed"] = token
+        elif key in _RECIPE_TO_PICAM:
+            controls[_RECIPE_TO_PICAM[key]] = val
+        elif key.startswith("PiCam."):
+            controls[key.split(".", 1)[1]] = val
+        # 그 외 키(gain_db 포함)는 아래에서 별도 처리하거나 무시.
+
+    # analogue_gain 이 없고 gain_db 만 있으면 배수로 환산.
+    if "AnalogueGain" not in controls and "gain_db" in src:
+        controls["AnalogueGain"] = float(10.0 ** (float(src["gain_db"]) / 20.0))
+    return controls
+
+
+def _finalize_pi_frame(arr: np.ndarray, swap_rb: bool) -> np.ndarray:
+    """picamera2 capture_array 결과 → 파이프라인 계약(BGR HxWx3 uint8).
+
+    picamera2 의 "RGB888" 포맷은 메모리 순서가 [B,G,R] 이라 OpenCV BGR 과
+    바로 호환된다. 따라서 기본은 그대로 반환한다. 다만 일부 센서/스택 조합에서
+    채널이 뒤집혀 오는 경우를 대비해 swap_rb=True 면 RGB2BGR 로 교정한다.
+
+    순수 헬퍼(하드웨어 불필요) — 가짜 배열로 단위테스트한다.
+    """
+    if arr is None:
+        raise PiCameraError("PiCameraAdapter: capture_array 가 None 을 반환")
+    if arr.ndim != 3 or arr.shape[2] < 3:
+        raise PiCameraError(
+            f"PiCameraAdapter: 예상치 못한 프레임 형상 {getattr(arr, 'shape', None)} "
+            "(HxWx3 uint8 필요)"
+        )
+    # RGBA 등 4채널이면 앞 3채널만 사용.
+    if arr.shape[2] > 3:
+        arr = arr[:, :, :3]
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+    if swap_rb:
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    # RGB888(=BGR 메모리) → 그대로 BGR. 연속 배열 보장.
+    return np.ascontiguousarray(arr)
+
+
+def _parse_size(text: str) -> tuple:
+    """"2304x1296" → (2304, 1296). 파싱 실패 시 PiCameraError."""
+    try:
+        w_str, h_str = str(text).lower().split("x", 1)
+        return (int(w_str), int(h_str))
+    except (ValueError, AttributeError) as exc:
+        raise PiCameraError(
+            f"AIVIS_PICAM_SIZE 형식 오류: {text!r} (예: '2304x1296')"
+        ) from exc
+
+
+class PiCameraAdapter(CameraAdapter):
+    """Raspberry Pi Camera v3(Sony IMX708) 어댑터 — 최종 배포 HW.
+
+    설계 원칙(CLAUDE.md §6.1):
+    - picamera2/libcamera 는 라즈베리파이 전용이라 **동적 import** 로 감싼다.
+      미설치(CI/dev) 환경에서도 __init__/close 는 성공하고, 실제 디바이스가
+      필요한 configure/grab 시점에 안내 예외(PiCameraSDKError)를 던진다.
+    - 상위 인터페이스(configure/grab/close)는 SimulatorCamera/GenICamCamera 와
+      동일 → 파이프라인 변경 없이 sim↔picam 교체 가능(HAL 경계).
+    - 프레임 계약: BGR HxWx3 uint8. picamera2 "RGB888" 은 메모리 [B,G,R] 이라
+      그대로 BGR. (swap_rb=True 면 RGB2BGR 로 교정.)
+
+    환경변수:
+    - AIVIS_PICAM_SIZE          : still 해상도 "WxH"(기본 "2304x1296").
+      recipe 의 width/height 가 있으면 그쪽이 우선한다.
+    - AIVIS_PICAM_SWAP_RB       : "true"/"1" 이면 취득 후 RGB↔BGR 스왑(기본 false).
+    - AIVIS_PICAM_WARMUP_FRAMES : start 후 버릴 워밍업 프레임 수(기본 2). AE/AWB
+      수렴 및 초기 흐린 프레임 제거용.
+
+    설치(라즈베리파이 OS 64bit):
+        sudo apt install -y python3-picamera2
+        # venv 사용 시: python -m venv --system-site-packages .venv
+    """
+
+    _DEFAULT_SIZE = "2304x1296"
+    _DEFAULT_WARMUP = 2
+
+    def __init__(
+        self,
+        *,
+        size: Optional[str] = None,
+        swap_rb: Optional[bool] = None,
+        warmup_frames: Optional[int] = None,
+    ) -> None:
+        # 생성은 항상 성공한다(picamera2 미설치여도). 디바이스는 lazy open.
+        size_str = size or os.environ.get("AIVIS_PICAM_SIZE", self._DEFAULT_SIZE)
+        self._size = _parse_size(size_str)
+        if swap_rb is None:
+            raw = os.environ.get("AIVIS_PICAM_SWAP_RB", "false").strip().lower()
+            swap_rb = raw in ("1", "true", "yes", "on")
+        self.swap_rb = bool(swap_rb)
+        self.warmup_frames = int(
+            warmup_frames
+            if warmup_frames is not None
+            else os.environ.get("AIVIS_PICAM_WARMUP_FRAMES", self._DEFAULT_WARMUP)
+        )
+        self._recipe: dict = {}
+        self._controls: dict = {}   # 마지막으로 산출한 picamera2 컨트롤(검증/디버깅).
+        self._picam2 = None
+        self._started = False
+
+    # --- SDK 가용성 ---
+    def _require_picamera2(self):
+        """picamera2 + libcamera.controls 동적 import. 미설치면 안내 예외.
+
+        반환: (Picamera2 클래스, libcamera.controls 모듈).
+        """
+        try:
+            from picamera2 import Picamera2  # type: ignore
+            from libcamera import controls  # type: ignore
+        except ImportError as exc:
+            raise PiCameraSDKError(
+                "picamera2/libcamera 미설치 또는 미가용. 라즈베리파이 OS(64bit)에서 "
+                "`sudo apt install -y python3-picamera2` 로 설치하라. venv 사용 시 "
+                "시스템 패키지가 보이도록 `python -m venv --system-site-packages` 로 "
+                "생성해야 한다(pip 로는 설치 불가·Pi 전용). 개발/테스트는 "
+                "AIVIS_CAMERA=sim 을 사용하라."
+            ) from exc
+        return Picamera2, controls
+
+    def _resolve_af(self, ctrl_controls, resolved: dict) -> None:
+        """self._controls 의 AfMode/AfSpeed 문자열 토큰 → libcamera enum 해석.
+
+        resolved(set_controls 로 넘길 dict)를 in-place 로 채운다.
+        """
+        af_mode = self._controls.get("AfMode")
+        if isinstance(af_mode, str):
+            enum = {
+                "Manual": ctrl_controls.AfModeEnum.Manual,
+                "Auto": ctrl_controls.AfModeEnum.Auto,
+                "Continuous": ctrl_controls.AfModeEnum.Continuous,
+            }.get(af_mode)
+            if enum is not None:
+                resolved["AfMode"] = enum
+        af_speed = self._controls.get("AfSpeed")
+        if isinstance(af_speed, str):
+            enum = {
+                "Fast": ctrl_controls.AfSpeedEnum.Fast,
+                "Normal": ctrl_controls.AfSpeedEnum.Normal,
+            }.get(af_speed)
+            if enum is not None:
+                resolved["AfSpeed"] = enum
+
+    def _build_controls(self, ctrl_controls) -> dict:
+        """self._controls(문자열 토큰 포함) → set_controls 용 최종 dict.
+
+        AfMode/AfSpeed 는 enum 으로 치환, 나머지는 그대로.
+        """
+        resolved = {
+            k: v
+            for k, v in self._controls.items()
+            if k not in ("AfMode", "AfSpeed")
+        }
+        self._resolve_af(ctrl_controls, resolved)
+        return resolved
+
+    def _open(self) -> None:
+        """디바이스 open + still config + start + 컨트롤 적용 + 워밍업.
+
+        picamera2 미설치면 _require_picamera2() 가 PiCameraSDKError 를 던진다.
+        recipe 의 width/height 가 있으면 size 로 사용한다.
+        """
+        Picamera2, ctrl_controls = self._require_picamera2()
+        w, h = self._size
+        try:
+            rw = self._recipe.get("width")
+            rh = self._recipe.get("height")
+            if rw and rh:
+                w, h = int(rw), int(rh)
+            picam2 = Picamera2()
+            cfg = picam2.create_still_configuration(
+                main={"size": (w, h), "format": "RGB888"}
+            )
+            picam2.configure(cfg)
+            picam2.start()
+            resolved = self._build_controls(ctrl_controls)
+            if resolved:
+                picam2.set_controls(resolved)
+            # 워밍업 프레임 버림(AE/AWB 수렴, 초기 흐림 제거).
+            for _ in range(max(self.warmup_frames, 0)):
+                picam2.capture_array("main")
+        except PiCameraError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 벤더 예외를 계약 예외로 변환.
+            raise PiCameraError(
+                f"PiCameraAdapter: 디바이스 open 실패 ({exc})"
+            ) from exc
+        self._picam2 = picam2
+        self._started = True
+
+    def configure(self, recipe: dict) -> None:
+        """촬영 레시피 적용. capture_recipe → picamera2 컨트롤 매핑 후 적용.
+
+        매핑(map_recipe_to_picamera)은 하드웨어 없이 수행/검증 가능(단위테스트).
+        실제 set_controls 는 디바이스 open 후이므로 picamera2 미설치면
+        PiCameraSDKError.
+        """
+        self._recipe = dict(recipe or {})
+        self._controls = map_recipe_to_picamera(self._recipe)
+        if not self._started:
+            self._open()  # picamera2 미설치면 여기서 안내 예외.
+        else:
+            # 이미 start 된 경우 컨트롤만 재적용(size 변경은 재start 필요 — 생략).
+            _, ctrl_controls = self._require_picamera2()
+            resolved = self._build_controls(ctrl_controls)
+            if resolved:
+                self._picam2.set_controls(resolved)
+
+    @property
+    def controls(self) -> dict:
+        """직전 configure 가 산출한 picamera2 컨트롤(문자열 토큰 포함, 검증용)."""
+        return dict(self._controls)
+
+    def grab(self) -> np.ndarray:
+        """1프레임 취득(BGR HxWx3 uint8). 미시작이면 open(=picamera2 필요).
+
+        RGB888(=BGR 메모리)이므로 그대로 반환. swap_rb 면 RGB2BGR 교정.
+        """
+        if not self._started:
+            self._open()  # picamera2 미설치면 안내 예외(여기서 종료).
+        try:
+            arr = self._picam2.capture_array("main")
+        except Exception as exc:  # noqa: BLE001 - 벤더 예외 → 계약 예외.
+            raise PiCameraError(
+                f"PiCameraAdapter.grab: capture_array 실패 ({exc})"
+            ) from exc
+        return _finalize_pi_frame(arr, self.swap_rb)
+
+    def close(self) -> None:
+        """리소스 해제. 미open 이면 무해."""
+        cam = self._picam2
+        self._picam2 = None
+        self._started = False
+        if cam is None:
+            return
+        for meth in ("stop", "close"):
+            try:
+                getattr(cam, meth)()
+            except Exception:  # noqa: BLE001 - close 는 항상 무해해야 한다.
+                pass
