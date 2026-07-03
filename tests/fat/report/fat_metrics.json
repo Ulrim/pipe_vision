@@ -1,0 +1,160 @@
+{
+  "title": "AIVIS FAT 결과서 (§1.2 인수 합격기준 자동검증)",
+  "dataset_source": "synthetic (gen_synthetic + 사이드카 정답셋, AIVIS_CAMERA=sim)",
+  "sample_count": 240,
+  "overall_passed": true,
+  "kpi_table": [
+    {
+      "no": 1,
+      "name": "자동검사율",
+      "measured": "100.000%",
+      "target": "100%",
+      "passed": true
+    },
+    {
+      "no": 2,
+      "name": "항목별 판정 정확도(최저)",
+      "measured": "100.000%",
+      "target": "≥95%",
+      "passed": true
+    },
+    {
+      "no": 3,
+      "name": "검사 처리속도 p95",
+      "measured": "11.000ms",
+      "target": "≤300ms",
+      "passed": true
+    },
+    {
+      "no": 4,
+      "name": "데이터 저장 & MES 연계율",
+      "measured": "저장 100.000% / 연계 100.000%",
+      "target": "100%",
+      "passed": true
+    }
+  ],
+  "metric1_auto_inspection": {
+    "sample_count": 240,
+    "completed_count": 240,
+    "auto_rate_pct": 100.0,
+    "threshold_pct": 100.0,
+    "passed": true
+  },
+  "metric2_item_accuracy": {
+    "threshold_pct": 95.0,
+    "min_accuracy_pct": 100.0,
+    "passed": true,
+    "per_item": {
+      "LEN": {
+        "item": "LEN",
+        "tp": 40,
+        "fp": 0,
+        "fn": 0,
+        "tn": 200,
+        "total": 240,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 40,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 200
+          }
+        }
+      },
+      "OIL": {
+        "item": "OIL",
+        "tp": 80,
+        "fp": 0,
+        "fn": 0,
+        "tn": 160,
+        "total": 240,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 80,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 160
+          }
+        }
+      },
+      "DIS": {
+        "item": "DIS",
+        "tp": 80,
+        "fp": 0,
+        "fn": 0,
+        "tn": 160,
+        "total": 240,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 80,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 160
+          }
+        }
+      },
+      "SCR": {
+        "item": "SCR",
+        "tp": 80,
+        "fp": 0,
+        "fn": 0,
+        "tn": 160,
+        "total": 240,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 80,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 160
+          }
+        }
+      }
+    }
+  },
+  "metric3_latency": {
+    "count": 1000,
+    "p50_ms": 9.0,
+    "p95_ms": 11.0,
+    "p99_ms": 12.0,
+    "max_ms": 19.0,
+    "mean_ms": 8.82,
+    "over_300_count": 0,
+    "threshold_ms": 300.0,
+    "passed": true
+  },
+  "metric4_storage_mes": {
+    "injected": 240,
+    "stored": 240,
+    "mes_synced": 240,
+    "storage_rate_pct": 100.0,
+    "mes_rate_pct": 100.0,
+    "threshold_pct": 100.0,
+    "passed": true
+  },
+  "notes": [
+    "합성 데이터는 라벨이 명확하여 폴백 CV 로도 항목 정확도가 높게 산출됨.",
+    "임계값은 ItemMaster(기준정보)에서 읽음 — 하드코딩 아님.",
+    "지표4: POST /inspection(내부토큰) 적재 → DB 조회 + MES watchdog 1회 연계."
+  ],
+  "generated_at": "2026-06-05T15:29:23.405975+00:00"
+}

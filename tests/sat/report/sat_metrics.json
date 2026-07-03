@@ -1,0 +1,199 @@
+{
+  "title": "AIVIS SAT 결과서 (실생산 모사, §1.2 + 사용성)",
+  "dataset_source": "synthetic 실생산 모사 (per_class=80, 혼합 LOT/교대)",
+  "sample_count": 480,
+  "overall_passed": true,
+  "kpi_table": [
+    {
+      "no": 1,
+      "name": "자동검사율",
+      "measured": "100.000%",
+      "target": "100%",
+      "passed": true
+    },
+    {
+      "no": 2,
+      "name": "항목별 판정 정확도(최저)",
+      "measured": "100.000%",
+      "target": "≥95%",
+      "passed": true
+    },
+    {
+      "no": 3,
+      "name": "검사 처리속도 p95",
+      "measured": "9.000ms",
+      "target": "≤300ms",
+      "passed": true
+    },
+    {
+      "no": 4,
+      "name": "데이터 저장 & MES 연계율",
+      "measured": "저장 100.000% / 연계 100.000%",
+      "target": "100%",
+      "passed": true
+    },
+    {
+      "no": 5,
+      "name": "사용성(로그인→조회→KPI)",
+      "measured": "OK",
+      "target": "동작",
+      "passed": true
+    }
+  ],
+  "metric1_auto_inspection": {
+    "sample_count": 480,
+    "completed_count": 480,
+    "auto_rate_pct": 100.0,
+    "passed": true
+  },
+  "metric2_item_accuracy": {
+    "threshold_pct": 95.0,
+    "min_accuracy_pct": 100.0,
+    "passed": true,
+    "per_item": {
+      "LEN": {
+        "item": "LEN",
+        "tp": 80,
+        "fp": 0,
+        "fn": 0,
+        "tn": 400,
+        "total": 480,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 80,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 400
+          }
+        }
+      },
+      "OIL": {
+        "item": "OIL",
+        "tp": 160,
+        "fp": 0,
+        "fn": 0,
+        "tn": 320,
+        "total": 480,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 160,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 320
+          }
+        }
+      },
+      "DIS": {
+        "item": "DIS",
+        "tp": 160,
+        "fp": 0,
+        "fn": 0,
+        "tn": 320,
+        "total": 480,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 160,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 320
+          }
+        }
+      },
+      "SCR": {
+        "item": "SCR",
+        "tp": 160,
+        "fp": 0,
+        "fn": 0,
+        "tn": 320,
+        "total": 480,
+        "accuracy_pct": 100.0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "confusion_matrix": {
+          "actual_pos": {
+            "pred_pos": 160,
+            "pred_neg": 0
+          },
+          "actual_neg": {
+            "pred_pos": 0,
+            "pred_neg": 320
+          }
+        }
+      }
+    }
+  },
+  "metric3_latency": {
+    "count": 1000,
+    "p50_ms": 8.0,
+    "p95_ms": 9.0,
+    "p99_ms": 10.0,
+    "max_ms": 13.0,
+    "mean_ms": 8.326,
+    "over_300_count": 0,
+    "threshold_ms": 300.0,
+    "passed": true
+  },
+  "metric4_storage_mes": {
+    "injected": 480,
+    "stored": 480,
+    "mes_synced": 480,
+    "storage_rate_pct": 100.0,
+    "mes_rate_pct": 100.0,
+    "threshold_pct": 100.0,
+    "passed": true
+  },
+  "usability_smoke": {
+    "list_status": 200,
+    "list_count": 5,
+    "kpi_status": 200,
+    "kpi": {
+      "period": "2026-06",
+      "total_inspected": 721,
+      "defect_count": 601,
+      "process_defect_ppm": 833564.494,
+      "auto_inspected": 721,
+      "auto_inspection_rate_pct": 100.0,
+      "misjudge_count": 0,
+      "miss_count": 0,
+      "inspection_defect_rate_pct": 0.0,
+      "stored_count": 721,
+      "mes_synced_count": 721,
+      "storage_mes_rate_pct": 100.0,
+      "avg_proc_time_ms": 8.84,
+      "claim_count": null,
+      "workload_index": null,
+      "lead_time_days": null
+    }
+  },
+  "lot_mix": [
+    "LOT-A",
+    "LOT-B",
+    "LOT-C"
+  ],
+  "shift_mix": [
+    "DAY",
+    "SWING",
+    "NIGHT"
+  ],
+  "notes": [
+    "혼합 LOT/교대 메타로 적재 — 실생산 모사.",
+    "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
+    "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
+  ],
+  "generated_at": "2026-06-05T15:29:48.816985+00:00"
+}

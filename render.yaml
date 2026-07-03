@@ -1,0 +1,160 @@
+# ===== AIVIS cloud demo — Render Blueprint (Infrastructure as Code) =====
+# Owned by devops. Deploys the backend half of the cloud demo:
+#   - api        : FastAPI (REST + WebSocket), Docker, /health, port 8000
+#   - vision     : inspection worker (sim camera), Docker background worker
+#   - mes-watchdog (optional): re-sends mes_synced=false rows so the demo
+#                  shows a 100% MES linkage rate on the dashboard.
+#
+# The frontend (apps/hmi, apps/dashboard) is deployed to Vercel — see
+# deploy/DEPLOYMENT.md. PostgreSQL is Supabase (external, free tier) — its
+# DATABASE_URL is entered by hand (sync:false) because Render does not
+# provision Supabase. IMPORTANT: use the Supabase "Session pooler" connection
+# (port 5432, host *.pooler.supabase.com, IPv4) — Render is IPv4-only and the
+# Supabase Direct connection is IPv6-only. Do NOT use the Transaction pooler
+# (6543). See deploy/DEPLOYMENT.md step 1.
+#
+# Deploy: Render Dashboard -> New -> Blueprint -> point at this repo's render.yaml.
+#
+# NOTES / CAVEATS:
+#   * Render supports WebSocket on web services, so /ws/live works for the HMI.
+#   * Render FREE web services SLEEP after ~15 min idle and cold-start on the
+#     next request (first /health or first page load can take ~30-60s). For a
+#     reliable demo upgrade the api to a paid "starter" instance, or accept the
+#     cold start. The vision worker (background) keeps the DB populated and will
+#     also be subject to free-tier limits.
+#   * Image storage: the cloud demo uses SUPABASE STORAGE (object storage),
+#     NOT the local "images" volume. On the single-host compose, api+vision share
+#     a local disk volume; on Render they are SEPARATE containers that cannot share
+#     a local disk -> Supabase Storage is REQUIRED so the worker can upload and the
+#     api can proxy-serve inspection images. Set AIVIS_STORAGE_BACKEND=supabase on
+#     BOTH api and vision (same SUPABASE_URL / SERVICE_ROLE_KEY / BUCKET).
+#
+# After first deploy run the DB migration: the api `preDeployCommand` runs
+# `alembic upgrade head` (postgres lifespan does NOT auto-create tables).
+
+databases: []
+
+services:
+  # ---------------- API (FastAPI) ----------------
+  - type: web
+    name: aivis-api
+    runtime: docker
+    plan: free
+    dockerfilePath: services/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # Run Alembic migrations before each deploy goes live (services/api is the
+    # image WORKDIR /app, so alembic.ini + alembic/ are present there).
+    preDeployCommand: alembic upgrade head
+    autoDeploy: true
+    envVars:
+      # --- Supabase Postgres (entered by hand; psycopg URL, see DEPLOYMENT.md) ---
+      # Use the SESSION POOLER (5432, IPv4):
+      # postgresql+psycopg://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+      - key: DATABASE_URL
+        sync: false
+      # --- CORS: comma-separated Vercel domains (set AFTER the Vercel deploy) ---
+      - key: ALLOWED_ORIGINS
+        sync: false
+      # --- Image storage (Supabase Storage) ---
+      # Cloud is split containers: api + vision cannot share a local disk volume
+      # (unlike the single-host compose), so Supabase Storage is REQUIRED. The
+      # worker uploads inspection images; the api proxy-serves them. Both services
+      # MUST use the SAME backend / URL / key / bucket.
+      - key: AIVIS_STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: inspection-images
+      # --- shared secrets / demo seed (group below) ---
+      - fromGroup: aivis-shared
+      # --- demo seed flags so the worker's FK target (HP12) exists ---
+      - key: AIVIS_SEED_ON_STARTUP
+        value: "true"
+      - key: AIVIS_SEED_DEMO_ITEM
+        value: "true"
+      - key: AIVIS_DEMO_ITEM_CODE
+        value: HP12
+      - key: MES_MODE
+        value: table
+      - key: LOG_LEVEL
+        value: INFO
+
+  # ---------------- Vision inspection worker (sim camera) ----------------
+  - type: worker
+    name: aivis-vision
+    runtime: docker
+    plan: free
+    dockerfilePath: services/vision/Dockerfile
+    dockerContext: .
+    autoDeploy: true
+    envVars:
+      - key: AIVIS_CAMERA
+        value: sim
+      # Internal URL of the api service. The worker uses AIVIS_API_URL DIRECTLY as
+      # an HTTP base (services/vision/worker/config.py only rstrip("/") — it does
+      # NOT prepend a scheme), so the value MUST include http:// . Render's
+      # fromService `property: hostport` returns a scheme-LESS "host:port", which
+      # httpx cannot use as a base URL, so we build scheme + internal host literally.
+      # On Render's private network a web service is reachable at http://<name>:<port>.
+      - key: AIVIS_API_URL
+        value: http://aivis-api:8000
+      - key: AIVIS_ITEM_CODE
+        value: HP12
+      # Inspection cadence (ms between sim triggers).
+      - key: AIVIS_WORKER_INTERVAL_MS
+        value: "1500"
+      # --- Image storage (Supabase Storage) ---
+      # Worker UPLOADS inspection images here (split containers cannot share a
+      # local disk volume in the cloud). MUST match the api's backend/URL/key/bucket.
+      - key: AIVIS_STORAGE_BACKEND
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: inspection-images
+      # Leave AIVIS_DATASET_DIR unset -> worker auto-synthesizes frames.
+      # service token + seed admin (login fallback for GET /master) from group.
+      - fromGroup: aivis-shared
+
+  # ---------------- MES watchdog (optional, demo linkage-rate) ----------------
+  # Re-sends mes_synced=false rows so the dashboard shows 100% MES linkage.
+  # Remove this service if you do not want the extra free-tier worker.
+  - type: worker
+    name: aivis-mes-watchdog
+    runtime: docker
+    plan: free
+    dockerfilePath: services/api/Dockerfile
+    dockerContext: .
+    dockerCommand: python -m mes.cli watchdog
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MES_MODE
+        value: table
+      - key: MES_WATCHDOG_INTERVAL_S
+        value: "10"
+      - fromGroup: aivis-shared
+
+# ---------------- Shared environment group (secrets) ----------------
+# JWT_SECRET / AIVIS_SERVICE_TOKEN must be the SAME across api + worker.
+# Generate long random values in the Render dashboard (or `generateValue`).
+envVarGroups:
+  - name: aivis-shared
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      # vision worker sends X-Service-Token on POST /inspection; api must match.
+      - key: AIVIS_SERVICE_TOKEN
+        generateValue: true
+      # Seed admin (api creates it; worker uses it as GET /master login fallback).
+      - key: AIVIS_SEED_ADMIN_USER
+        value: admin
+      - key: AIVIS_SEED_ADMIN_PASSWORD
+        sync: false

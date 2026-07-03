@@ -1,0 +1,25 @@
+# ===== AIVIS api service deps (CLAUDE.md §3) =====
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+SQLAlchemy==2.0.36
+alembic==1.14.0
+# Postgres driver (psycopg v3). sqlite 는 표준 라이브러리.
+psycopg[binary]==3.2.3
+# Auth: JWT + 비밀번호 해시
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.2.1
+python-multipart==0.0.20
+websockets==14.1
+# 월간 품질 리포트(M12): PDF/XLSX 생성
+reportlab==4.5.1
+openpyxl==3.1.5
+
+# 공용 스키마(단일 진실원). 모노레포 빌드 시 경로 설치:
+#   pip install -e ../../packages/shared-types/python
+# Docker 빌드(devops)는 빌드 컨텍스트에 맞게 별도 COPY/설치한다.
+
+# --- test only ---
+pytest==8.3.4
+httpx==0.28.1

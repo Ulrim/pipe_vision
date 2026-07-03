@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: ui-sans-serif, system-ui, "Noto Sans KR", sans-serif;
+  /* 현장 대형 디스플레이 기본 가독성 */
+  -webkit-text-size-adjust: 100%;
+}

@@ -1,0 +1,171 @@
+# ===== AIVIS runtime topology (CLAUDE.md §4) =====
+# Single industrial-PC deployment. One command brings up the full stack:
+#   docker compose up -d
+# GPU profile for the vision worker lives in docker-compose.gpu.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Owned by devops. Service application source is owned by other agents.
+
+services:
+  # ---------------- PostgreSQL 16 (inspection results, master data, KPI) ----------------
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aivis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aivis}
+      POSTGRES_DB: ${POSTGRES_DB:-aivis}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aivis} -d ${POSTGRES_DB:-aivis}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - aivis-net
+
+  # ---------------- MinIO (S3-compatible image storage) ----------------
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-aivis-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-aivis-minio}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -fsS http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - aivis-net
+
+  # ---------------- API (FastAPI: results, master, kpi, auth, mes, ws) ----------------
+  api:
+    build:
+      # Root context so the build can COPY packages/shared-types/python (aivis_types).
+      context: .
+      dockerfile: services/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://aivis:aivis@postgres:5432/aivis}
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-minio:9000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-aivis-minio}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-aivis-minio}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+      # Shared image dir: vision writes raw/result/review JPEGs, api reads & serves
+      # from the same path. MUST match the vision service (same images volume).
+      AIVIS_IMAGES_DIR: ${AIVIS_IMAGES_DIR:-/data/images}
+    volumes:
+      - images:/data/images
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - aivis-net
+
+  # ---------------- Vision worker (acquisition -> preprocess -> infer -> verdict) ----------------
+  vision:
+    build:
+      # Root context so the build can COPY packages/shared-types/python (aivis_types).
+      context: .
+      dockerfile: services/vision/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # sim = SimulatorCamera replay (no hardware). Override to genicam on real cameras.
+      AIVIS_CAMERA: ${AIVIS_CAMERA:-sim}
+      AIVIS_DATASET_DIR: ${AIVIS_DATASET_DIR:-/data/dataset}
+      AIVIS_API_URL: ${AIVIS_API_URL:-http://api:8000}
+      # Shared image dir: vision writes raw/result/review JPEGs here; api reads &
+      # serves from the same path. MUST match the api service (same images volume).
+      AIVIS_IMAGES_DIR: ${AIVIS_IMAGES_DIR:-/data/images}
+    volumes:
+      - images:/data/images
+      # Mount a host dataset folder for the simulator camera (read-only).
+      - ${AIVIS_DATASET_HOST_DIR:-./dataset}:/data/dataset:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/vision_ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - aivis-net
+
+  # ---------------- HMI (operator UI, static nginx) ----------------
+  hmi:
+    build:
+      # Root context so the build can resolve the @aivis/shared-types workspace package.
+      context: .
+      dockerfile: apps/hmi/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - aivis-net
+
+  # ---------------- Dashboard (admin UI, static nginx) ----------------
+  dashboard:
+    build:
+      # Root context so the build can resolve the @aivis/shared-types workspace package.
+      context: .
+      dockerfile: apps/dashboard/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "5174:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - aivis-net
+
+volumes:
+  postgres-data:
+  minio-data:
+  images:
+
+networks:
+  aivis-net:
+    driver: bridge

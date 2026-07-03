@@ -1,0 +1,36 @@
+# ===== AIVIS GPU override for the vision worker (CLAUDE.md §3, §11) =====
+# Enables CUDA + onnxruntime-gpu / TensorRT acceleration when a GPU is available.
+#
+# Usage (layer this file over the base compose):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#
+# Requirements on the host:
+#   - NVIDIA driver installed
+#   - NVIDIA Container Toolkit (nvidia-container-toolkit) installed and configured
+#
+# This override rebuilds the vision image with a CUDA-enabled base and requests the GPU.
+# The vision-ai agent provides the GPU Dockerfile (Dockerfile.gpu) and the
+# onnxruntime-gpu requirements; this file only wires the runtime.
+
+services:
+  vision:
+    build:
+      # Root context (matches base compose) so the GPU build can also COPY
+      # packages/shared-types/python (aivis_types).
+      context: .
+      # GPU build (CUDA base + onnxruntime-gpu). Provided by the vision-ai agent.
+      dockerfile: services/vision/Dockerfile.gpu
+    environment:
+      # Tell the inference layer to prefer the CUDA/TensorRT execution provider.
+      AIVIS_ONNX_PROVIDER: cuda
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # Reserve the GPU for this container (compose deploy-style device reservation).
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
+    # gpus: all  # alternative for older docker compose; uncomment if 'deploy' is ignored.

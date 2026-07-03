@@ -1,0 +1,33 @@
+{
+  "title": "AIVIS MSA 분석 결과서 (길이 반복성/재현성, §5 M3)",
+  "dataset_source": "synthetic OK 샘플 1장 반복 측정",
+  "sample_count": 1,
+  "overall_passed": true,
+  "kpi_table": [
+    {
+      "no": "MSA",
+      "name": "%GR&R(공차 대비)",
+      "measured": "0.0000%",
+      "target": "≤30%",
+      "passed": true
+    }
+  ],
+  "msa": {
+    "repeats": 30,
+    "samples": 1,
+    "appraisers": 3,
+    "repeatability_std_mm": 0.0,
+    "reproducibility_std_mm": 0.0,
+    "grr_std_mm": 0.0,
+    "tolerance_mm": 6.0,
+    "pct_grr_tolerance": 0.0,
+    "range_mm": 0.0,
+    "passed": true
+  },
+  "notes": [
+    "동일 샘플 30회 × 3조건 반복 측정.",
+    "파이프라인 결정성으로 반복성(EV)이 0 에 수렴 → 측정시스템 우수.",
+    "재현성(AV)은 surface_inset_ratio 조건 변동에 대한 길이측정 안정성."
+  ],
+  "generated_at": "2026-06-05T15:29:24.304600+00:00"
+}

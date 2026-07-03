@@ -1,0 +1,20 @@
+{
+  "name": "aivis",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AIVIS — AI Vision Inspection System monorepo (frontend workspaces). See CLAUDE.md.",
+  "license": "UNLICENSED",
+  "workspaces": [
+    "apps/*",
+    "packages/shared-types/ts"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @aivis/hmi && npm run build --workspace @aivis/dashboard",
+    "build:hmi": "npm run build --workspace @aivis/hmi",
+    "build:dashboard": "npm run build --workspace @aivis/dashboard",
+    "lint": "npm run lint --workspace @aivis/hmi && npm run lint --workspace @aivis/dashboard",
+    "test": "npm run test --workspace @aivis/hmi && npm run test --workspace @aivis/dashboard",
+    "typecheck": "npm run typecheck --workspace @aivis/shared-types",
+    "ci": "npm run typecheck && npm run lint && npm run test && npm run build"
+  }
+}
