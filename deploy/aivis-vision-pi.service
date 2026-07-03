@@ -1,0 +1,65 @@
+# AIVIS 검사 워커 — Raspberry Pi 4 + Camera Module 3(IMX708) 엣지 유닛
+# ---------------------------------------------------------------------------
+# 설치 (Raspberry Pi OS 64-bit / Bookworm):
+#   1) 저장소를 /opt/aivis 로 배치      (WorkingDirectory 와 일치시킬 것)
+#   2) 워커 venv 를 --system-site-packages 로 생성(picamera2/cv2 상속):
+#        cd /opt/aivis/services/vision
+#        python3 -m venv --system-site-packages .venv
+#        . .venv/bin/activate
+#        pip install httpx numpy
+#        pip install -e /opt/aivis/packages/shared-types/python   # aivis_types
+#        # (표면 ONNX 사용 시) pip install onnxruntime
+#   3) 환경파일 배치:  sudo install -D -m600 \
+#        /opt/aivis/deploy/aivis-worker.env.example /etc/aivis/worker.env
+#      그리고 /etc/aivis/worker.env 를 현장 값으로 수정(토큰/URL/품목).
+#   4) 유닛 설치·기동:
+#        sudo cp /opt/aivis/deploy/aivis-vision-pi.service \
+#                /etc/systemd/system/aivis-vision.service
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now aivis-vision.service
+#        journalctl -u aivis-vision -f          # 로그 추적
+#
+# 경로/사용자(User, WorkingDirectory, ExecStart)는 실제 배치에 맞게 조정한다.
+# 자세한 절차·촬영 레시피·캘리브레이션은 docs/RASPBERRY_PI.md 참조.
+[Unit]
+Description=AIVIS vision inspection worker (Raspberry Pi / picamera2 IMX708)
+Documentation=file:///opt/aivis/docs/RASPBERRY_PI.md
+# 엣지→클라우드 모드는 네트워크가, 독립형 모드는 로컬 api(uvicorn)가 떠 있어야 한다.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# picamera2 는 카메라 디바이스 접근 권한(video 그룹)이 필요하다. 기본 사용자 pi 사용.
+User=pi
+Group=video
+SupplementaryGroups=render
+
+# 저장소 위치. 워커는 이 디렉터리에서 `python -m worker` 로 기동한다.
+WorkingDirectory=/opt/aivis/services/vision
+
+# 모든 AIVIS_* 운영 파라미터는 환경파일에서 읽는다(하드코딩 금지 원칙).
+EnvironmentFile=/etc/aivis/worker.env
+
+# --system-site-packages venv 의 python 으로 워커 모듈 실행.
+# (venv python 이 picamera2/cv2 시스템 패키지를 상속한다.)
+ExecStart=/opt/aivis/services/vision/.venv/bin/python -m worker
+
+# 크래시/카메라 일시장애 시 자동 재기동(현장 무인 운영).
+Restart=always
+RestartSec=5
+# 부팅 직후 카메라/네트워크 준비 지연을 흡수하기 위해 시작 유예.
+TimeoutStartSec=60
+
+# 로그는 journald 로. 태그로 필터: journalctl -t aivis-vision
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aivis-vision
+
+# 소소한 하드닝(카메라/네트워크 접근은 유지).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+
+[Install]
+WantedBy=multi-user.target

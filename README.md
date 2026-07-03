@@ -123,6 +123,18 @@ Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdo
 > 주의: Render free 서비스는 유휴 시 슬립(콜드스타트), 운영 postgres는 lifespan이 테이블을
 > 자동 생성하지 않으므로 `alembic upgrade head` 가 필요하다(api `preDeployCommand` 처리).
 
+## 라즈베리파이 엣지 모듈
+
+최종 검사 모듈은 **Raspberry Pi 4 (4GB) + Camera Module 3(IMX708)** 로 확정됐다. vision-ai 가
+`PiCameraAdapter`(picamera2 기반)를 추가하며, 워커는 `create_camera()` 팩토리로 카메라를 만들어
+`item_master.capture_recipe` 로 configure 하므로 **환경변수 `AIVIS_CAMERA=picam` 하나만으로 Pi
+카메라로 동작**한다(애플리케이션 코드 변경 없음, CLAUDE.md §6.1 HAL). 두 배포 모드를 지원한다:
+(A) 엣지→클라우드 — Pi 는 워커만, 결과를 기구축 Render(api)+Supabase(DB/Storage)+Vercel(HMI/
+대시보드) 로 전송, (B) 독립형(오프라인) — Pi 한 대에서 api(sqlite)+워커+정적 HMI 를 함께 구동.
+
+- 설치·운영·촬영 레시피·캘리브레이션·성능 튜닝: [`docs/RASPBERRY_PI.md`](./docs/RASPBERRY_PI.md)
+  (systemd 유닛 `deploy/aivis-vision-pi.service`, 환경 템플릿 `deploy/aivis-worker.env.example`).
+
 ## 오프라인(현장) 설치
 
 현장 산업용 PC는 인터넷이 제한될 수 있다. 인터넷이 가능한 빌드 머신에서 이미지를 사전
@@ -155,6 +167,7 @@ Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdo
 - [`docs/OPERATIONS.md`](./docs/OPERATIONS.md) — 설치·환경변수·백업/복구·헬스체크·GPU·sim↔genicam·트러블슈팅
 - [`docs/USER_GUIDE.md`](./docs/USER_GUIDE.md) — 작업자 HMI / 관리자 대시보드 / KPI 리포트 / 역할별 권한
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — 런타임 토폴로지·7단계 파이프라인·소유권 경계
+- [`docs/RASPBERRY_PI.md`](./docs/RASPBERRY_PI.md) — Pi 4 + Camera Module 3 엣지 모듈 설치·운영(picam)·캘리브레이션
 - [`docs/API.md`](./docs/API.md) · [`docs/DATA_MODEL.md`](./docs/DATA_MODEL.md)
 
 ---
