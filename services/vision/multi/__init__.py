@@ -12,7 +12,13 @@ BatchResult/TubeResult 는 내부 dataclass(shared-types 미변경 — 승인 �
 """
 from __future__ import annotations
 
-from .batch import BatchResult, TubeResult, inspect_batch
+from .batch import (
+    BatchMeta,
+    BatchResult,
+    TubeResult,
+    inspect_batch,
+    tube_to_inspection,
+)
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 __all__ = [
@@ -20,6 +26,8 @@ __all__ = [
     "TubeROI",
     "MAX_TUBES_HARD",
     "inspect_batch",
+    "tube_to_inspection",
     "TubeResult",
     "BatchResult",
+    "BatchMeta",
 ]
