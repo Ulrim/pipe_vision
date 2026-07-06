@@ -166,6 +166,114 @@ def write_dataset(
     return written
 
 
+def _draw_tube_body(
+    img: np.ndarray,
+    x0: int,
+    y0: int,
+    length_px: int,
+    thick_px: int,
+    cls: str,
+) -> None:
+    """단일 튜브(가로 막대)를 곡면 음영 + 끝단 + 표면 결함으로 그린다(제자리).
+
+    make_image 의 단일 튜브 렌더링과 동일한 시각 규약을 따르되, 다중 튜브
+    캔버스의 임의 위치(x0,y0)에 배치할 수 있게 분리한 헬퍼다.
+    """
+    cls = cls.upper()
+    x1 = x0 + length_px
+    y1 = y0 + thick_px
+    yy = np.arange(y0, y1)
+    # 곡면 음영: 중앙(마루) 밝고 위/아래 가장자리 어둡게 → 인접 튜브 사이 골 형성.
+    shade = np.cos((yy - (y0 + y1) / 2) / (thick_px / 2) * (np.pi / 2)) ** 0.5
+    shade = np.clip(shade, 0.45, 1.0)
+    body = (PIPE_GRAY * shade).astype(np.uint8)
+    for i, yv in enumerate(yy):
+        if 0 <= yv < img.shape[0]:
+            img[yv, max(0, x0) : min(img.shape[1], x1), :] = body[i]
+    # 끝단(서브픽셀 에지 대상)
+    cv2.line(img, (x0, y0), (x0, y1 - 1), (210, 210, 210), 1)
+    cv2.line(img, (x1 - 1, y0), (x1 - 1, y1 - 1), (210, 210, 210), 1)
+
+    if cls in ("SCR", "MULTI"):
+        sy = (y0 + y1) // 2 - min(10, thick_px // 4)
+        sx0 = x0 + max(40, length_px // 8)
+        sx1 = sx0 + max(80, length_px // 3)
+        cv2.line(img, (sx0, sy), (sx1, sy + 4), (225, 225, 225), 2)
+        cv2.line(img, (sx0, sy + 2), (sx1, sy + 6), (60, 60, 60), 1)
+
+    if cls in ("OIL", "MULTI"):
+        r = max(10, thick_px // 3)
+        cx, cy = x1 - max(60, length_px // 6), (y0 + y1) // 2
+        cv2.circle(img, (cx, cy), r, (252, 252, 252), -1)
+        yA, yB = max(0, cy - r), min(img.shape[0], cy + r)
+        xA, xB = max(0, cx - r), min(img.shape[1], cx + r)
+        img[yA:yB, xA:xB] = cv2.GaussianBlur(img[yA:yB, xA:xB], (9, 9), 0)
+
+    if cls in ("DIS", "MULTI"):
+        dx0 = x0 + max(60, length_px // 3)
+        dx1 = dx0 + max(60, length_px // 5)
+        dy0, dy1 = y0 + max(4, thick_px // 8), y1 - max(4, thick_px // 8)
+        dx1 = min(dx1, x1 - 4)
+        if dx1 > dx0 and dy1 > dy0:
+            patch = img[dy0:dy1, dx0:dx1].astype(np.float32)
+            patch[:, :, 2] = np.clip(patch[:, :, 2] * 1.15 + 25, 0, 255)  # R
+            patch[:, :, 0] = np.clip(patch[:, :, 0] * 0.55, 0, 255)       # B
+            patch[:, :, 1] = np.clip(patch[:, :, 1] * 0.80, 0, 255)       # G
+            img[dy0:dy1, dx0:dx1] = patch.astype(np.uint8)
+
+
+def make_multi_image(
+    n_tubes: int = 5,
+    *,
+    w: int = 800,
+    tube_len_px: int = DEFAULT_PIPE_LEN_PX,
+    thick_px: int = 44,
+    margin: int = 18,
+    len_delta_px: int = 80,
+    defects: Optional[dict] = None,
+    axis: str = "horizontal",
+    seed: int = 0,
+) -> Tuple[np.ndarray, List[Tuple[int, int, int, int]]]:
+    """다중(평행·접촉) 튜브 윗면 프레임 생성. (이미지, 튜브 bbox 리스트) 반환.
+
+    - n_tubes 개를 세로로 붙여 쌓는다(gap 0). 곡면 음영이 인접 경계에 어두운
+      seam(골)을 만들어 실제 접촉 배열을 모사한다.
+    - defects: {튜브 index(0-based): 클래스}. 클래스는 make_image 와 동일
+      (OK/LEN_PLUS/LEN_MINUS/SCR/OIL/DIS/MULTI).
+    - axis="vertical" 이면 가로 생성 후 90° 회전(세로 튜브 배열).
+    결정적(시드 고정 노이즈).
+    """
+    n_tubes = int(max(1, min(20, n_tubes)))
+    defects = defects or {}
+    h = margin * 2 + n_tubes * thick_px
+    img = _base_canvas(w, h)
+    boxes: List[Tuple[int, int, int, int]] = []
+    for i in range(n_tubes):
+        cls = str(defects.get(i, "OK")).upper()
+        eff_len = tube_len_px
+        if cls in ("LEN", "LEN_PLUS"):
+            eff_len = tube_len_px + len_delta_px
+        elif cls == "LEN_MINUS":
+            eff_len = tube_len_px - len_delta_px
+        x0 = (w - eff_len) // 2
+        y0 = margin + i * thick_px
+        _draw_tube_body(img, x0, y0, eff_len, thick_px, cls)
+        boxes.append((x0, y0, x0 + eff_len, y0 + thick_px))
+
+    if axis == "vertical":
+        img = cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+        H = h
+        # (x0,y0,x1,y1) → 90°CW: x' = H-1-y1 .. H-1-y0, y' = x0..x1
+        rot: List[Tuple[int, int, int, int]] = []
+        for (bx0, by0, bx1, by1) in boxes:
+            nx0, nx1 = H - by1, H - by0
+            ny0, ny1 = bx0, bx1
+            rot.append((nx0, ny0, nx1, ny1))
+        boxes = rot
+
+    return img, boxes
+
+
 def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="AIVIS 합성 더미 이미지 생성")
     ap.add_argument("out_dir", help="출력 폴더(dataset/raw 권장)")

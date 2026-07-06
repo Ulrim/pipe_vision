@@ -265,6 +265,99 @@ def render_overlay(frame: np.ndarray, result, *, item=None) -> np.ndarray:
     return canvas
 
 
+def render_batch_overlay(frame: np.ndarray, batch_result) -> np.ndarray:
+    """다중 튜브 배치 결과를 원본 위에 시각화한 BGR 이미지 반환(결정적).
+
+    batch_result: multi.BatchResult (duck-typed) — .tubes[*].bbox/index/
+    final_verdict/defect_codes/length_mm, .count_detected/.count_expected/
+    .count_mismatch/.batch_verdict/.ng_count.
+
+    표기(render_overlay 시각 규약과 일관 — 색약 고려 색+기호+두께):
+      - 튜브별 bbox 사각형: OK=초록(얇게), NG=빨강(두껍게).
+      - 각 튜브 근처: '#N [OK/NG]' + 불량코드(LEN/OIL/DIS/SCR) + 길이(mm).
+      - 상단 헤더바: 배치 OK/NG + 검출개수 vs 기대개수, 불일치 시 MISMATCH 경고.
+    OpenCV 그리기만 사용하며 한글을 쓰지 않는다(폰트 깨짐 방지).
+    """
+    if frame is None or getattr(frame, "ndim", 0) != 3:
+        raise ValueError("render_batch_overlay: BGR 3채널 이미지가 필요하다")
+
+    canvas = frame.copy()
+    h, w = canvas.shape[:2]
+    tubes = list(getattr(batch_result, "tubes", []) or [])
+    txt_scale = max(0.4, w / 1600.0)
+
+    # 1) 튜브별 박스 + 라벨.
+    for t in tubes:
+        bbox = getattr(t, "bbox", None)
+        if not bbox or len(bbox) != 4:
+            continue
+        x0, y0, x1, y1 = (int(v) for v in bbox)
+        tv = str(getattr(t, "final_verdict", "NG")).upper()
+        is_ok = tv == "OK"
+        color = _GREEN if is_ok else _RED
+        # 색약 고려: NG 는 더 두꺼운 테두리로도 구분.
+        thick = 2 if is_ok else 4
+        cv2.rectangle(canvas, (x0, y0), (x1 - 1, y1 - 1), color, thickness=thick)
+
+        idx = getattr(t, "index", 0)
+        sym = "OK" if is_ok else "NG"
+        codes = getattr(t, "defect_codes", []) or []
+        code_str = ",".join(str(c) for c in codes) if codes else ""
+        length_mm = getattr(t, "length_mm", None)
+        len_str = "" if length_mm is None else f" {length_mm:.1f}mm"
+        label = f"#{idx} [{sym}]{(' ' + code_str) if code_str else ''}{len_str}"
+
+        (lw, lh), _ = cv2.getTextSize(label, _FONT, txt_scale, 1)
+        # 라벨은 박스 상단 내부(공간 없으면 하단)로.
+        ly = y0 + lh + 4
+        if ly + 2 > y1:
+            ly = max(lh + 2, y0 - 4)
+        lx = min(x0 + 3, max(0, w - lw - 4))
+        # 가독성 배경 박스.
+        cv2.rectangle(
+            canvas,
+            (lx - 2, ly - lh - 3),
+            (lx + lw + 2, ly + 3),
+            _BLACK,
+            thickness=-1,
+        )
+        cv2.putText(
+            canvas, label, (lx, ly), _FONT, txt_scale, color,
+            thickness=1, lineType=cv2.LINE_AA,
+        )
+
+    # 2) 상단 헤더바(배치 요약).
+    batch_v = str(getattr(batch_result, "batch_verdict", "NG")).upper()
+    is_ok = batch_v == "OK"
+    hdr_color = _GREEN if is_ok else _RED
+    sym = "[OK]" if is_ok else "[NG]"
+    detected = getattr(batch_result, "count_detected", len(tubes))
+    expected = getattr(batch_result, "count_expected", None)
+    ng_count = getattr(batch_result, "ng_count", 0)
+    mismatch = bool(getattr(batch_result, "count_mismatch", False))
+
+    bar_h = max(30, h // 12)
+    cv2.rectangle(canvas, (0, 0), (w, bar_h), hdr_color, thickness=-1)
+    exp_txt = "?" if expected is None else str(expected)
+    hdr = (
+        f"{sym} BATCH: {batch_v}  tubes {detected}/{exp_txt}  NG {ng_count}"
+    )
+    hscale = max(0.5, bar_h / 44.0)
+    cv2.putText(
+        canvas, hdr, (10, int(bar_h * 0.72)), _FONT, hscale, _WHITE,
+        thickness=2, lineType=cv2.LINE_AA,
+    )
+    if mismatch:
+        warn = "! COUNT MISMATCH"
+        (ww, _wh), _ = cv2.getTextSize(warn, _FONT, hscale, 2)
+        cv2.putText(
+            canvas, warn, (max(10, w - ww - 12), int(bar_h * 0.72)),
+            _FONT, hscale, (0, 220, 255), thickness=2, lineType=cv2.LINE_AA,
+        )
+
+    return canvas
+
+
 def save_result(
     overlay: np.ndarray,
     images_dir: str,
