@@ -7,6 +7,7 @@ import type {
   InspectionImages,
   ItemMaster,
   ItemMasterUpdate,
+  CalibrationRequest,
   KpiSummary,
   KpiManual,
   LoginRequest,
@@ -108,4 +109,22 @@ export function updateItem(
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+/**
+ * POST /master/items/{code}/calibrate — 웹 자기보정(quality+ 권한).
+ * px_to_mm_scale := 기존 scale × (actual_mm / measured_mm), version +1.
+ * 갱신된 ItemMaster 반환.
+ */
+export function calibrateItem(
+  code: string,
+  body: CalibrationRequest,
+): Promise<ItemMaster> {
+  return requestJson<ItemMaster>(
+    `/master/items/${encodeURIComponent(code)}/calibrate`,
+    {
+      method: "POST",
+      body: JSON.stringify(body),
+    },
+  );
 }
