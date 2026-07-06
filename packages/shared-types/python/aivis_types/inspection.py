@@ -30,6 +30,12 @@ class ItemMaster(BaseModel):
     capture_recipe: Optional[Dict[str, Any]] = Field(
         None, description="촬영 레시피(노출/게인/조명) JSON"
     )
+    expected_count: int = Field(
+        1, ge=1, description="한 프레임(오더)당 튜브 개수. 기본 1(단일 튜브)"
+    )
+    outer_diameter_mm: Optional[float] = Field(
+        None, description="튜브 외경(mm). 단면/직경 검증·세그멘테이션 힌트용"
+    )
     version: int = Field(1, ge=1, description="기준정보 버전(변경 시 증가)")
     updated_by: Optional[str] = Field(None, description="최종 수정자")
     updated_at: Optional[datetime] = Field(None, description="최종 수정 시각")
@@ -50,6 +56,8 @@ class ItemMasterCreate(BaseModel):
     discolor_threshold: Optional[float] = None
     scratch_threshold: Optional[float] = None
     capture_recipe: Optional[Dict[str, Any]] = None
+    expected_count: int = 1
+    outer_diameter_mm: Optional[float] = None
 
 
 class ItemMasterUpdate(BaseModel):
@@ -66,6 +74,21 @@ class ItemMasterUpdate(BaseModel):
     discolor_threshold: Optional[float] = None
     scratch_threshold: Optional[float] = None
     capture_recipe: Optional[Dict[str, Any]] = None
+    expected_count: Optional[int] = Field(None, ge=1)
+    outer_diameter_mm: Optional[float] = None
+
+
+class CalibrationRequest(BaseModel):
+    """웹 자기보정 입력 (POST /master/items/{item_code}/calibrate, §5 M13).
+
+    기준품(알려진 길이)을 검사해 시스템이 낸 measured_mm 와 실제값 actual_mm 을
+    입력하면 px_to_mm_scale 을 `기존 scale × (actual_mm / measured_mm)` 로 갱신한다.
+    """
+
+    model_config = ConfigDict(use_enum_values=True)
+
+    measured_mm: float = Field(..., gt=0, description="시스템이 측정한 길이(mm)")
+    actual_mm: float = Field(..., gt=0, description="기준품의 실제 길이(mm)")
 
 
 class InspectionResult(BaseModel):

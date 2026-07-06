@@ -66,6 +66,8 @@ export interface ItemMaster {
   discolor_threshold?: number | null;
   scratch_threshold?: number | null;
   capture_recipe?: Record<string, unknown> | null;
+  expected_count: number;
+  outer_diameter_mm?: number | null;
   version: number;
   updated_by?: string | null;
   updated_at?: string | null; // ISO datetime
@@ -83,6 +85,8 @@ export interface ItemMasterCreate {
   discolor_threshold?: number | null;
   scratch_threshold?: number | null;
   capture_recipe?: Record<string, unknown> | null;
+  expected_count?: number;
+  outer_diameter_mm?: number | null;
 }
 
 /** 기준정보 수정 입력(부분 갱신). 변경 시 version 자동 증가. */
@@ -96,6 +100,15 @@ export interface ItemMasterUpdate {
   discolor_threshold?: number | null;
   scratch_threshold?: number | null;
   capture_recipe?: Record<string, unknown> | null;
+  expected_count?: number | null;
+  outer_diameter_mm?: number | null;
+}
+
+/** 웹 자기보정 입력 (POST /master/items/{item_code}/calibrate, §5 M13).
+ * px_to_mm_scale := 기존 scale × (actual_mm / measured_mm). */
+export interface CalibrationRequest {
+  measured_mm: number;
+  actual_mm: number;
 }
 
 /** 검사 결과 (inspection 테이블, 제품 1개 = 1행, §7.1). */

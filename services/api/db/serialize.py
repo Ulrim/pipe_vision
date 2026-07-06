@@ -53,6 +53,8 @@ def item_to_schema(row: ItemMaster) -> ItemMasterSchema:
         discolor_threshold=_f(row.discolor_threshold),
         scratch_threshold=_f(row.scratch_threshold),
         capture_recipe=row.capture_recipe,
+        expected_count=row.expected_count if row.expected_count is not None else 1,
+        outer_diameter_mm=_f(row.outer_diameter_mm),
         version=row.version,
         updated_by=row.updated_by,
         updated_at=row.updated_at,

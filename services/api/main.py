@@ -65,6 +65,7 @@ def _seed_demo_item() -> None:
                     discolor_threshold=0.5,
                     scratch_threshold=0.5,
                     capture_recipe={},
+                    expected_count=1,
                     version=1,
                     updated_by="seed",
                 )

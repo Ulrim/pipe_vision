@@ -28,6 +28,8 @@
 | discolor_threshold | NUMERIC(5,4) | 변색 임계 0~1 |
 | scratch_threshold | NUMERIC(5,4) | 스크래치 임계 0~1 |
 | capture_recipe | JSONB | 촬영 레시피(노출/게인/조명) |
+| expected_count | INT NOT NULL DEFAULT 1 | 한 프레임(오더)당 튜브 개수(다중=N) |
+| outer_diameter_mm | NUMERIC(10,3) | 튜브 외경(mm), 단면/직경 검증 힌트 |
 | version | INT NOT NULL DEFAULT 1 | 변경 시 +1 (이력) |
 | updated_by | TEXT | 최종 수정자 |
 | updated_at | TIMESTAMPTZ | 최종 수정 시각 |

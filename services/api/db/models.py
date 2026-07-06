@@ -40,6 +40,8 @@ class ItemMaster(Base):
     discolor_threshold: Mapped[float | None] = mapped_column(Numeric(5, 4))
     scratch_threshold: Mapped[float | None] = mapped_column(Numeric(5, 4))
     capture_recipe: Mapped[dict | None] = mapped_column(JsonB)
+    expected_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    outer_diameter_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     updated_by: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime | None] = mapped_column(
