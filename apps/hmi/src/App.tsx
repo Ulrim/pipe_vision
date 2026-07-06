@@ -10,10 +10,12 @@ import { useState } from "react";
 import type { InspectionResult } from "@aivis/shared-types";
 import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useLiveStore } from "@/store/liveStore";
+import { useBatches } from "@/hooks/useBatches";
 import { useAuthStore } from "@/store/authStore";
 import { ConnectionIndicator } from "@/components/ConnectionIndicator";
 import { AlarmBanner } from "@/components/AlarmBanner";
 import { InspectionCard } from "@/components/InspectionCard";
+import { BatchCard } from "@/components/BatchCard";
 import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { AuthStatus } from "@/components/AuthStatus";
@@ -36,7 +38,9 @@ export default function App() {
 function AppShell() {
   useLiveSocket();
   const latest = useLiveStore((s) => s.latest);
-  const feed = useLiveStore((s) => s.feed);
+  // feed 를 배치 키(lot+inspected_at)로 그룹핑. 최신 배치가 맨 앞.
+  const batches = useBatches();
+  const latestBatch = batches[0] ?? null;
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
 
   return (
@@ -57,11 +61,16 @@ function AppShell() {
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
-          <InspectionCard result={latest} onReview={setReviewing} />
+          {/* 최신 그룹이 다중 튜브 배치면 배치 카드, 아니면 기존 단일 카드(하위호환). */}
+          {latestBatch?.isBatch ? (
+            <BatchCard batch={latestBatch} onReview={setReviewing} />
+          ) : (
+            <InspectionCard result={latest} onReview={setReviewing} />
+          )}
         </div>
         <aside className="flex flex-col gap-3">
           <h2 className="text-hmi font-bold text-gray-700">최근 검사</h2>
-          <RecentFeed feed={feed} onSelect={setReviewing} />
+          <RecentFeed batches={batches} onSelect={setReviewing} />
         </aside>
       </div>
 

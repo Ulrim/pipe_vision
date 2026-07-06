@@ -13,6 +13,7 @@ from .enums import (
     Verdict,
 )
 from .inspection import (
+    CalibrationRequest,
     InspectionImages,
     InspectionResult,
     ItemMaster,
@@ -45,6 +46,7 @@ __all__ = [
     "Role",
     "Verdict",
     # inspection / master
+    "CalibrationRequest",
     "InspectionImages",
     "InspectionResult",
     "ItemMaster",

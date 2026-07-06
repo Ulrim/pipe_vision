@@ -66,6 +66,7 @@
 | GET | `/master/items/{code}` | operator+ | 단건 |
 | POST | `/master/items` | quality+ | 등록(version=1) |
 | PUT | `/master/items/{code}` | quality+ | 부분 갱신(version +1, updated_by/at 기록) |
+| POST | `/master/items/{code}/calibrate` | quality+ | 웹 자기보정: px_to_mm_scale ×= actual_mm/measured_mm (version +1) |
 | DELETE | `/master/items/{code}` | admin | 삭제 |
 
 ## KPI (§5 M12, §1.1 — 산출식 그대로)

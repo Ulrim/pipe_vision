@@ -28,13 +28,15 @@
 | discolor_threshold | NUMERIC(5,4) | 변색 임계 0~1 |
 | scratch_threshold | NUMERIC(5,4) | 스크래치 임계 0~1 |
 | capture_recipe | JSONB | 촬영 레시피(노출/게인/조명) |
+| expected_count | INT NOT NULL DEFAULT 1 | 한 프레임(오더)당 튜브 개수(다중=N) |
+| outer_diameter_mm | NUMERIC(10,3) | 튜브 외경(mm), 단면/직경 검증 힌트 |
 | version | INT NOT NULL DEFAULT 1 | 변경 시 +1 (이력) |
 | updated_by | TEXT | 최종 수정자 |
 | updated_at | TIMESTAMPTZ | 최종 수정 시각 |
 
 ### inspection — 검사결과 (제품 1개 = 1행) (§5 M7,M8)
 식별/메타: `id`(BIGSERIAL PK), `lot`(NOT NULL), `work_order`, `item_code`(FK→item_master),
-`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `shift`, `operator`.
+`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `shift`, `operator`.
 길이: `ref_length_mm`, `meas_length_mm`, `deviation_mm`, `length_verdict`(OK/NG).
 표면(0~1): `oil_score`, `discolor_score`, `scratch_score` (NUMERIC(5,4)).
 종합: `final_verdict`(NOT NULL OK/NG), `defect_codes`(TEXT[] {LEN,OIL,DIS,SCR,MULTI}),
@@ -45,7 +47,7 @@
 - `ix_insp_lot` (lot)
 - `ix_insp_time` (inspected_at)
 - `ix_insp_item_verdict` (item_code, final_verdict)
-- `ux_insp_natkey` (cam_id, inspected_at, lot, item_code) **UNIQUE** — POST /inspection 자연키 멱등(엣지 스풀 재전송 중복 생성 방지, MES idem_key 와 동일 구성, 0002 마이그레이션)
+- `ux_insp_natkey` (cam_id, inspected_at, lot, item_code, tube_index) **UNIQUE** — POST /inspection 자연키 멱등(엣지 스풀 재전송 중복 생성 방지, MES idem_key 와 동일 구성). tube_index 포함으로 한 배치의 튜브 N개를 별도 행 저장(0002 생성 → 0004 재정의)
 
 ### kpi_manual — 비자동 KPI (§5 M12, §1.1)
 `period`(DATE PK, 월 1일), `claim_count`(INT), `workload_index`(NUMERIC),
@@ -62,7 +64,7 @@ CHECK in operator/quality/admin), `active`(BOOL d.true).
 ### mes_quality_if — MES 연계 스테이징 (§7.3)
 DB 인터페이스 테이블 방식. 검사결과의 식별자+판정 핵심값을 적재하면 MES 가 폴링/트리거로 소비.
 `id`(BIGSERIAL PK), `inspection_id`(FK→inspection), `lot`, `item_code`, `inspected_at`,
-`cam_id`, `idem_key`(TEXT UNIQUE = `lot|item_code|inspected_at|cam_id`), `work_order`,
+`cam_id`, `idem_key`(TEXT UNIQUE = `lot|item_code|inspected_at|cam_id|tube_index`), `work_order`,
 `final_verdict`, `defect_codes`(TEXT[]), `meas_length_mm`, `deviation_mm`,
 `consumed`(BOOL d.false), `retry_count`(INT d.0), `created_at`(TIMESTAMPTZ).
 인덱스 `ix_mesif_consumed`(consumed).

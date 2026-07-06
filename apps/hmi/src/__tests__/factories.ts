@@ -46,3 +46,38 @@ export function makeNg(over: Partial<InspectionResult> = {}): InspectionResult {
     ...over,
   });
 }
+
+/**
+ * 다중 튜브 배치 팩토리 — 같은 lot+inspected_at 을 공유하고 tube_index 로 구분.
+ * ngIdx 에 포함된 tube_index 는 NG, 나머지는 OK.
+ */
+export function makeBatch(
+  count: number,
+  opts: {
+    lot?: string;
+    inspected_at?: string;
+    item_code?: string;
+    ngIdx?: number[];
+    baseId?: number;
+  } = {},
+): InspectionResult[] {
+  const lot = opts.lot ?? "LOT-BATCH";
+  const inspected_at = opts.inspected_at ?? "2026-07-06T09:00:00+09:00";
+  const item_code = opts.item_code ?? "HP12";
+  const ngSet = new Set(opts.ngIdx ?? []);
+  const baseId = opts.baseId ?? 1000;
+  return Array.from({ length: count }, (_, i) => {
+    const ng = ngSet.has(i);
+    return makeResult({
+      id: baseId + i,
+      lot,
+      inspected_at,
+      item_code,
+      tube_index: i,
+      final_verdict: ng ? Verdict.NG : Verdict.OK,
+      defect_codes: ng ? [DefectCode.SCR] : [],
+      length_verdict: ng ? Verdict.NG : Verdict.OK,
+      review_flag: ng,
+    });
+  });
+}

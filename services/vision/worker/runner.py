@@ -28,11 +28,19 @@ from ._bootstrap import (
 )
 
 # _bootstrap 이 vision 패키지 경로를 보강한 뒤 import (flat/패키지 양립).
-from vision.imaging import save_inspection_images  # noqa: E402
+from vision.imaging import (  # noqa: E402
+    save_batch_images,
+    save_inspection_images,
+)
 from vision.imaging.storage import (  # noqa: E402
     SUPABASE,
     StorageSettings,
     build_backend,
+)
+from vision.multi import (  # noqa: E402
+    BatchMeta,
+    inspect_batch,
+    tube_to_inspection,
 )
 
 from .client import ApiClient
@@ -182,8 +190,23 @@ class Worker:
         except Exception as exc:  # noqa: BLE001
             log.warning("스풀 flush 예외(계속): %s", exc)
 
-    # --- 단일 검사 사이클 ---
+    # --- 검사 사이클 디스패치(단일 / 배치) ---
     def run_once(self) -> bool:
+        """트리거 1회 처리. item.expected_count>1 이면 배치 모드, 아니면 단일.
+
+        - 단일(기본, expected_count=1): 현행 동작 그대로(변경 없음).
+        - 배치(expected_count>1): 1프레임 → inspect_batch → 튜브 N개를 각각
+          InspectionResult 로 POST(이미지는 배치당 1회 저장, tube_index 로 구분).
+
+        반환: 이 사이클의 (모든) 적재가 성공하면 True. raise 금지.
+        """
+        expected = int(getattr(self.item, "expected_count", 1) or 1)
+        if expected > 1:
+            return self._run_once_batch()
+        return self._run_once_single()
+
+    # --- 단일 검사 사이클 ---
+    def _run_once_single(self) -> bool:
         """트리거 1회 → 검사 → POST(실패 시 스풀). 성공 적재면 True. raise 금지.
 
         실패 분류:
@@ -272,6 +295,120 @@ class Worker:
         self.failure += 1
         log.error("적재 영구 오류(스풀 제외): %s", detail)
         return False
+
+    # --- 배치(다중 튜브) 검사 사이클 ---
+    def _post_or_classify(self, result) -> bool:
+        """InspectionResult 1건 POST → 성공/스풀/영구오류 분류(단일 경로와 동일).
+
+        반환: 2xx 적재 성공이면 True. 재시도 대상(연결/타임아웃/5xx)은 스풀,
+        4xx 영구 오류는 실패 계상. 이미지 pending 은 호출자가 사전에 처리한다.
+        """
+        try:
+            status, detail = self.client.post_inspection_json(
+                result.model_dump(mode="json")
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("튜브 적재 예외: %s", exc)
+            self.failure += 1
+            return False
+        if 200 <= status < 300:
+            self.success += 1
+            return True
+        if status == 0 or status >= 500:
+            self.spool.enqueue(result)
+            self.spooled += 1
+            log.warning("튜브 적재 실패(%s) → 스풀(재전송 대기)", detail)
+            return False
+        self.failure += 1
+        log.error("튜브 적재 영구 오류(스풀 제외): %s", detail)
+        return False
+
+    def _run_once_batch(self) -> bool:
+        """트리거 1회 → 배치 검사 → 튜브 N개 각각 POST. raise 금지.
+
+        이미지 저장은 배치당 1회(raw 원본 1장 + 배치 오버레이 1장)이며 모든 튜브
+        행이 동일 raw/result 경로·검사시각을 공유한다. 각 튜브는 tube_index(0..N-1)
+        로 구분되어 서버 자연키 멱등이 보장한다(같은 tube_index 재전송=멱등).
+
+        원격 이미지 업로드가 실패(pending)하면 튜브 전원을 스풀에 적재해(경로
+        무결성 유지) flush 가 이미지 선업로드 후 POST 하도록 한다. 반환: 모든
+        튜브가 적재 성공하면 True.
+        """
+        assert self.item is not None and self.acq is not None
+        try:
+            grab = self.acq.grab_with_retry()
+            if not grab.ok:
+                log.warning("프레임 취득 실패(배치): %s", grab.error)
+                self.failure += 1
+                return False
+            inspected_at = datetime.now(timezone.utc)
+            expected = int(getattr(self.item, "expected_count", 1) or 1)
+            # 판정(proc_time KPI)을 먼저 끝낸 뒤 이미지 저장(§4).
+            batch = inspect_batch(
+                grab.frame, self.item, expected_count=expected
+            )
+            saved = save_batch_images(
+                grab.frame,
+                batch,
+                images_dir=self.cfg.images_dir,
+                lot=self.cfg.lot,
+                item_code=self.cfg.item_code,
+                inspected_at=inspected_at,
+                pending_sink=self.spool.save_image,
+            )
+            if saved.error:
+                log.warning("배치 이미지 저장 실패(계속 진행): %s", saved.error)
+
+            meta = BatchMeta(
+                lot=self.cfg.lot,
+                item_code=self.cfg.item_code,
+                cam_id=self.cfg.cam_id,
+                inspected_at=inspected_at,
+                ref_length_mm=float(self.item.ref_length_mm),
+                work_order=None,
+                shift=self.cfg.shift,
+                operator=self.cfg.operator,
+                raw_image_path=saved.raw_image_path,
+                result_image_path=saved.result_image_path,
+            )
+            pending_images = list(getattr(saved, "pending_images", ()) or ())
+            results = [
+                tube_to_inspection(t, batch_meta=meta) for t in batch.tubes
+            ]
+
+            log.info(
+                "배치 검사: detected=%d/%s NG=%d mismatch=%s tubes=%d",
+                batch.count_detected,
+                batch.count_expected,
+                batch.ng_count,
+                batch.count_mismatch,
+                len(results),
+            )
+
+            if pending_images:
+                # 이미지가 원격에 아직 없다 — 모든 튜브 행을 스풀로 우회해 flush 가
+                # 이미지 선업로드 후 POST 하도록(경로 무결성). 서버 멱등이 중복 차단.
+                for result in results:
+                    self.spool.enqueue(result, pending_images=pending_images)
+                    self.spooled += 1
+                log.warning(
+                    "배치 이미지 업로드 실패 → 튜브 %d건 스풀 적재(pending=%d)",
+                    len(results),
+                    len(pending_images),
+                )
+                return False
+
+            all_ok = True
+            for result in results:
+                if not self._post_or_classify(result):
+                    all_ok = False
+            return all_ok and len(results) > 0
+        except Exception as exc:  # noqa: BLE001
+            log.exception("배치 검사 사이클 예외: %s", exc)
+            self.failure += 1
+            return False
+        finally:
+            self.processed += 1
 
     # --- 메인 루프 ---
     def run(self) -> int:
