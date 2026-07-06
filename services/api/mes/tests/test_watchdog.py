@@ -20,9 +20,11 @@ def _table_cfg(**over) -> MesConfig:
     return MesConfig(**base)
 
 
-def _seed(db, n, *, synced=False):
+def _seed(db, n, *, synced=False, start=0):
+    """서로 다른 제품 n건 시드. start 로 자연키(lot/cam/inspected_at) 겹침 방지
+    (inspection 은 ux_insp_natkey 유니크 — 동일 자연키 재시드는 실제로도 불가)."""
     t0 = datetime(2026, 6, 10, 8, 0, tzinfo=timezone.utc)
-    for i in range(n):
+    for i in range(start, start + n):
         db.add(Inspection(
             lot=f"LOT{i}", item_code="HP12", cam_id=f"CAM{i}",
             inspected_at=t0 + timedelta(seconds=i),
@@ -33,7 +35,7 @@ def _seed(db, n, *, synced=False):
 
 def test_linkage_status_rate(db):
     _seed(db, 3, synced=True)
-    _seed(db, 1, synced=False)
+    _seed(db, 1, synced=False, start=3)
     st = get_linkage_status(db, _table_cfg())
     assert st.total == 4
     assert st.synced == 3

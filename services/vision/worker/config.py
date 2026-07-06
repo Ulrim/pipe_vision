@@ -66,6 +66,15 @@ class WorkerConfig:
     supabase_url: str | None = None
     supabase_key: str | None = None
     supabase_bucket: str = "inspection-images"
+    # 오프라인 스풀(디스크 버퍼) — 모드 A(Pi→클라우드) 인터넷 단절 대비.
+    # POST /inspection 실패(연결/타임아웃/5xx)·이미지 업로드 실패 payload 를
+    # 디스크에 적재 후 자동 재전송한다. Pi 운영은 /var/lib/aivis/spool 권장
+    # (재부팅에도 유지되는 영속 경로). 기본 "spool" 은 작업 디렉터리 기준.
+    spool_dir: str = "spool"
+    # 스풀 총 용량 상한(MB). 초과 시 가장 오래된 항목부터 삭제(SD 카드 보호).
+    spool_max_mb: int = 512
+    # 루프당 재전송 시도 상한(oldest-first) — 라이브 검사를 굶기지 않는다.
+    spool_flush_batch: int = 20
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -99,6 +108,9 @@ class WorkerConfig:
             supabase_key=_env("SUPABASE_SERVICE_ROLE_KEY"),
             supabase_bucket=_env("SUPABASE_STORAGE_BUCKET", "inspection-images")
             or "inspection-images",
+            spool_dir=_env("AIVIS_SPOOL_DIR", "spool") or "spool",
+            spool_max_mb=_env_int("AIVIS_SPOOL_MAX_MB", 512),
+            spool_flush_batch=_env_int("AIVIS_SPOOL_FLUSH_BATCH", 20),
         )
 
     @property

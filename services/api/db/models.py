@@ -1,7 +1,8 @@
 """SQLAlchemy 2.0 ORM 모델 — CLAUDE.md §7.1 스키마 그대로 매핑.
 
 테이블: item_master, inspection, kpi_manual, app_user, sys_log, mes_quality_if(§7.3).
-인덱스: ix_insp_lot, ix_insp_time, ix_insp_item_verdict (§7.1).
+인덱스: ix_insp_lot, ix_insp_time, ix_insp_item_verdict (§7.1),
+ux_insp_natkey (자연키 멱등 유니크, 0002 마이그레이션).
 """
 from __future__ import annotations
 
@@ -92,6 +93,16 @@ class Inspection(Base):
         Index("ix_insp_lot", "lot"),
         Index("ix_insp_time", "inspected_at"),
         Index("ix_insp_item_verdict", "item_code", "final_verdict"),
+        # 자연키 멱등(POST /inspection 재전송 중복 방지, MES idem_key 와 동일 구성).
+        # cam_id+inspected_at 선두 → 자연키 동등 조회가 인덱스만으로 즉시 좁혀짐.
+        Index(
+            "ux_insp_natkey",
+            "cam_id",
+            "inspected_at",
+            "lot",
+            "item_code",
+            unique=True,
+        ),
     )
 
 

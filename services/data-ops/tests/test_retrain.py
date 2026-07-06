@@ -12,12 +12,20 @@ from retrain.review import (
 from retrain.threshold import suggest_thresholds
 
 
+_seq = 0
+
+
 def _insp(db, **over) -> Inspection:
+    # 호출마다 inspected_at 을 1초씩 뒤로 밀어 자연키(cam_id+inspected_at+lot+item)
+    # 유일성 보장(ux_insp_natkey). 테스트 단언은 시각과 무관.
+    global _seq
     base = dict(
         lot="LOT1", item_code="HP12", cam_id="CAM1",
-        inspected_at=datetime(2026, 6, 10, 8, 0, tzinfo=timezone.utc),
+        inspected_at=datetime(2026, 6, 10, 8, 0, tzinfo=timezone.utc)
+        + timedelta(seconds=_seq),
         final_verdict="OK", defect_codes=[], review_flag=False, mes_synced=False,
     )
+    _seq += 1
     base.update(over)
     row = Inspection(**base)
     db.add(row)

@@ -39,23 +39,27 @@ from ws.hub import hub, make_event
 router = APIRouter(prefix="/inspection", tags=["inspection"])
 
 
-def _save_with_backup(result: InspectionResult) -> Optional[InspectionResult]:
-    """DB 저장 시도. 실패 시 로컬 큐 백업(M7 DoD). 성공 시 저장 결과 반환.
+def _save_with_backup(
+    result: InspectionResult,
+) -> Optional[tuple[InspectionResult, bool]]:
+    """DB 저장 시도. 실패 시 로컬 큐 백업(M7 DoD). 성공 시 (저장 결과, created).
 
+    created=False 는 자연키 중복(엣지 스풀 재전송 등)으로 기존 행을 반환한 경우.
     네트워크/DB 일시 장애에도 검사결과 유실을 막아 저장 성공률 100% 를 노린다.
     """
     settings = get_settings()
     db = SessionLocal()
     try:
-        row = save_inspection(db, result, mes_mode=settings.mes_mode)
+        row, created = save_inspection(db, result, mes_mode=settings.mes_mode)
         saved = inspection_to_schema(row)
-        # 저장 성공 로그(M15: db 카테고리).
+        # 저장 성공 로그(M15: db 카테고리). 중복(dedup)도 구분해 기록.
+        outcome = "ok" if created else "dedup"
         write_log(
             db,
             category=LogCategory.DB,
-            message=f"inspection.store ok id={row.id} lot={row.lot} verdict={row.final_verdict}",
+            message=f"inspection.store {outcome} id={row.id} lot={row.lot} verdict={row.final_verdict}",
         )
-        return saved
+        return saved, created
     except Exception as exc:
         db.rollback()
         # 저장 실패 로그(M15: error 카테고리). 로그 적재 자체도 실패하면 무시.
@@ -88,15 +92,25 @@ async def create_inspection(
     저장 성공 시 WS /ws/live 로 검사결과(+NG 알람)를 브로드캐스트한다(M6).
     cam_id 단위 연속 NG 가 임계(AIVIS_CONSEC_NG_THRESHOLD, 기본 3) 이상이면
     consecutive_ng 알람을 추가 브로드캐스트한다.
+
+    멱등성: 자연키 (lot, item_code, inspected_at, cam_id) 가 동일한 재전송
+    (엣지 오프라인 스풀 — 서버는 저장했으나 응답 유실)은 행을 새로 만들지 않고
+    기존 행 id 로 동일 스키마 응답한다. 이때 WS 브로드캐스트/연속 NG 카운트는
+    발화하지 않는다(이중 알람 방지).
     """
-    saved = _save_with_backup(result)
-    if saved is None:
+    outcome = _save_with_backup(result)
+    if outcome is None:
         # 백업됨 — 워치독이 재처리. 데이터는 유실되지 않음.
         return {
             "status": "queued",
             "detail": "DB 저장 실패: 로컬 큐 백업됨, 재시도 예정",
             "pending": local_queue.pending_count(),
         }
+
+    saved, created = outcome
+    if not created:
+        # 자연키 중복(재전송) — 기존 행 반환. 브로드캐스트/알람/카운터 미발화.
+        return {"status": "stored", "id": saved.id, "inspection": saved}
 
     # 실시간 푸시(연결된 HMI 없으면 no-op).
     payload = saved.model_dump(mode="json")

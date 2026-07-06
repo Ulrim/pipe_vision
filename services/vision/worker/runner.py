@@ -29,10 +29,16 @@ from ._bootstrap import (
 
 # _bootstrap 이 vision 패키지 경로를 보강한 뒤 import (flat/패키지 양립).
 from vision.imaging import save_inspection_images  # noqa: E402
+from vision.imaging.storage import (  # noqa: E402
+    SUPABASE,
+    StorageSettings,
+    build_backend,
+)
 
 from .client import ApiClient
 from .config import WorkerConfig
 from .dataset import ensure_dataset
+from .spool import SpoolQueue
 
 log = logging.getLogger("aivis.vision.worker")
 
@@ -46,6 +52,8 @@ class Worker:
         *,
         client: Optional[ApiClient] = None,
         pipeline: Optional[InspectionPipeline] = None,
+        spool: Optional[SpoolQueue] = None,
+        image_uploader=None,
     ) -> None:
         self.cfg = config
         self._owns_client = client is None
@@ -57,6 +65,16 @@ class Worker:
             timeout_s=config.http_timeout_s,
         )
         self.pipeline = pipeline or InspectionPipeline()
+        # 오프라인 스풀(디스크 버퍼) — POST/이미지 업로드 실패 시 유실 방지.
+        self.spool = spool or SpoolQueue(
+            config.spool_dir,
+            max_mb=config.spool_max_mb,
+            flush_batch=config.spool_flush_batch,
+        )
+        # flush 시 pending 이미지 업로더((key, jpeg) -> None). 주입 없으면
+        # supabase 설정이 있을 때 lazily 구성한다.
+        self._image_uploader = image_uploader
+        self._uploader_built = image_uploader is not None
         self.item: Optional[ItemMaster] = None
         self.camera = None
         self.trigger = None
@@ -65,6 +83,7 @@ class Worker:
         self.success = 0
         self.failure = 0
         self.processed = 0
+        self.spooled = 0
 
     # --- 종료 시그널 ---
     def request_stop(self, *_args) -> None:
@@ -129,10 +148,55 @@ class Worker:
             return False
         return True
 
+    # --- 스풀 재전송 지원 ---
+    def _spool_uploader(self):
+        """flush 용 pending 이미지 업로더((key, jpeg) -> None). 없으면 None.
+
+        supabase 스토리지가 설정된 경우에만 원격 업로더를 lazily 만든다
+        (pending 이미지는 supabase 업로드 실패에서만 생기므로 충분).
+        """
+        if not self._uploader_built:
+            self._uploader_built = True
+            if self.cfg.storage_backend == SUPABASE and self.cfg.supabase_configured:
+                backend = build_backend(
+                    StorageSettings(
+                        backend=SUPABASE,
+                        images_dir=self.cfg.images_dir,
+                        supabase_url=self.cfg.supabase_url,
+                        supabase_key=self.cfg.supabase_key,
+                        supabase_bucket=self.cfg.supabase_bucket,
+                    )
+                )
+                self._image_uploader = backend.put
+        return self._image_uploader
+
+    def flush_spool(self) -> None:
+        """스풀 재전송(oldest-first, 배치 상한). 예외에도 루프를 죽이지 않는다."""
+        try:
+            if self.spool.pending_count() == 0:
+                return
+            self.spool.flush(
+                self.client.post_inspection_json,
+                upload_fn=self._spool_uploader(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("스풀 flush 예외(계속): %s", exc)
+
     # --- 단일 검사 사이클 ---
     def run_once(self) -> bool:
-        """트리거 1회 → 검사 → POST. 성공 적재면 True. 절대 raise 하지 않는다."""
+        """트리거 1회 → 검사 → POST(실패 시 스풀). 성공 적재면 True. raise 금지.
+
+        실패 분류:
+          - 2xx: 성공.
+          - 연결 오류/타임아웃/5xx: 스풀 적재(오프라인 대비 — 서버 멱등이 중복 차단).
+          - 4xx(401/403/422 등): 영구 오류 — 스풀하지 않고 오류 로그만.
+          - 이미지 업로드 실패(supabase): JPEG 를 스풀에 보존하고 결과도 스풀
+            (flush 가 이미지 선업로드 후 POST — 키는 결정적이라 경로 유지).
+        """
         assert self.item is not None and self.acq is not None
+        status = -1
+        detail = ""
+        pending_images: list[str] = []
         try:
             grab = self.acq.grab_with_retry()
             if not grab.ok:
@@ -151,6 +215,7 @@ class Worker:
                 item_code=self.cfg.item_code,
                 inspected_at=inspected_at,
                 item=self.item,
+                pending_sink=self.spool.save_image,
             )
             if saved.error:
                 # 디스크 쓰기 실패는 검사결과 적재를 막지 않는다(경로 None 로 진행).
@@ -166,7 +231,20 @@ class Worker:
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,
             )
-            ok, detail = self.client.post_inspection(result)
+            pending_images = list(getattr(saved, "pending_images", ()) or ())
+            if pending_images:
+                # 이미지가 아직 원격에 없다 — 결과도 스풀로 우회해 flush 가
+                # 이미지 선업로드 후 POST 하도록 한다(경로 무결성 유지).
+                self.spool.enqueue(result, pending_images=pending_images)
+                self.spooled += 1
+                log.warning(
+                    "이미지 업로드 실패 → 결과 스풀 적재(pending_images=%d)",
+                    len(pending_images),
+                )
+                return False
+            status, detail = self.client.post_inspection_json(
+                result.model_dump(mode="json")
+            )
         except Exception as exc:  # noqa: BLE001
             # 어떤 단계 예외도 루프를 죽이지 않는다(자동검사율/가동 유지).
             log.exception("검사 사이클 예외: %s", exc)
@@ -175,7 +253,7 @@ class Worker:
         finally:
             self.processed += 1
 
-        if ok:
+        if 200 <= status < 300:
             self.success += 1
             log.debug(
                 "적재 OK verdict=%s proc=%dms (%s)",
@@ -183,10 +261,17 @@ class Worker:
                 result.proc_time_ms,
                 detail,
             )
-        else:
-            self.failure += 1
-            log.warning("적재 실패: %s", detail)
-        return ok
+            return True
+        if status == 0 or status >= 500:
+            # 연결 오류/타임아웃/5xx → 스풀(재시도 대상). 유실 금지.
+            self.spool.enqueue(result)
+            self.spooled += 1
+            log.warning("적재 실패(%s) → 스풀 적재(재전송 대기)", detail)
+            return False
+        # 4xx 영구 오류(401/403/422 등) — 재시도 무의미, 스풀 금지.
+        self.failure += 1
+        log.error("적재 영구 오류(스풀 제외): %s", detail)
+        return False
 
     # --- 메인 루프 ---
     def run(self) -> int:
@@ -211,6 +296,8 @@ class Worker:
 
         # 첫 루프 준비 완료 → healthcheck 계약(/tmp/vision_ready).
         self._write_ready()
+        # 이전 세션(오프라인 구간)의 스풀 잔량을 기동 시 1회 재전송 시도.
+        self.flush_spool()
         log.info("검사 루프 진입")
 
         n = 0
@@ -223,24 +310,32 @@ class Worker:
             if self._stop:
                 break
             self.run_once()
+            # 매 루프 소량(flush_batch 상한) 재전송 — 라이브 검사를 굶기지 않는다.
+            self.flush_spool()
             n += 1
             if self.cfg.log_every and n % self.cfg.log_every == 0:
                 log.info(
-                    "진행: processed=%d success=%d failure=%d",
+                    "진행: processed=%d success=%d failure=%d spooled=%d spool=%s",
                     self.processed,
                     self.success,
                     self.failure,
+                    self.spooled,
+                    self.spool.stats(),
                 )
             if self.cfg.max_iterations and n >= self.cfg.max_iterations:
                 log.info("max_iterations(%d) 도달 — 종료", self.cfg.max_iterations)
                 break
 
+        # graceful shutdown: flush 강제 금지(빠른 종료 유지) — 잔량은 다음
+        # 기동 시(startup flush) 재전송된다.
         self.shutdown()
         log.info(
-            "워커 종료: processed=%d success=%d failure=%d",
+            "워커 종료: processed=%d success=%d failure=%d spooled=%d spool=%s",
             self.processed,
             self.success,
             self.failure,
+            self.spooled,
+            self.spool.stats(),
         )
         return 0
 

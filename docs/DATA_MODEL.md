@@ -45,6 +45,7 @@
 - `ix_insp_lot` (lot)
 - `ix_insp_time` (inspected_at)
 - `ix_insp_item_verdict` (item_code, final_verdict)
+- `ux_insp_natkey` (cam_id, inspected_at, lot, item_code) **UNIQUE** — POST /inspection 자연키 멱등(엣지 스풀 재전송 중복 생성 방지, MES idem_key 와 동일 구성, 0002 마이그레이션)
 
 ### kpi_manual — 비자동 KPI (§5 M12, §1.1)
 `period`(DATE PK, 월 1일), `claim_count`(INT), `workload_index`(NUMERIC),
