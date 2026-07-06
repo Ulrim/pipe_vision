@@ -20,6 +20,7 @@ def inspection_to_schema(row: Inspection) -> InspectionResult:
         item_code=row.item_code,
         cam_id=row.cam_id,
         inspected_at=row.inspected_at,
+        tube_index=row.tube_index if row.tube_index is not None else 0,
         shift=row.shift,
         operator=row.operator,
         ref_length_mm=_f(row.ref_length_mm),

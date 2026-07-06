@@ -121,6 +121,7 @@ export interface InspectionResult {
   item_code: string;
   cam_id: string;
   inspected_at: string; // ISO datetime
+  tube_index?: number; // 배치 내 튜브 순번(0=단일 튜브/현행, 서버 기본값). 자연키 구성요소(§7.1)
   shift?: string | null;
   operator?: string | null;
 

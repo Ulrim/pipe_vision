@@ -108,6 +108,12 @@ class InspectionResult(BaseModel):
     item_code: str = Field(..., description="품목 코드(item_master FK)")
     cam_id: str = Field(..., description="카메라 ID")
     inspected_at: datetime = Field(..., description="검사 시각")
+    tube_index: int = Field(
+        0,
+        ge=0,
+        description="배치 내 튜브 순번(0=단일 튜브/현행). 같은 프레임의 튜브 N개를 "
+        "구분하는 자연키 구성요소(§7.1)",
+    )
     shift: Optional[str] = Field(None, description="작업 교대")
     operator: Optional[str] = Field(None, description="작업자")
 

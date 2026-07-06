@@ -31,11 +31,13 @@ def make_idem_key_from_row(row: Inspection) -> str:
     """inspection 행으로 멱등키 생성 (core.inspection_service.make_idem_key 와 동일 규칙).
 
     backend 의 make_idem_key 는 pydantic InspectionResult 를 받으므로,
-    ORM 행에서 동일 포맷을 재현한다: lot|item_code|inspected_at(iso)|cam_id.
+    ORM 행에서 동일 포맷을 재현한다:
+    lot|item_code|inspected_at(iso)|cam_id|tube_index.
     """
     ts = row.inspected_at
     ts_str = ts.isoformat() if isinstance(ts, datetime) else str(ts)
-    return f"{row.lot}|{row.item_code}|{ts_str}|{row.cam_id}"
+    tube_index = row.tube_index if row.tube_index is not None else 0
+    return f"{row.lot}|{row.item_code}|{ts_str}|{row.cam_id}|{tube_index}"
 
 
 def _row_to_payload(row: Inspection, idem_key: str) -> dict[str, Any]:

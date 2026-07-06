@@ -40,19 +40,20 @@ def _mk_row(db, **over) -> Inspection:
 
 
 def test_idem_key_format(db):
-    """멱등키 = lot|item_code|inspected_at(iso)|cam_id (§7.3).
+    """멱등키 = lot|item_code|inspected_at(iso)|cam_id|tube_index (§7.3).
 
     inspected_at 의 타임존 직렬화는 DB 백엔드(sqlite vs postgres) 의존이라
-    구조(파이프 4분할 + 양끝 식별자)만 단정한다.
+    구조(파이프 5분할 + 식별자/튜브순번)만 단정한다.
     """
     row = _mk_row(db)
     key = make_idem_key_from_row(row)
     parts = key.split("|")
-    assert len(parts) == 4
+    assert len(parts) == 5
     assert parts[0] == "LOT1"
     assert parts[1] == "HP12"
     assert parts[2].startswith("2026-06-10T08:00:00")
     assert parts[3] == "CAM1"
+    assert parts[4] == "0"  # 단일 튜브 기본 순번
 
 
 def test_table_mode_stages_and_marks_synced(db):

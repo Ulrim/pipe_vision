@@ -20,9 +20,14 @@ from db.models import Inspection, MesQualityIf
 
 
 def make_idem_key(r: InspectionResult) -> str:
-    """MES 멱등키 = lot+item+inspected_at+cam_id (§7.3)."""
+    """MES 멱등키 = lot+item+inspected_at+cam_id+tube_index (§7.3).
+
+    tube_index 포함: 같은 프레임(배치)의 튜브 N개가 동일 lot/item/cam/시각을
+    공유해도 튜브별로 별도 MES 스테이징 행이 되도록 한다(중복 병합 방지).
+    단일 튜브(tube_index=0)는 기존 키 뒤에 |0 만 붙어 동작은 동일하다.
+    """
     ts = r.inspected_at.isoformat()
-    return f"{r.lot}|{r.item_code}|{ts}|{r.cam_id}"
+    return f"{r.lot}|{r.item_code}|{ts}|{r.cam_id}|{r.tube_index}"
 
 
 def _verdict_value(v) -> str | None:
@@ -32,15 +37,13 @@ def _verdict_value(v) -> str | None:
 
 
 def find_by_natural_key(db: Session, result: InspectionResult) -> Inspection | None:
-    """자연키 (lot, item_code, inspected_at, cam_id) 로 기존 검사결과 행 조회.
+    """자연키 (lot, item_code, inspected_at, cam_id, tube_index) 로 기존 행 조회.
 
-    자연키는 MES 멱등키(make_idem_key, §7.3)와 동일 구성이다. 3필드
-    (cam_id, inspected_at, item_code) 만으로도 ms 정밀도 덕에 사실상 유일하지만,
-    lot 을 포함해 4필드로 두는 이유: ① 기존 MES 멱등 계약과 동일한 "제품 1개"
-    식별 규약 유지 ② 재전송 payload 는 lot 까지 동일하므로 dedup 효과는 같고,
-    타임스탬프 해상도가 낮은 소스가 섞여도 서로 다른 제품을 오인 병합할
-    위험이 낮다. (sqlite/postgres 공통: SQLAlchemy 가 None 비교를 IS NULL 로
-    변환하므로 item_code 미지정 payload 도 동작.)
+    자연키는 MES 멱등키(make_idem_key, §7.3)와 동일 구성이다. cam_id/inspected_at
+    /lot/item_code 만으로도 ms 정밀도 덕에 사실상 유일하지만, tube_index 를 포함해
+    같은 프레임(배치)의 튜브 N개(0..N-1)를 서로 다른 제품으로 구분한다. 단일 튜브
+    (tube_index=0)는 기존과 동일하게 dedup 된다. (sqlite/postgres 공통: SQLAlchemy
+    가 None 비교를 IS NULL 로 변환하므로 item_code 미지정 payload 도 동작.)
     """
     stmt = (
         select(Inspection)
@@ -49,6 +52,7 @@ def find_by_natural_key(db: Session, result: InspectionResult) -> Inspection | N
             Inspection.inspected_at == result.inspected_at,
             Inspection.lot == result.lot,
             Inspection.item_code == result.item_code,
+            Inspection.tube_index == result.tube_index,
         )
         .limit(1)
     )
@@ -97,6 +101,7 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
         item_code=result.item_code,
         cam_id=result.cam_id,
         inspected_at=result.inspected_at,
+        tube_index=result.tube_index,
         shift=result.shift,
         operator=result.operator,
         ref_length_mm=result.ref_length_mm,

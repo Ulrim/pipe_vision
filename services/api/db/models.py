@@ -64,6 +64,8 @@ class Inspection(Base):
     inspected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+    # 배치 내 튜브 순번(0=단일 튜브/현행). 자연키 구성요소(ux_insp_natkey).
+    tube_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     shift: Mapped[str | None] = mapped_column(Text)
     operator: Mapped[str | None] = mapped_column(Text)
 
@@ -97,12 +99,14 @@ class Inspection(Base):
         Index("ix_insp_item_verdict", "item_code", "final_verdict"),
         # 자연키 멱등(POST /inspection 재전송 중복 방지, MES idem_key 와 동일 구성).
         # cam_id+inspected_at 선두 → 자연키 동등 조회가 인덱스만으로 즉시 좁혀짐.
+        # tube_index 포함: 같은 프레임(배치)의 튜브 N개(0..N-1)를 별도 행으로 저장.
         Index(
             "ux_insp_natkey",
             "cam_id",
             "inspected_at",
             "lot",
             "item_code",
+            "tube_index",
             unique=True,
         ),
     )
