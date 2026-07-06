@@ -134,6 +134,13 @@ Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdo
 
 - 설치·운영·촬영 레시피·캘리브레이션·성능 튜닝: [`docs/RASPBERRY_PI.md`](./docs/RASPBERRY_PI.md)
   (systemd 유닛 `deploy/aivis-vision-pi.service`, 환경 템플릿 `deploy/aivis-worker.env.example`).
+- **독립형 원클릭**: `bash scripts/aivis-standalone.sh` — api(sqlite)+워커에 더해
+  HMI(`:5173`)·대시보드(`:5174`) 화면 서빙까지 한 번에 기동, Ctrl+C 로 전체 종료.
+  플래그: `AIVIS_SERVE_HMI`/`AIVIS_SERVE_DASHBOARD`(기본 true), `HMI_PORT`/`DASHBOARD_PORT`
+  (`dist` 없으면 경고 후 해당 화면만 건너뜀: `npm run build --workspace @aivis/hmi`).
+  api venv 의존이 불완전하면 자동 (재)설치하며, 기존 sqlite 가 구버전 스키마
+  (`inspection.tube_index` 없음)면 **자동 삭제 대신 경고 후 중단**한다(데이터 보호 —
+  `rm <db>` 재생성 또는 `alembic upgrade head` 안내).
 
 ## 오프라인(현장) 설치
 
