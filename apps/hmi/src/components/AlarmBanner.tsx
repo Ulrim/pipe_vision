@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef } from "react";
 import { useLiveStore, CONSECUTIVE_NG_THRESHOLD } from "@/store/liveStore";
+import { useLatestBatch } from "@/hooks/useBatches";
 import { DefectBadges } from "./DefectBadges";
 
 /** WebAudio 비프(자원 사전로딩 불필요). 실패해도 무시. */
@@ -39,6 +40,8 @@ export function AlarmBanner() {
   const dismissAlarm = useLiveStore((s) => s.dismissAlarm);
   const acknowledge = useLiveStore((s) => s.acknowledgeConsecutive);
   const toggleSound = useLiveStore((s) => s.toggleSound);
+  // 최신 배치가 다중 튜브 배치면 알람을 배치 단위로 요약(N개 중 M개 NG).
+  const latestBatch = useLatestBatch();
 
   // 새 알람 도착 시 비프(소리 켜짐).
   const lastAlarmId = useRef<number | null | undefined>(undefined);
@@ -49,6 +52,15 @@ export function AlarmBanner() {
       if (soundEnabled) beep();
     }
   }, [lastAlarm, soundEnabled]);
+
+  // 알람이 가리키는 LOT 이 최신 배치(다중 튜브)와 일치하면 배치 요약을 표시.
+  const batchAlarm =
+    lastAlarm &&
+    latestBatch?.isBatch &&
+    latestBatch.ngCount > 0 &&
+    latestBatch.lot === lastAlarm.lot
+      ? latestBatch
+      : null;
 
   if (!lastAlarm && !consecutiveActive) {
     return (
@@ -97,7 +109,14 @@ export function AlarmBanner() {
               ✕
             </span>
             <span className="text-hmi font-bold text-ng-fg">
-              NG 발생 · LOT {lastAlarm.lot}
+              {batchAlarm ? (
+                <span data-testid="ng-alarm-batch">
+                  NG 발생 · LOT {lastAlarm.lot} · 배치 {batchAlarm.total}개 중{" "}
+                  {batchAlarm.ngCount}개 NG
+                </span>
+              ) : (
+                <>NG 발생 · LOT {lastAlarm.lot}</>
+              )}
             </span>
             <DefectBadges codes={lastAlarm.defect_codes} size="sm" />
           </div>
