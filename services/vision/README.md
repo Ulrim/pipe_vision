@@ -192,6 +192,55 @@ pipe = InspectionPipeline(surface_model=OnnxSurfaceModel())  # 모델 없으면 
 - export 골격: `python -m services.vision.models.export_surface_onnx --weights ... --out models/surface.onnx [--int8 --calib-dir ...]`.
 - 임계는 모델이 아니라 ItemMaster 에서(하드코딩 금지). ONNX 는 score 만 산출.
 
+## 디버그 도구 — 길이 측정 시각화 진단 (`tools/debug_length.py`)
+
+현장에서 촬영한 이미지 1장만으로 "왜 이 길이값이 나왔는지"(어떤 영역을
+파이프로 인식했는지, 끝단을 어디로 잡았는지, 대비가 충분했는지)를 오프라인
+에서 눈으로/수치로 확인하는 독립 실행형 CLI. `render_overlay()`(운영
+오버레이)는 최종 판정만 보여주고 검출 내부값은 그리지 않으므로, 측정값이
+이상할 때 원인을 추적하려면 이 도구를 쓴다. API/DB 연결이 필요 없다(완전
+오프라인) — 표준 촬영 이미지 파일 경로만 있으면 즉시 실행된다.
+
+```bash
+cd services/vision && . ../../.venv-all/bin/activate  # venv 활성화(경로는 환경에 맞게)
+python -m tools.debug_length /var/lib/aivis/images/raw/xxx.jpg
+```
+
+기본값은 데모 시드값(`ref_length_mm=125.0`, `px_to_mm_scale=0.25`)이라
+바로 실행 가능하지만, 실제 품목 기준으로 진단하려면 옵션을 넘긴다:
+
+```bash
+python -m tools.debug_length raw.jpg \
+    --scale 0.1832 --ref-length-mm 248.5 --tol-plus-mm 0.5 --tol-minus-mm 0.5 \
+    --min-contrast 20.0
+
+# 촬영 레시피(AF/AE 고정 여부)까지 진단하려면:
+python -m tools.debug_length raw.jpg \
+    --capture-recipe '{"af_mode":"manual","exposure_us":8000}'
+
+# 다중튜브(다객체) 진단 — 기대 튜브 개수를 지정:
+python -m tools.debug_length raw.jpg --multi 5
+```
+
+산출물:
+- `<입력파일명>_debug.jpg` — 원본 위에 Otsu 마스크(반투명), `length_roi`
+  bbox, 좌/우 끝단(정수 위치 점선 vs 서브픽셀 보정 위치 실선), 최종
+  OK/NG·수치 패널, 하단 밝기 프로파일+그래디언트 라인 그래프(argmax/argmin
+  마커)를 그린 이미지. `--multi N` 이면 개요(`_debug.jpg`, seam+튜브 bbox)
+  + 튜브별(`_tube{N}_debug.jpg`) 이미지를 각각 생성한다.
+- stdout 한국어 진단 텍스트 — 검출 bbox/컨투어 면적, 대비 vs `min_contrast`
+  게이트 통과 여부, 좌/우 에지의 정수·서브픽셀 위치와 보정 적용 여부, 최종
+  `meas_length_mm`/`deviation_mm`/판정, 그리고 정적 임계 비교로 판별 가능한
+  경고(마스크 폴라리티 의심, 컨투어가 프레임 경계에 닿음, 종횡비 이상, 대비
+  부족, `capture_recipe` AF/AE 미고정, 데모 시드값 미교정 등).
+
+측정 로직(`length.measure.measure_length`/`_find_edges`/`_parabolic_subpixel`,
+`preprocess.roi.preprocess`/`segment_pipe_roi`)은 그대로 재사용하며 이 도구
+안에서 재구현하지 않는다(단일 진실원). shared-types 는 변경하지 않으므로
+`EdgeDebugInfo` 는 `tools/debug_length.py` 내부 로컬 dataclass 로만 존재한다
+(추후 `render_overlay()`/`LengthResult` 확장 시 재사용 가능하도록 필드명을
+맞춰 두었다 — 스키마 반영은 오케스트레이터 승인 후 별도 작업).
+
 ## 안정화 / 자동검사율 100% (미판정 0)
 
 `InspectionPipeline.run()` 은 **어떤 입력/예외에도 raise 하지 않고** 결정적
