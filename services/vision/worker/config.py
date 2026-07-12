@@ -28,6 +28,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw.strip())
+    except ValueError:
+        return default
+
+
 @dataclass
 class WorkerConfig:
     """워커 런타임 설정 스냅샷(환경변수 1회 로드)."""
@@ -42,6 +52,16 @@ class WorkerConfig:
     shift: str | None = None
     operator: str | None = None
     interval_ms: int = 1500
+    # 카메라 취득 워치독 타임아웃(초). AcquisitionService.grab_timeout_s 로 전달
+    # 되어 camera.grab() 이 이 시간 내에 반환하지 않으면 CameraError 로 승격
+    # +카메라 핸들 close(재연결 유도) 후 재시도한다(acquisition/__init__.py).
+    # 0/음수면 비활성(=무기한 대기, 과거 동작). 기본 5.0s 근거: interval_ms
+    # 기본값(1500ms)의 ~3.3배 — 정상 촬영 주기 내에서 재시도 여유를 확보하면서,
+    # PiCameraAdapter 최초 open(디바이스 configure+start+워밍업 프레임 캡처
+    # 포함, 콜드스타트 시 수백ms~수초 소요 가능)을 오탐(false positive) 없이
+    # 통과시키기에 충분한 여유를 둔다. 실제 하드웨어 관측치로 현장에서 재조정
+    # 가능(하드코딩 금지 원칙에 따라 환경변수로만 노출).
+    grab_timeout_s: float = 5.0
     # API readiness 폴링 한계(견고성: 무한 대기 금지).
     api_wait_timeout_s: int = 120
     # item_master 조회 재시도 한계.
@@ -93,6 +113,7 @@ class WorkerConfig:
             shift=_env("AIVIS_SHIFT"),
             operator=_env("AIVIS_OPERATOR"),
             interval_ms=_env_int("AIVIS_WORKER_INTERVAL_MS", 1500),
+            grab_timeout_s=_env_float("AIVIS_CAMERA_GRAB_TIMEOUT_S", 5.0),
             api_wait_timeout_s=_env_int("AIVIS_API_WAIT_TIMEOUT_S", 120),
             item_wait_timeout_s=_env_int("AIVIS_ITEM_WAIT_TIMEOUT_S", 120),
             http_timeout_s=float(_env_int("AIVIS_HTTP_TIMEOUT_MS", 5000)) / 1000.0,

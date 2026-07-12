@@ -353,3 +353,27 @@ def test_worker_request_stop_breaks_loop(tmp_path):
     assert worker._stop is True
     worker.shutdown()
     assert not Path(cfg.ready_file).exists()
+
+
+# --- 카메라 취득 워치독(grab_timeout_s) 설정 배선 ---
+def test_worker_config_reads_grab_timeout_env(monkeypatch):
+    monkeypatch.setenv("AIVIS_CAMERA_GRAB_TIMEOUT_S", "2.5")
+    cfg = WorkerConfig.from_env()
+    assert cfg.grab_timeout_s == 2.5
+
+
+def test_worker_config_grab_timeout_default(monkeypatch):
+    monkeypatch.delenv("AIVIS_CAMERA_GRAB_TIMEOUT_S", raising=False)
+    cfg = WorkerConfig.from_env()
+    assert cfg.grab_timeout_s == 5.0  # 기본값(interval_ms 기본 1500ms 의 ~3.3배).
+
+
+def test_worker_setup_camera_wires_grab_timeout_into_acquisition_service(tmp_path):
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, max_iterations=1, grab_timeout_s=0.75)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    assert worker.acq is not None
+    assert worker.acq.grab_timeout_s == 0.75
+    worker.shutdown()

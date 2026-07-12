@@ -133,7 +133,11 @@ class Worker:
                 self.camera.configure(self.item.capture_recipe)
             else:
                 self.camera.configure({})
-            self.acq = AcquisitionService(camera=self.camera, max_retries=3)
+            self.acq = AcquisitionService(
+                camera=self.camera,
+                max_retries=3,
+                grab_timeout_s=self.cfg.grab_timeout_s,
+            )
             self.trigger = create_trigger(interval_s=self.cfg.interval_s)
             return True
         except Exception as exc:  # noqa: BLE001
@@ -452,12 +456,15 @@ class Worker:
             n += 1
             if self.cfg.log_every and n % self.cfg.log_every == 0:
                 log.info(
-                    "진행: processed=%d success=%d failure=%d spooled=%d spool=%s",
+                    "진행: processed=%d success=%d failure=%d spooled=%d spool=%s "
+                    "grab_timeout=%d grab_reconnect=%d",
                     self.processed,
                     self.success,
                     self.failure,
                     self.spooled,
                     self.spool.stats(),
+                    self._acq_timeout_count(),
+                    self._acq_reconnect_count(),
                 )
             if self.cfg.max_iterations and n >= self.cfg.max_iterations:
                 log.info("max_iterations(%d) 도달 — 종료", self.cfg.max_iterations)
@@ -467,14 +474,24 @@ class Worker:
         # 기동 시(startup flush) 재전송된다.
         self.shutdown()
         log.info(
-            "워커 종료: processed=%d success=%d failure=%d spooled=%d spool=%s",
+            "워커 종료: processed=%d success=%d failure=%d spooled=%d spool=%s "
+            "grab_timeout=%d grab_reconnect=%d",
             self.processed,
             self.success,
             self.failure,
             self.spooled,
             self.spool.stats(),
+            self._acq_timeout_count(),
+            self._acq_reconnect_count(),
         )
         return 0
+
+    # --- 취득 워치독 카운터(관측성) ---
+    def _acq_timeout_count(self) -> int:
+        return self.acq.timeout_count if self.acq is not None else 0
+
+    def _acq_reconnect_count(self) -> int:
+        return self.acq.reconnect_count if self.acq is not None else 0
 
     def shutdown(self) -> None:
         self._clear_ready()
