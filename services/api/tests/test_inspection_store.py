@@ -120,3 +120,49 @@ def test_local_queue_backup_on_db_failure(client, auth, monkeypatch):
     assert r.status_code == 201
     assert r.json()["status"] == "queued"
     assert local_queue.pending_count() == before + 1
+
+
+def test_double_failure_db_and_local_queue_returns_5xx_not_queued(monkeypatch, caplog):
+    """DB 저장도 로컬 큐 백업도 실패(디스크 동시 소진 등)하면 검사결과가
+
+    어디에도 남지 않는다. 이때 status=queued(200대)로 응답하면 엣지 워커가
+    "성공"으로 오인해 자기 오프라인 스풀에도 적재하지 않아 완전 유실된다
+    (M7 DoD 100% 저장 위반). 반드시 5xx 를 돌려줘 엣지 스풀이 최후 방어선으로
+    재시도하게 해야 하고, DB/파일에 의존하지 않는 표준 로거로 흔적을 남겨야
+    한다.
+    """
+    import logging
+
+    from fastapi.testclient import TestClient
+
+    import routers.inspection as insp_mod
+    from core import local_queue
+    from main import app
+
+    def db_boom(*a, **k):
+        raise RuntimeError("db down")
+
+    def backup_boom(*a, **k):
+        raise OSError("[Errno 28] No space left on device")
+
+    monkeypatch.setattr(insp_mod, "save_inspection", db_boom)
+    monkeypatch.setattr(local_queue, "backup", backup_boom)
+    before = local_queue.pending_count()
+
+    # 기본 client 픽스처는 디버깅 편의를 위해 서버 예외를 테스트로 그대로
+    # 재던진다(raise_server_exceptions=True, TestClient 기본값). 실제 클라이언트
+    # (엣지 워커)가 받는 진짜 HTTP 응답(5xx)을 검증하려면 이를 꺼야 한다.
+    with TestClient(app, raise_server_exceptions=False) as strict_client:
+        with caplog.at_level(logging.CRITICAL, logger="aivis.api.inspection"):
+            r = strict_client.post("/inspection", json=_insp(lot="LOTDOUBLEFAIL"))
+
+    assert r.status_code >= 500, r.text
+    # 기본 500 응답은 JSON 이 아니다(커스텀 에러 핸들러 없음) — "queued" 로
+    # 오인될 만한 성공 표시가 전혀 없는지만 확인.
+    assert "queued" not in r.text
+    # 백업 자체가 실패했으므로 큐에도 안 늘어나야 한다(거짓 "적재됨" 방지).
+    assert local_queue.pending_count() == before
+    assert any(
+        "완전 유실" in rec.message and "LOTDOUBLEFAIL" in rec.message
+        for rec in caplog.records
+    )
