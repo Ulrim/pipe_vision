@@ -1,6 +1,7 @@
 """검사결과 적재/조회/이미지/재확인 라우터 (CLAUDE.md §5 M7,M8,M10, §7.4)."""
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime
 from typing import Optional
@@ -38,6 +39,11 @@ from ws.hub import hub, make_event
 
 router = APIRouter(prefix="/inspection", tags=["inspection"])
 
+# write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.
+# 디스크 동시 소진 등으로 두 경로가 함께 실패하면(§M7 DoD 위반: 검사결과 완전
+# 유실) DB/파일에 의존하지 않는 표준 로거로 최소한의 흔적을 남긴다.
+log = logging.getLogger("aivis.api.inspection")
+
 
 def _save_with_backup(
     result: InspectionResult,
@@ -73,7 +79,25 @@ def _save_with_backup(
         except Exception:
             db.rollback()
         # 로컬 큐 백업 후 None (호출자가 status=queued 로 응답).
-        local_queue.backup(result)
+        try:
+            local_queue.backup(result)
+        except Exception as backup_exc:
+            # DB 저장도, 로컬 큐 백업도 실패 — 검사결과가 어디에도 남지 않는다.
+            # 여기서 조용히 None 을 반환하면 호출자가 status=queued(200) 로
+            # 응답해 엣지 워커가 "성공"으로 오인하고 자기 스풀에도 적재하지
+            # 않는다(이중 유실). 표준 로거(파일/DB 미의존)로 흔적을 남긴 뒤
+            # 예외를 그대로 전파해 5xx 가 나가게 하고, 엣지 워커의 오프라인
+            # 스풀이 최후의 방어선으로 재시도하게 한다.
+            log.critical(
+                "category=error inspection.store 완전 유실(DB+로컬백업 모두 실패) "
+                "lot=%s item_code=%s cam_id=%s inspected_at=%s: %s",
+                result.lot,
+                result.item_code,
+                result.cam_id,
+                result.inspected_at,
+                backup_exc,
+            )
+            raise
         return None
     finally:
         db.close()
