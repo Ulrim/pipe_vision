@@ -32,12 +32,21 @@ async def ws_live(ws: WebSocket, token: str | None = None):
     """HMI 실시간 채널. 서버->클라이언트 검사결과/알람 푸시.
 
     사내 도구이므로 `?token=<JWT>` 쿼리 파라미터로 JWT 인증을 요구한다(M14).
-    유효 토큰이면 accept 후 허브 구독, 무효/누락이면 accept 전에 1008(policy
+    유효 토큰이면 accept 후 허브 구독, 무효/누락이면 accept 후 즉시 1008(policy
     violation)로 거절한다. 클라이언트는 keepalive ping 외 메시지를 보낼 필요가
     없으나, 수신 루프로 연결 생존을 감지한다.
+
+    accept() 전에 close() 하면 WS 오프닝 핸드셰이크가 끝나지 않아 ASGI 서버가
+    HTTP 403 으로 응답한다 — 브라우저 WebSocket 은 이를 code=1008 이 아니라
+    비정상 종료(1006, "no close frame received")로 보고하므로, 프런트엔드의
+    "1008=인증만료 → 로그인 화면 복귀" 처리가 발동하지 못하고 무한 재연결
+    루프(HMI 상단 "재연결 중…" 고착)에 빠진다. 반드시 accept() 로 오프닝
+    핸드셰이크를 먼저 완료해 실제 WS 종료 프레임으로 1008 을 전달해야 클라이언트
+    가 정확한 코드를 받는다(로컬 검증: accept 후 close(1008) → 클라이언트
+    close_code==1008 확인, accept 없이 close 만 하면 HTTP 403).
     """
     if not _valid_token(token):
-        # accept 전에 거절(policy violation).
+        await ws.accept()
         await ws.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
