@@ -7,14 +7,7 @@ import { KpiPage } from "@/pages/KpiPage";
 import { ReportPage } from "@/pages/ReportPage";
 import { MasterPage } from "@/pages/MasterPage";
 import { LoginPage } from "@/pages/LoginPage";
-
-const NAV = [
-  { to: "/kpi", label: "KPI" },
-  { to: "/inspections", label: "검사이력" },
-  { to: "/statistics", label: "불량통계" },
-  { to: "/report", label: "월간리포트" },
-  { to: "/master", label: "기준정보" },
-];
+import { NavMenu, useCurrentNavLabel } from "@/components/NavMenu";
 
 /**
  * 사내 도구 — 전체 로그인 필수(§14 RBAC).
@@ -32,26 +25,18 @@ function ProtectedRoute({ children }: { children: ReactElement }): ReactElement 
 
 export default function App(): JSX.Element {
   const { username, role, clear } = useAuthStore();
+  const currentLabel = useCurrentNavLabel();
 
   return (
     <div className="flex min-h-full flex-col">
-      <header className="flex items-center gap-6 border-b border-slate-200 bg-white px-5 py-3">
-        <div className="text-lg font-bold text-brand">AIVIS 관리자 대시보드</div>
-        <nav className="flex gap-1">
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              className={({ isActive }) =>
-                `rounded-md px-3 py-1.5 text-sm font-medium ${
-                  isActive ? "bg-brand text-white" : "text-slate-600 hover:bg-slate-100"
-                }`
-              }
-            >
-              {n.label}
-            </NavLink>
-          ))}
-        </nav>
+      <header className="flex items-center gap-4 border-b border-slate-200 bg-white px-5 py-3">
+        <NavMenu />
+        <div className="flex items-baseline gap-2">
+          <span className="text-sm font-bold text-brand">AIVIS</span>
+          {currentLabel && (
+            <h1 className="text-lg font-bold text-slate-800">{currentLabel}</h1>
+          )}
+        </div>
         <div className="ml-auto flex items-center gap-3 text-sm">
           {username ? (
             <>
