@@ -40,6 +40,7 @@ class ApiClient:
         self.service_token = service_token
         self.seed_user = seed_user
         self.seed_password = seed_password
+        self._timeout_s = timeout_s
         self._bearer: Optional[str] = None
         # base_url 이 비어있으면(transport 직결 테스트) httpx 가 요구하는
         # 절대 URL 을 위해 http://worker-test 더미를 쓴다.
@@ -208,6 +209,28 @@ class ApiClient:
         """
         status, detail = self.post_inspection_json(result.model_dump(mode="json"))
         return status in (200, 201), detail
+
+    # --- 라이브니스 하트비트 ---
+    def post_status(self, payload: dict) -> None:
+        """POST /inspection/status (검사 사이클 상태 하트비트). 베스트에포트.
+
+        HMI 가 "연결됨"인데 0검출/취득실패로 죽은 듯 보이는 문제를 막기 위해, 매
+        검사 사이클(성공/0검출/취득실패)마다 순수 라이브니스 신호를 보낸다.
+        멱등/스풀과 무관하며, 라이브 검사 루프를 굶기거나 죽이지 않도록:
+          - 짧은 타임아웃(http_timeout 또는 2초 중 작은 값)을 쓰고,
+          - 모든 예외를 삼켜 절대 raise 하지 않는다(실패는 log.debug 만).
+        인증 헤더는 post_inspection_json 과 동일한 서비스토큰 정책을 재사용한다.
+        """
+        timeout = min(self._timeout_s, 2.0)
+        try:
+            self._http.post(
+                "/inspection/status",
+                json=payload,
+                headers=self._service_headers(),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("status 하트비트 전송 실패(무시): %s", exc)
 
     def close(self) -> None:
         try:

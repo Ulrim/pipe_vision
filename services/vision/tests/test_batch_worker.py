@@ -119,6 +119,7 @@ class _BatchBackend:
         self.item_code = item_code
         self.expected_count = expected_count
         self.posted: list[dict] = []
+        self.statuses: list[dict] = []  # POST /inspection/status 하트비트 수집.
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -145,6 +146,9 @@ class _BatchBackend:
                     "version": 1,
                 },
             )
+        if path == "/inspection/status" and request.method == "POST":
+            self.statuses.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "ok"})
         if path == "/inspection" and request.method == "POST":
             self.posted.append(json.loads(request.content))
             return httpx.Response(201, json={"status": "stored", "id": len(self.posted)})
@@ -221,4 +225,82 @@ def test_worker_single_mode_unchanged(tmp_path):
     # 단일 모드: 정확히 1건, tube_index 기본 0.
     assert len(backend.posted) == 1
     assert backend.posted[0]["tube_index"] == 0
+    worker.shutdown()
+
+
+# ---------------- 라이브니스 하트비트(배치) ----------------
+
+class _FailAcq:
+    """AcquisitionService 대체 — 취득 실패(카메라 프리즈)를 흉내낸다."""
+
+    def __init__(self, error: str = "camera frozen") -> None:
+        self._error = error
+
+    def grab_with_retry(self) -> GrabResult:
+        return GrabResult(frame=None, attempts=3, proc_time_ms=0, error=self._error)
+
+
+def test_worker_batch_sends_status_with_detected_count(tmp_path):
+    """배치 사이클 → detected 가 정확히 검출 수(n)로 전달된다."""
+    n = 6
+    backend = _BatchBackend(expected_count=n)
+    worker = Worker(_cfg(tmp_path), client=_client(backend))
+    assert worker.startup() is True
+    img, _ = make_multi_image(n, defects={2: "SCR"})
+    worker.acq = _StubAcq(img)
+
+    worker.run_once()
+
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == n
+    assert st["detected"] == n  # 검출 수가 정확히 전달됨.
+    assert st["error"] is None
+    assert st["ng"] >= 1  # 결함 튜브(#3) 반영.
+    assert st["mismatch"] is False
+    assert isinstance(st["proc_time_ms"], int)
+    worker.shutdown()
+
+
+def test_worker_batch_zero_detection_sends_status(tmp_path):
+    """0검출 배치(빈 프레임) → POST 는 0건이지만 detected=0 상태가 전송된다.
+
+    HMI 가 "연결됨"인데 죽은 듯 보이는 문제를 막는 핵심 시나리오.
+    """
+    n = 6
+    backend = _BatchBackend(expected_count=n)
+    worker = Worker(_cfg(tmp_path), client=_client(backend))
+    assert worker.startup() is True
+    black = np.zeros((240, 640, 3), dtype=np.uint8)  # 튜브 0개 검출.
+    worker.acq = _StubAcq(black)
+
+    ok = worker.run_once()
+
+    assert ok is False  # 검출 0 → 적재 성공 없음.
+    assert len(backend.posted) == 0  # POST /inspection 0건.
+    assert len(backend.statuses) == 1  # 그래도 하트비트는 전송.
+    st = backend.statuses[0]
+    assert st["detected"] == 0
+    assert st["expected"] == n
+    assert st["mismatch"] is True
+    worker.shutdown()
+
+
+def test_worker_batch_acq_failure_sends_status(tmp_path):
+    """배치 모드 취득 실패 → detected=0 + error 세팅 상태가 전송된다."""
+    n = 6
+    backend = _BatchBackend(expected_count=n)
+    worker = Worker(_cfg(tmp_path), client=_client(backend))
+    assert worker.startup() is True
+    worker.acq = _FailAcq(error="grab timeout")
+
+    ok = worker.run_once()
+
+    assert ok is False
+    assert len(backend.posted) == 0
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == n
+    assert st["detected"] == 0
+    assert st["error"] == "grab timeout"
     worker.shutdown()

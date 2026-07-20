@@ -177,7 +177,9 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
 
     // 세션 저장 → 게이트 통과 → 본문 마운트 → WS 연결(토큰 부착).
     await waitFor(() =>
-      expect(screen.getByRole("status")).toBeInTheDocument(),
+      expect(
+        screen.getByRole("status", { name: /연결 상태/ }),
+      ).toBeInTheDocument(),
     );
     await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
     const ws = MockWebSocket.last();
@@ -197,7 +199,9 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
     ws.triggerOpen();
 
     await waitFor(() =>
-      expect(screen.getByRole("status")).toBeInTheDocument(),
+      expect(
+        screen.getByRole("status", { name: /연결 상태/ }),
+      ).toBeInTheDocument(),
     );
 
     // 백엔드가 토큰을 거부 → 1008 Policy Violation 으로 닫음.

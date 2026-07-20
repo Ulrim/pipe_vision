@@ -9,6 +9,7 @@ from typing import Optional
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -38,6 +39,26 @@ from ws.alarm import tracker
 from ws.hub import hub, make_event
 
 router = APIRouter(prefix="/inspection", tags=["inspection"])
+
+
+class BatchStatus(BaseModel):
+    """워커 라이브니스 하트비트(검사결과 아님). 매 검사 사이클 워커가 취득/검출
+    상태를 요약해 보내면 API 가 WS 로만 브로드캐스트한다(DB 미기록).
+
+    검출 튜브가 0개이거나 취득이 실패해 POST /inspection 이 0건이어도 HMI 가
+    "실시간 연결됨"인 채 아무 이벤트도 못 받아 죽은 것처럼 보이는 문제를 막는다.
+    필드는 shared-types(aivis_types)로 내보내지 않고 API 내부 계약으로만 둔다.
+    """
+
+    cam_id: str
+    item_code: str
+    expected: int  # item_master.expected_count(단일검사=1)
+    detected: int  # 이번 사이클 검출 튜브 수(0 가능)
+    ts: str  # ISO8601
+    ng: int = 0  # 이번 사이클 NG 수
+    mismatch: bool = False  # detected != expected
+    proc_time_ms: int = 0
+    error: Optional[str] = None  # 취득/검사 오류 요약(정상은 None)
 
 # write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.
 # 디스크 동시 소진 등으로 두 경로가 함께 실패하면(§M7 DoD 위반: 검사결과 완전
@@ -174,6 +195,26 @@ async def create_inspection(
             )
 
     return {"status": "stored", "id": saved.id, "inspection": saved}
+
+
+@router.post("/status", status_code=status.HTTP_202_ACCEPTED)
+async def broadcast_status(
+    body: BatchStatus,
+    _internal: None = Depends(require_internal),
+):
+    """워커 라이브니스 하트비트를 WS /ws/live 로 브로드캐스트만 한다(M6).
+
+    이 이벤트는 검사결과가 아니라 워커가 살아있는지 알리는 하트비트일 뿐이므로
+    DB(inspection/sys_log)에 남기지 않는다. 워커가 매 사이클 검출 튜브 수/취득
+    오류를 보내면, 검출 0건·취득 실패로 POST /inspection 이 0건인 상황에서도
+    HMI 가 상태(mismatch/error)를 실시간으로 받아 "연결됐지만 멈춘 듯한" 오해를
+    막는다.
+
+    인증: create_inspection 과 동일한 내부 가드(require_internal). `AIVIS_SERVICE_TOKEN`
+    설정 시 X-Service-Token/Bearer 일치 필요, 미설정 시 사내 화이트리스트 허용.
+    """
+    await hub.broadcast(make_event("status", body.model_dump(mode="json")))
+    return {"status": "broadcast"}
 
 
 @router.post("/retry-queue")

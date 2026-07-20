@@ -51,6 +51,16 @@ from .spool import SpoolQueue
 log = logging.getLogger("aivis.vision.worker")
 
 
+def _ng_flag(final_verdict) -> int:
+    """final_verdict → 하트비트 ng(0/1). Verdict enum/문자열 양쪽 안전.
+
+    final_verdict 는 Verdict enum 이라 str(Verdict.NG)=="Verdict.NG" 이다.
+    반드시 .value("NG")로 비교해야 한다(하트비트 ng 카운트 누락 방지).
+    """
+    val = getattr(final_verdict, "value", final_verdict)
+    return 1 if val == "NG" else 0
+
+
 class Worker:
     """검사 워커. 의존성(client/pipeline/camera)을 주입 가능 → 테스트 용이."""
 
@@ -194,6 +204,42 @@ class Worker:
         except Exception as exc:  # noqa: BLE001
             log.warning("스풀 flush 예외(계속): %s", exc)
 
+    # --- 라이브니스 하트비트 ---
+    def _send_status(
+        self,
+        *,
+        expected: int,
+        detected: int,
+        ng: int,
+        mismatch: bool,
+        proc_time_ms: int,
+        ts: str,
+        error: Optional[str],
+    ) -> None:
+        """검사 사이클 상태 하트비트 1건을 API 에 베스트에포트로 보낸다.
+
+        성공/0검출/취득실패 모든 사이클에서 호출되어 HMI 가 워커 생존을 인지하게
+        한다(순수 라이브니스 — 멱등/스풀과 무관). client.post_status 가 이미 예외를
+        삼키지만, payload 구성 중 예외도 라이브 루프에 새지 않도록 이중으로 감싼다.
+        self.success/failure/return 값에는 절대 영향을 주지 않는다.
+        """
+        try:
+            self.client.post_status(
+                {
+                    "cam_id": self.cfg.cam_id,
+                    "item_code": self.cfg.item_code,
+                    "expected": int(expected),
+                    "detected": int(detected),
+                    "ng": int(ng),
+                    "mismatch": bool(mismatch),
+                    "proc_time_ms": int(proc_time_ms),
+                    "ts": ts,
+                    "error": error,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("status 하트비트 구성/전송 예외(무시): %s", exc)
+
     # --- 검사 사이클 디스패치(단일 / 배치) ---
     def run_once(self) -> bool:
         """트리거 1회 처리. item.expected_count>1 이면 배치 모드, 아니면 단일.
@@ -229,6 +275,17 @@ class Worker:
             if not grab.ok:
                 log.warning("프레임 취득 실패: %s", grab.error)
                 self.failure += 1
+                # 취득 실패(카메라 프리즈)도 하트비트로 알린다 — HMI 가 죽은
+                # 듯 보이지 않도록. detected=0, error 로 원인 전달.
+                self._send_status(
+                    expected=1,
+                    detected=0,
+                    ng=0,
+                    mismatch=True,
+                    proc_time_ms=0,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    error=grab.error,
+                )
                 return False
             inspected_at = datetime.now(timezone.utc)
             # proc_time_ms KPI(<300ms) 에 이미지 I/O 가 포함되지 않도록
@@ -257,6 +314,17 @@ class Worker:
                 operator=self.cfg.operator,
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,
+            )
+            # 라이브니스 하트비트: 검출 1건 성공 사이클(적재 성공/실패와 무관).
+            # 판정(NG)은 최종 result.final_verdict 로 판단한다.
+            self._send_status(
+                expected=1,
+                detected=1,
+                ng=_ng_flag(result.final_verdict),
+                mismatch=False,
+                proc_time_ms=int(result.proc_time_ms or 0),
+                ts=inspected_at.isoformat(),
+                error=None,
             )
             pending_images = list(getattr(saved, "pending_images", ()) or ())
             if pending_images:
@@ -344,6 +412,16 @@ class Worker:
             if not grab.ok:
                 log.warning("프레임 취득 실패(배치): %s", grab.error)
                 self.failure += 1
+                # 취득 실패도 하트비트로 알린다(detected=0, error). HMI 라이브니스.
+                self._send_status(
+                    expected=int(getattr(self.item, "expected_count", 1) or 1),
+                    detected=0,
+                    ng=0,
+                    mismatch=True,
+                    proc_time_ms=0,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    error=grab.error,
+                )
                 return False
             inspected_at = datetime.now(timezone.utc)
             expected = int(getattr(self.item, "expected_count", 1) or 1)
@@ -406,6 +484,22 @@ class Worker:
             for result in results:
                 if not self._post_or_classify(result):
                     all_ok = False
+            # 라이브니스 하트비트: 0검출(빈 배치) 사이클에서도 반드시 보낸다 —
+            # detected=0 이면 POST 가 0건이라 HMI 가 죽은 듯 보이는 문제를 막는다.
+            # proc_time 은 튜브들 proc_time_ms 중 최댓값(없으면 0)으로 근사한다.
+            proc = max(
+                (int(getattr(t, "proc_time_ms", 0) or 0) for t in batch.tubes),
+                default=0,
+            )
+            self._send_status(
+                expected=expected,
+                detected=batch.count_detected,
+                ng=batch.ng_count,
+                mismatch=bool(batch.count_mismatch),
+                proc_time_ms=proc,
+                ts=inspected_at.isoformat(),
+                error=None,
+            )
             return all_ok and len(results) > 0
         except Exception as exc:  # noqa: BLE001
             log.exception("배치 검사 사이클 예외: %s", exc)

@@ -21,6 +21,7 @@ _SERVICES_DIR = Path(__file__).resolve().parents[2]
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
+from vision.acquisition import GrabResult  # noqa: E402
 from vision.worker.client import ApiClient  # noqa: E402
 from vision.worker.config import WorkerConfig  # noqa: E402
 from vision.worker.dataset import ensure_dataset  # noqa: E402
@@ -49,6 +50,7 @@ class FakeBackend:
         self.healthy_after = healthy_after  # 이 횟수만큼 health 를 'down'으로.
         self.health_calls = 0
         self.posted: list[dict] = []
+        self.statuses: list[dict] = []  # POST /inspection/status 하트비트 수집.
         self.login_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -94,6 +96,16 @@ class FakeBackend:
                     "version": 1,
                 },
             )
+
+        if path == "/inspection/status" and request.method == "POST":
+            if self.require_service_token is not None:
+                tok = request.headers.get("X-Service-Token") or request.headers.get(
+                    "Authorization", ""
+                ).removeprefix("Bearer ")
+                if tok != self.require_service_token:
+                    return httpx.Response(401, json={"detail": "service token 필요"})
+            self.statuses.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "ok"})
 
         if path == "/inspection" and request.method == "POST":
             if self.require_service_token is not None:
@@ -376,4 +388,88 @@ def test_worker_setup_camera_wires_grab_timeout_into_acquisition_service(tmp_pat
     assert worker.startup() is True
     assert worker.acq is not None
     assert worker.acq.grab_timeout_s == 0.75
+    worker.shutdown()
+
+
+# --- 라이브니스 하트비트(POST /inspection/status) ---
+class _FailAcq:
+    """AcquisitionService 대체 — 취득 실패(카메라 프리즈)를 흉내낸다."""
+
+    def __init__(self, error: str = "camera frozen") -> None:
+        self._error = error
+
+    def grab_with_retry(self) -> GrabResult:
+        return GrabResult(frame=None, attempts=3, proc_time_ms=0, error=self._error)
+
+
+def test_worker_single_sends_status_heartbeat(tmp_path):
+    """단일 정상 사이클 → detected=1 상태 하트비트가 전송된다."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    worker.run_once()
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == 1
+    assert st["detected"] == 1
+    assert st["mismatch"] is False
+    assert st["error"] is None
+    assert st["cam_id"] == "CAM1" and st["item_code"] == "HP12"
+    assert st["ng"] in (0, 1)
+    assert isinstance(st["proc_time_ms"], int) and st["proc_time_ms"] >= 0
+    assert st["ts"]  # ISO8601 문자열
+    worker.shutdown()
+
+
+def test_worker_single_acq_failure_sends_status(tmp_path):
+    """취득 실패(카메라 프리즈) → detected=0 + error 세팅 상태가 전송되고
+    run_once 는 False 를 반환한다(적재는 0건)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    worker.acq = _FailAcq(error="grab timeout")
+    ok = worker.run_once()
+    assert ok is False
+    assert len(backend.posted) == 0  # 취득 실패이므로 검사결과 적재 없음.
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == 1
+    assert st["detected"] == 0
+    assert st["error"] == "grab timeout"
+    assert st["mismatch"] is True
+    worker.shutdown()
+
+
+def test_ng_flag_maps_verdict_enum_and_string():
+    """하트비트 ng 매핑은 Verdict enum/문자열 양쪽에서 정확해야 한다.
+
+    회귀: str(Verdict.NG)=="Verdict.NG" 이므로 str() 비교는 항상 0 을 냈다
+    (NG 사이클인데도 하트비트 ng=0). .value 비교로 고정.
+    """
+    from aivis_types import Verdict
+
+    from vision.worker.runner import _ng_flag
+
+    assert _ng_flag(Verdict.NG) == 1
+    assert _ng_flag(Verdict.OK) == 0
+    assert _ng_flag("NG") == 1
+    assert _ng_flag("OK") == 0
+
+
+def test_worker_run_once_survives_post_status_exception(tmp_path):
+    """client.post_status 가 예외를 던져도 run_once 는 정상 반환한다(루프 견고성)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+
+    def boom(_payload):
+        raise RuntimeError("status endpoint down")
+
+    client.post_status = boom  # 하트비트 전송이 폭발해도 라이브 루프는 살아야 한다.
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    ok = worker.run_once()
+    assert ok is True  # 검사결과 적재는 정상.
+    assert len(backend.posted) == 1
     worker.shutdown()

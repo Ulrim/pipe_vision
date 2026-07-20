@@ -13,6 +13,7 @@ import { useLiveStore } from "@/store/liveStore";
 import { useBatches } from "@/hooks/useBatches";
 import { useAuthStore } from "@/store/authStore";
 import { ConnectionIndicator } from "@/components/ConnectionIndicator";
+import { LiveStatusStrip } from "@/components/LiveStatusStrip";
 import { AlarmBanner } from "@/components/AlarmBanner";
 import { InspectionCard } from "@/components/InspectionCard";
 import { BatchCard } from "@/components/BatchCard";
@@ -54,6 +55,11 @@ function AppShell() {
           <AuthStatus />
         </div>
       </header>
+
+      {/* 워커 라이브니스 상태 스트립: 검사 이벤트 0건이어도 원인을 상단에 표기. */}
+      <div className="mb-4">
+        <LiveStatusStrip />
+      </div>
 
       <div className="mb-4">
         <AlarmBanner />
