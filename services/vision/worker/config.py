@@ -66,6 +66,14 @@ class WorkerConfig:
     api_wait_timeout_s: int = 120
     # item_master 조회 재시도 한계.
     item_wait_timeout_s: int = 120
+    # 기준정보(item_master) 핫리로드 주기(초). 이 주기마다 워커가 GET
+    # /master/items 를 재조회해 캘리브레이션(px_to_mm_scale)/공차/표면 임계값/
+    # expected_count/촬영 레시피 변경을 **재시작 없이** 반영한다(사용자 피드백①).
+    # 0 이하면 비활성(기동 시 1회 fetch 후 고정, 과거 동작). 재조회는 단발
+    # 베스트에포트라 실패/None 이면 기존 기준정보를 유지하고 라이브 검사를
+    # 방해하지 않는다. 기본 15.0s: 현장에서 웹으로 값을 고친 뒤 늦어도 15초 안에
+    # 반영되도록(체감 즉시) 하되, 정상 상황에서 재조회는 GET 1회로 저렴하다.
+    item_reload_s: float = 15.0
     # POST 타임아웃.
     http_timeout_s: float = 5.0
     # GET /master 인증 폴백용 시드 계정.
@@ -116,6 +124,7 @@ class WorkerConfig:
             grab_timeout_s=_env_float("AIVIS_CAMERA_GRAB_TIMEOUT_S", 5.0),
             api_wait_timeout_s=_env_int("AIVIS_API_WAIT_TIMEOUT_S", 120),
             item_wait_timeout_s=_env_int("AIVIS_ITEM_WAIT_TIMEOUT_S", 120),
+            item_reload_s=_env_float("AIVIS_ITEM_RELOAD_S", 15.0),
             http_timeout_s=float(_env_int("AIVIS_HTTP_TIMEOUT_MS", 5000)) / 1000.0,
             seed_admin_user=_env("AIVIS_SEED_ADMIN_USER", "admin") or "admin",
             seed_admin_password=_env("AIVIS_SEED_ADMIN_PASSWORD", "admin1234")

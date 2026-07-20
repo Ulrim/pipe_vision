@@ -8,6 +8,11 @@ LengthResult(aivis_types) 를 반환하며 proc_time_ms 를 계측한다. 예산
 """
 from __future__ import annotations
 
-from .measure import measure_length
+from .measure import EdgeEndpoints, LengthSpan, measure_length, measure_length_ex
 
-__all__ = ["measure_length"]
+__all__ = [
+    "measure_length",
+    "measure_length_ex",
+    "EdgeEndpoints",
+    "LengthSpan",
+]

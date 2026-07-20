@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
+from ..length.measure import LengthSpan
 from ..pipeline import InspectionPipeline
 from .segment import TubeROI, segment_tubes
 
@@ -48,6 +49,9 @@ class TubeResult:
     review_flag: bool = False
     roi_confidence: float = 0.0
     proc_time_ms: int = 0
+    # 길이 측정 스팬(끝단 2점·세로 범위) — **원본 프레임 좌표**로 환산된 값.
+    # 배치 오버레이가 튜브별 측정선을 그리는 데 쓴다(끝단 미검출/세로축이면 None).
+    length_span: Optional[LengthSpan] = None
 
 
 @dataclass
@@ -73,7 +77,10 @@ def _v(x) -> str:
 
 
 def _tube_from_verdict(
-    index: int, roi: TubeROI, vr: VerdictResult
+    index: int,
+    roi: TubeROI,
+    vr: VerdictResult,
+    length_span: Optional[LengthSpan] = None,
 ) -> TubeResult:
     length = vr.length
     surface = vr.surface
@@ -93,6 +100,26 @@ def _tube_from_verdict(
         review_flag=vr.review_flag,
         roi_confidence=roi.confidence,
         proc_time_ms=vr.proc_time_ms,
+        length_span=length_span,
+    )
+
+
+def _tube_span_in_frame(
+    crop_span: Optional[LengthSpan], roi: TubeROI, axis: str
+) -> Optional[LengthSpan]:
+    """튜브 crop 좌표계 span → 원본 프레임 좌표계 span 변환.
+
+    horizontal 축은 crop 이 회전 없이 (roi.x0, roi.y0) 오프셋이므로 단순 평행이동.
+    vertical 축은 crop 을 90° 회전해 측정하므로 좌표 매핑이 비자명 → 측정선
+    오버레이는 생략한다(None). 개수/판정은 기존대로 정확하며, 시각화만 보류한다.
+    """
+    if crop_span is None or axis != "horizontal" or not crop_span.valid:
+        return None
+    return LengthSpan(
+        left_x=crop_span.left_x + roi.x0,
+        right_x=crop_span.right_x + roi.x0,
+        y_top=crop_span.y_top + roi.y0,
+        y_bottom=crop_span.y_bottom + roi.y0,
     )
 
 
@@ -147,8 +174,10 @@ def inspect_batch(
         if axis == "vertical":
             # 세로 튜브 → 가로로 회전(measure_length 는 가로 튜브 가정).
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
-        vr = pipe.run(crop, item)
-        tubes.append(_tube_from_verdict(roi.index, roi, vr))
+        # 끝단 좌표(span)까지 받아 배치 오버레이 측정선 표기에 쓴다.
+        vr, crop_span = pipe.run_with_geometry(crop, item)
+        frame_span = _tube_span_in_frame(crop_span, roi, axis)
+        tubes.append(_tube_from_verdict(roi.index, roi, vr, frame_span))
 
     count_mismatch = (
         expected_count is not None and count_detected != expected_count

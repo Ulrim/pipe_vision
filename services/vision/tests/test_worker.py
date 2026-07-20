@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -121,6 +122,53 @@ class FakeBackend:
             )
 
         return httpx.Response(404, json={"detail": f"no route {path}"})
+
+
+class ReloadBackend(FakeBackend):
+    """master GET 이 재조회될수록 scale/expected_count/version 이 바뀌는 stub.
+
+    - 첫 GET(기동 fetch): scale=0.25, expected_count=1, version=1.
+    - 2번째부터(핫리로드): scale=0.50, expected_count=3, version=2.
+    - fail_master=True 로 두면 이후 master GET 이 503(리로드 실패 모사).
+    인증 가드(operator+)는 부모와 동일(Bearer JWT-OP-TOKEN 필요).
+    """
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.master_calls = 0
+        self.fail_master = False
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == f"/master/items/{self.item_code}":
+            auth = request.headers.get("Authorization", "")
+            if self.master_requires_auth and auth != "Bearer JWT-OP-TOKEN":
+                return httpx.Response(401, json={"detail": "인증 토큰 없음"})
+            if self.fail_master:
+                return httpx.Response(503, json={"detail": "db down"})
+            self.master_calls += 1
+            if self.master_calls <= 1:
+                scale, expected, version = 0.25, 1, 1
+            else:
+                scale, expected, version = 0.50, 3, 2
+            return httpx.Response(
+                200,
+                json={
+                    "item_code": self.item_code,
+                    "item_name": "Header Pipe 12",
+                    "ref_length_mm": 125.0,
+                    "tol_plus_mm": 3.0,
+                    "tol_minus_mm": 3.0,
+                    "px_to_mm_scale": scale,
+                    "oil_threshold": 0.30,
+                    "discolor_threshold": 0.20,
+                    "scratch_threshold": 0.15,
+                    "capture_recipe": None,
+                    "expected_count": expected,
+                    "version": version,
+                },
+            )
+        return super().handler(request)
 
 
 def _client(backend: FakeBackend, **kw) -> ApiClient:
@@ -456,6 +504,98 @@ def test_ng_flag_maps_verdict_enum_and_string():
     assert _ng_flag(Verdict.OK) == 0
     assert _ng_flag("NG") == 1
     assert _ng_flag("OK") == 0
+
+
+# --- 기준정보 핫리로드(재시작 없이 캘리브레이션 반영) ---
+def test_worker_hot_reloads_item_master(tmp_path):
+    """주기 경과 후 _maybe_reload_item 이 self.item 을 갱신한다(scale/expected 변경).
+
+    단일→배치 전환(expected_count 1→3)까지 함께 검증. run_once 가 매 호출
+    self.item.expected_count 를 읽으므로 갱신 즉시 배치 모드가 된다.
+    """
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=1.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    assert int(worker.item.expected_count) == 1
+
+    # 리로드 창을 강제로 연다(마지막 리로드를 과거로).
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+
+    assert float(worker.item.px_to_mm_scale) == 0.50  # 캘리브레이션 즉시 반영.
+    assert int(worker.item.expected_count) == 3        # 단일→배치 전환.
+    assert int(worker.item.version) == 2
+    worker.shutdown()
+
+
+def test_worker_reload_failure_keeps_existing_item(tmp_path):
+    """리로드 재조회가 실패(None)하면 기존 기준정보를 유지한다(라이브 검사 보호)."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=1.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    old = worker.item
+    assert float(old.px_to_mm_scale) == 0.25
+
+    backend.fail_master = True  # 이후 master GET 은 503 → refetch_item None.
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+
+    assert worker.item is old  # 교체되지 않고 기존 유지.
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    worker.shutdown()
+
+
+def test_worker_reload_disabled_when_interval_zero(tmp_path):
+    """item_reload_s<=0 이면 리로드 비활성(재조회하지 않는다)."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=0.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    calls_after_startup = backend.master_calls
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+    assert backend.master_calls == calls_after_startup  # 추가 GET 없음.
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    worker.shutdown()
+
+
+def test_worker_reload_skipped_before_interval(tmp_path):
+    """마지막 리로드 이후 item_reload_s 미경과면 재조회하지 않는다."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=999.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    before = backend.master_calls
+    # startup 직후(방금 리로드) → 주기 미경과.
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+    assert backend.master_calls == before
+    worker.shutdown()
+
+
+def test_worker_loop_invokes_item_reload_each_cycle(tmp_path):
+    """메인 루프가 매 사이클 _maybe_reload_item 을 호출한다(주기 판단은 내부)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, max_iterations=3)
+    worker = Worker(cfg, client=client)
+    calls: list = []
+    orig = worker._maybe_reload_item
+
+    def spy(now):
+        calls.append(now)
+        return orig(now)
+
+    worker._maybe_reload_item = spy  # type: ignore[method-assign]
+    rc = worker.run()
+    assert rc == 0
+    assert len(calls) == 3  # 루프 3회 각각 호출.
 
 
 def test_worker_run_once_survives_post_status_exception(tmp_path):

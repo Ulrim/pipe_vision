@@ -51,6 +51,30 @@ from .spool import SpoolQueue
 log = logging.getLogger("aivis.vision.worker")
 
 
+# 핫리로드 변경 감지 키(하나라도 바뀌면 self.item 을 교체). capture_recipe 는
+# dict 비교, 나머지는 스칼라 비교. version 은 백엔드가 변경 시 자동 증가하므로
+# 값 자체가 동일해도 version 만 오르면 갱신으로 본다(감사/추적 일관).
+_RELOAD_KEYS = (
+    "version",
+    "px_to_mm_scale",
+    "tol_plus_mm",
+    "tol_minus_mm",
+    "oil_threshold",
+    "discolor_threshold",
+    "scratch_threshold",
+    "expected_count",
+    "capture_recipe",
+)
+
+
+def _item_changed(old: ItemMaster, new: ItemMaster) -> bool:
+    """기준정보 변경 여부(리로드 키 중 하나라도 다르면 True)."""
+    for key in _RELOAD_KEYS:
+        if getattr(old, key, None) != getattr(new, key, None):
+            return True
+    return False
+
+
 def _ng_flag(final_verdict) -> int:
     """final_verdict → 하트비트 ng(0/1). Verdict enum/문자열 양쪽 안전.
 
@@ -94,6 +118,9 @@ class Worker:
         self._image_uploader = image_uploader
         self._uploader_built = image_uploader is not None
         self.item: Optional[ItemMaster] = None
+        # 마지막 기준정보 리로드 시각(UTC). startup 성공 시 now 로 세팅되어 이후
+        # item_reload_s 주기로 재조회한다(핫리로드 — 재시작 없이 캘리브레이션 반영).
+        self._last_item_reload: Optional[datetime] = None
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -166,9 +193,82 @@ class Worker:
         if self.item is None:
             log.error("ItemMaster 미확보(%s) — 워커 기동 중단", self.cfg.item_code)
             return False
+        # 기동 fetch 를 '마지막 리로드'로 기록 → 이후 item_reload_s 경과 시 재조회.
+        self._last_item_reload = datetime.now(timezone.utc)
         if not self._setup_camera():
             return False
         return True
+
+    # --- 기준정보 핫리로드 ---
+    def _maybe_reload_item(self, now: datetime) -> None:
+        """주기적으로 item_master 를 재조회해 캘리브레이션/공차/임계값/expected_count/
+        촬영 레시피 변경을 **워커 재시작 없이** 반영한다(사용자 피드백①).
+
+        정책:
+          - item_reload_s <= 0 이면 비활성(기동 시 1회 fetch 후 고정).
+          - 마지막 리로드 이후 item_reload_s 미경과면 아무 것도 안 한다.
+          - 재조회는 client.refetch_item(단발, 비블로킹). 실패/None 이면 기존
+            self.item 을 그대로 유지한다(라이브 검사 방해 금지).
+          - 변경 감지(_item_changed) 시에만 self.item 을 교체하고 변경 요약을
+            로깅한다. capture_recipe 가 바뀌면 camera.configure 재적용,
+            expected_count 가 바뀌면 단일↔배치 전환을 로그로 알린다(run_once 가
+            매 호출 self.item.expected_count 를 읽으므로 다음 사이클부터 자동 반영).
+        어떤 예외도 루프로 새어나가지 않게 통째로 감싼다.
+        """
+        try:
+            if self.cfg.item_reload_s <= 0 or self.item is None:
+                return
+            if self._last_item_reload is not None:
+                elapsed = (now - self._last_item_reload).total_seconds()
+                if elapsed < self.cfg.item_reload_s:
+                    return
+            # 재조회 시도 시각을 먼저 기록(성공/실패와 무관하게 주기 유지).
+            self._last_item_reload = now
+            fresh = self.client.refetch_item(self.cfg.item_code)
+            if fresh is None:
+                log.debug("기준정보 재조회 실패/무응답 — 기존 기준정보 유지")
+                return
+            if not _item_changed(self.item, fresh):
+                return
+            old = self.item
+            self.item = fresh
+            self._log_item_change(old, fresh)
+            self._reapply_recipe_if_changed(old, fresh)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("기준정보 재조회 예외(무시 — 기존 기준정보 유지): %s", exc)
+
+    def _log_item_change(self, old: ItemMaster, new: ItemMaster) -> None:
+        """기준정보 갱신 요약 로그(무엇이 어떻게 바뀌었는지 한눈에)."""
+        old_exp = int(getattr(old, "expected_count", 1) or 1)
+        new_exp = int(getattr(new, "expected_count", 1) or 1)
+        log.info(
+            "기준정보 갱신: version %s→%s, scale %s→%s, tol +%s/-%s→+%s/-%s, "
+            "oil %s→%s, dis %s→%s, scr %s→%s, expected %s→%s",
+            getattr(old, "version", None), getattr(new, "version", None),
+            old.px_to_mm_scale, new.px_to_mm_scale,
+            old.tol_plus_mm, old.tol_minus_mm, new.tol_plus_mm, new.tol_minus_mm,
+            old.oil_threshold, new.oil_threshold,
+            old.discolor_threshold, new.discolor_threshold,
+            old.scratch_threshold, new.scratch_threshold,
+            old_exp, new_exp,
+        )
+        if old_exp != new_exp:
+            log.info(
+                "expected_count 변경 %d→%d — 다음 사이클부터 %s 모드로 전환",
+                old_exp, new_exp, "배치(다중 튜브)" if new_exp > 1 else "단일",
+            )
+
+    def _reapply_recipe_if_changed(self, old: ItemMaster, new: ItemMaster) -> None:
+        """capture_recipe 가 바뀌었으면 카메라에 재적용(예외는 로깅 후 계속)."""
+        if getattr(new, "capture_recipe", None) == getattr(old, "capture_recipe", None):
+            return
+        if self.camera is None:
+            return
+        try:
+            self.camera.configure(new.capture_recipe or {})
+            log.info("촬영 레시피 갱신 → 카메라 재설정 적용: %s", new.capture_recipe)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("촬영 레시피 재적용 실패(계속 진행): %s", exc)
 
     # --- 스풀 재전송 지원 ---
     def _spool_uploader(self):
@@ -290,7 +390,11 @@ class Worker:
             inspected_at = datetime.now(timezone.utc)
             # proc_time_ms KPI(<300ms) 에 이미지 I/O 가 포함되지 않도록
             # 판정(pipeline.run) 을 먼저 끝낸 뒤 raw/result 를 저장한다.
-            verdict = self.pipeline.run(grab.frame, self.item)
+            # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를
+            # 그린다(계측 이후 데이터라 처리속도 KPI 영향 없음 — 사용자 피드백②).
+            verdict, length_span = self.pipeline.run_with_geometry(
+                grab.frame, self.item
+            )
             saved = save_inspection_images(
                 grab.frame,
                 verdict,
@@ -300,6 +404,7 @@ class Worker:
                 inspected_at=inspected_at,
                 item=self.item,
                 pending_sink=self.spool.save_image,
+                length_span=length_span,
             )
             if saved.error:
                 # 디스크 쓰기 실패는 검사결과 적재를 막지 않는다(경로 None 로 진행).
@@ -544,6 +649,9 @@ class Worker:
                 log.warning("트리거 대기 예외(%s) — 계속", exc)
             if self._stop:
                 break
+            # 기준정보 핫리로드(주기 경과 시에만 실제 재조회) — 검사 직전에 반영해
+            # 이번 사이클부터 최신 캘리브레이션/공차/임계값/expected_count 를 쓴다.
+            self._maybe_reload_item(datetime.now(timezone.utc))
             self.run_once()
             # 매 루프 소량(flush_batch 상한) 재전송 — 라이브 검사를 굶기지 않는다.
             self.flush_spool()

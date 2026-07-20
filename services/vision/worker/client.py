@@ -175,6 +175,24 @@ class ApiClient:
         log.error("ItemMaster 확보 타임아웃: %s", item_code)
         return None
 
+    def refetch_item(self, item_code: str) -> Optional[ItemMaster]:
+        """기준정보 핫리로드용 **단발** 재조회(재시도/슬립 없음).
+
+        fetch_item 은 무한/장기 대기를 피하는 재시도 루프(time.sleep)를 돌지만,
+        핫리로드는 라이브 검사 루프 안에서 매 주기 호출되므로 절대 블로킹하면
+        안 된다(§워커 요구: 라이브 검사 방해 금지). 따라서 여기서는 GET 을 1회만
+        시도하고, 인증 가드(operator+)로 401/403 이면 이미 확보한 Bearer 로
+        _get_item_once 가 통과한다 — 만약 Bearer 가 없거나 만료면 시드 로그인 1회
+        후 딱 한 번 더 시도한다(대기 없음). 성공 시 ItemMaster, 그 외 None.
+        """
+        item, code = self._get_item_once(item_code)
+        if item is not None:
+            return item
+        if code in (401, 403) and self.login():
+            item, _ = self._get_item_once(item_code)
+            return item
+        return None
+
     # --- 결과 적재 ---
     def post_inspection_json(self, payload: dict) -> tuple[int, str]:
         """POST /inspection (payload dict). (status_code, detail). raise 금지.
