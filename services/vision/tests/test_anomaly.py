@@ -283,3 +283,85 @@ def test_pipeline_uses_anomaly_when_model_present(monkeypatch, tmp_path, item):
     ok_img, _ = make_image("OK")
     ok_res = pipe.run(ok_img, item)
     assert ok_res.final_verdict in (Verdict.OK.value, Verdict.NG.value)
+
+
+# ---------------------------------------------------------------------------
+# 8) 임계 산출 회귀 — 표본외(교차검증) 기준이어야 정상품 오검이 없다
+# ---------------------------------------------------------------------------
+def _holdout_normals(n: int = 12):
+    """학습에 쓰지 않은(다른 시드) 정상 이미지 — 표본외 정상."""
+    return [_ok_variant(5000 + i) for i in range(n)]
+
+
+def test_threshold_uses_out_of_fold_and_exceeds_in_sample(tmp_path):
+    """임계는 표본외(out-of-fold) 거리에서 잡혀야 하고, 표본내 임계보다 커야 한다.
+
+    회귀 배경: 같은 데이터로 공분산을 적합하고 그 데이터로 거리를 재면 거리가
+    체계적으로 과소평가된다(n/d 가 작을수록 심함). 표본내 백분위로 임계를
+    잡았을 때 홀드아웃 정상의 45% 가 임계를 초과해 **정상품 절반이 재확인
+    대상**이 되는 것을 실측했다. 이 테스트가 그 회귀를 막는다.
+    """
+    from vision.models.train_anomaly import (
+        _fit_gaussian,
+        _mahalanobis,
+        collect_descriptors,
+        list_ok_images,
+    )
+
+    okdir = _write_ok_dataset(tmp_path, n=30)
+    X = collect_descriptors(list_ok_images(okdir), segment=False)
+    model = fit_model(X)
+    assert model["threshold_basis"] == "out_of_fold"
+
+    mean, prec = _fit_gaussian(X, reg=0.1)
+    in_sample_thr = float(np.percentile(_mahalanobis(X, mean, prec), 99.0))
+    # 표본외 임계가 표본내 임계보다 커야 한다(과소평가 보정).
+    assert model["threshold"] > in_sample_thr
+
+
+def test_trained_model_does_not_flag_holdout_normals(tmp_path, item):
+    """표본외 정상품은 재확인으로 걸리지 않아야 한다(오검율 상한).
+
+    상용 라인에서 정상품이 대량 재확인되면 기능이 무용지물이 된다.
+    """
+    okdir = _write_ok_dataset(tmp_path, n=30)
+    out = tmp_path / "anomaly_HP12.npz"
+    train_anomaly(okdir, out, item_code="HP12")
+    model = AnomalySurfaceModel(str(out))
+    assert model.loaded
+
+    flagged = 0
+    for img in _holdout_normals(12):
+        region, mask = _region_mask(img)
+        model.predict(region, item, mask=mask)
+        flagged += int(model.last_report.review_flag)
+    # 표본외 정상 12장 중 오검 1장 이하(수정 전 기준 ~45% 오검 → 회귀 차단).
+    assert flagged <= 1, f"정상품 오검 {flagged}/12 — 임계가 너무 빡빡하다"
+
+
+def test_fold_guard_prevents_threshold_explosion(tmp_path):
+    """폴드가 적어 폴드별 학습표본 < 특징차원이면 공분산이 붕괴해 임계가 폭발한다.
+
+    회귀 배경: n=30, d=19, folds=2 에서 폴드별 학습표본이 15개(<19)라 임계가
+    442828 까지 치솟아 score≈0 이 되고 **이상탐지가 조용히 무력화**됐다.
+    폴드 수를 자동 상향해 폴드별 학습표본을 확보해야 한다.
+    """
+    from vision.models.train_anomaly import collect_descriptors, list_ok_images
+
+    okdir = _write_ok_dataset(tmp_path, n=30)
+    X = collect_descriptors(list_ok_images(okdir), segment=False)
+    tight = fit_model(X, folds=2)
+    normal = fit_model(X, folds=5)
+    # 폴드 자동 상향으로 임계가 정상 범위(같은 자릿수)에 머문다.
+    assert tight["threshold"] < normal["threshold"] * 10.0
+    assert tight["threshold"] < 1e3
+
+
+def test_train_summary_reports_basis_and_warnings(tmp_path):
+    """학습 요약이 임계 근거와 표본 부족 경고를 노출한다(현장 판단 근거)."""
+    okdir = _write_ok_dataset(tmp_path, n=30)
+    out = tmp_path / "anomaly_HP12.npz"
+    summary = train_anomaly(okdir, out, item_code="HP12")
+    assert summary["threshold_basis"] == "out_of_fold"
+    # 30표본 < 3×19=57 → 표본 부족 경고가 있어야 한다.
+    assert any("부족" in w for w in summary["warnings"])

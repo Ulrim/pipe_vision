@@ -95,6 +95,76 @@ def collect_descriptors(
     return np.vstack(rows).astype(np.float64)
 
 
+def _fit_gaussian(X: np.ndarray, *, reg: float) -> tuple[np.ndarray, np.ndarray]:
+    """정상 분포 적합 → (mean, precision). 저표본·고차원 대비 수축 정칙화.
+
+    1) 특징 표준화 z=(x-μ)/σ (σ 바닥값 eps) — 스케일 차이 제거.
+    2) 표준화 공분산을 항등행렬로 수축(shrinkage): C_reg=(1-reg)·C+reg·I (Ledoit-Wolf 형태).
+    3) 원 스케일 정밀도 P = Dσ⁻¹·C_reg⁻¹·Dσ⁻¹ 로 접어두면 추론은 표준화 없이
+       d²=(x-μ)ᵀP(x-μ) 로 동일 계산된다.
+    """
+    n, d = X.shape
+    mean = X.mean(axis=0)
+    std_floor = np.maximum(X.std(axis=0), 1e-6)
+    z = (X - mean) / std_floor
+    cov = (
+        np.atleast_2d(np.cov(z, rowvar=False))
+        if n >= 2
+        else np.zeros((d, d), dtype=np.float64)
+    )
+    cov_reg = (1.0 - reg) * cov + reg * np.eye(d)
+    d_inv = np.diag(1.0 / std_floor)
+    return mean, d_inv @ np.linalg.inv(cov_reg) @ d_inv
+
+
+def _mahalanobis(X: np.ndarray, mean: np.ndarray, precision: np.ndarray) -> np.ndarray:
+    """행별 Mahalanobis 거리(음수 클리핑 후 sqrt)."""
+    diffs = X - mean
+    d2 = np.einsum("ij,jk,ik->i", diffs, precision, diffs)
+    return np.sqrt(np.clip(d2, 0.0, None))
+
+
+def _oof_distances(
+    X: np.ndarray, *, reg: float, folds: int
+) -> Optional[np.ndarray]:
+    """K-fold **표본외(out-of-fold)** Mahalanobis 거리. 불가하면 None.
+
+    왜 필요한가: 같은 데이터로 공분산을 적합하고 그 데이터의 거리를 재면
+    거리가 체계적으로 과소평가된다(표본내 편향). 표본수 n 이 특징차원 d 에
+    비해 크지 않을 때(n/d ≲ 3) 특히 심해서, 표본내 백분위로 임계를 잡으면
+    **정상 제품 상당수가 임계를 넘어 전부 재확인 대상이 된다**(실측: n=30,
+    d=19 에서 홀드아웃 정상의 53% 가 임계 초과). 각 폴드를 제외하고 적합한
+    뒤 그 폴드의 거리를 재면 표본외 거리 분포를 편향 없이 추정할 수 있다.
+
+    폴드 수 보정(중요): 폴드가 적으면 폴드별 학습표본이 특징차원 d 보다 적어져
+    공분산이 붕괴하고 거리가 폭발한다(실측: n=30,d=19,k=2 → 임계 44만 →
+    score≈0 으로 **이상탐지가 조용히 무력화**). 폴드를 늘릴수록 폴드별 학습표본이
+    늘어나므로(LOO 가 최대), 학습표본이 d+2 이상이 되는 최소 k 로 올려 잡는다.
+    LOO(k=n)로도 못 맞추면(n < d+3) None 을 돌려 표본내 폴백 + 경고로 넘긴다.
+
+    결정적: 폴드 분할은 인덱스 스트라이드(idx[f::k])로 무작위성이 없다.
+    """
+    n, d = X.shape
+    if n < 4:
+        return None  # 폴드를 나눌 만큼의 표본이 없다 → 호출자가 폴백.
+    need = d + 2  # 폴드별 학습표본 하한(수축 정칙화 전제, 최소 여유 2).
+    k = int(min(max(2, folds), n))
+    while k <= n and (n - int(np.ceil(n / k))) < need:
+        k += 1
+    if k > n or (n - int(np.ceil(n / k))) < need:
+        return None  # LOO 로도 부족 → 표본내 폴백(호출자가 경고).
+    idx = np.arange(n)
+    dists = np.empty(n, dtype=np.float64)
+    for f in range(k):
+        te = idx[f::k]
+        tr = np.setdiff1d(idx, te)
+        if tr.size < 2 or te.size == 0:
+            return None
+        mean_f, prec_f = _fit_gaussian(X[tr], reg=reg)
+        dists[te] = _mahalanobis(X[te], mean_f, prec_f)
+    return dists
+
+
 def fit_model(
     descriptors: np.ndarray,
     *,
@@ -102,42 +172,32 @@ def fit_model(
     k: Optional[float] = None,
     reg: float = 0.1,
     margin: float = 1.0,
+    folds: int = 5,
 ) -> dict:
     """정상 분포 적합. mean/cov_inv(정밀도)/threshold 산출(결정적).
 
-    저표본·고차원(N≈수십, D=19)에서 공분산이 특이해지는 것을 막기 위해:
-    1) 특징 표준화 z=(x-μ)/σ (σ 바닥값 eps) — 스케일 차이 제거.
-    2) 표준화 공분산을 항등행렬로 수축(shrinkage) 정칙화:
-       C_reg = (1-reg)·C + reg·I,  reg∈(0,1].  (Ledoit-Wolf 형태)
-    3) 원 스케일 정밀도(precision) P = Dσ⁻¹ · C_reg⁻¹ · Dσ⁻¹ 로 접어 저장하면
-       추론은 d²=(x-μ)ᵀP(x-μ) 로 표준화 없이 동일하게 계산된다.
+    추론용 mean/precision 은 **전체 표본**으로 적합한다(정보 최대 활용).
+    임계는 **표본외(out-of-fold) 거리 분포**에서 잡는다 — 표본내 거리는
+    과소평가되어 정상품을 대량 오검(전수 재확인)하게 만들기 때문이다
+    (_oof_distances 주석의 실측 참조). 표본이 적어 폴드를 못 나누면
+    표본내 거리로 폴백하고 `threshold_basis="in_sample"` 로 표시한다.
 
-    임계: k 지정 시 mean+kσ, 아니면 학습분포 Mahalanobis 거리의 percentile.
-    margin: 표본내 백분위는 표본외 정상의 퍼짐을 과소추정하므로 여유 배율
-    (기본 1.0). 임계 = base·margin. 모두 하드코딩 아닌 인자.
+    임계: k 지정 시 mean+kσ, 아니면 거리 분포의 percentile. margin 은 추가
+    여유 배율(기본 1.0). 모두 하드코딩 아닌 인자.
     """
     X = np.asarray(descriptors, dtype=np.float64)
     if X.ndim != 2 or X.shape[0] < 1:
         raise ValueError("fit_model: 기술자가 비었다(정상 이미지 부족).")
     n, d = X.shape
     reg = float(min(max(reg, 1e-6), 1.0))
-    mean = X.mean(axis=0)
-    std = X.std(axis=0)
-    std_floor = np.maximum(std, 1e-6)
-    z = (X - mean) / std_floor
-    if n >= 2:
-        cov = np.atleast_2d(np.cov(z, rowvar=False))
-    else:
-        cov = np.zeros((d, d), dtype=np.float64)
-    cov_reg = (1.0 - reg) * cov + reg * np.eye(d)
-    cov_inv_z = np.linalg.inv(cov_reg)
-    d_inv = np.diag(1.0 / std_floor)
-    precision = d_inv @ cov_inv_z @ d_inv  # 원 스케일 정밀도(=cov_inv 저장용).
+    mean, precision = _fit_gaussian(X, reg=reg)
 
-    diffs = X - mean
-    d2 = np.einsum("ij,jk,ik->i", diffs, precision, diffs)
-    d2 = np.clip(d2, 0.0, None)
-    dists = np.sqrt(d2)
+    oof = _oof_distances(X, reg=reg, folds=folds)
+    if oof is not None:
+        dists, basis = oof, "out_of_fold"
+    else:
+        dists, basis = _mahalanobis(X, mean, precision), "in_sample"
+
     if k is not None:
         base_thr = float(dists.mean() + float(k) * dists.std())
     else:
@@ -149,6 +209,7 @@ def fit_model(
         "threshold": thr,
         "feature_dim": d,
         "n_train": n,
+        "threshold_basis": basis,
     }
 
 
@@ -182,6 +243,7 @@ def train_anomaly(
     k: Optional[float] = None,
     reg: float = 0.1,
     margin: float = 1.0,
+    folds: int = 5,
 ) -> dict:
     """정상 이미지 디렉터리 → 이상탐지 모델 학습·저장. 요약 dict 반환."""
     paths = list_ok_images(ok_dir)
@@ -192,18 +254,44 @@ def train_anomaly(
         raise ValueError(
             "학습 기술자를 하나도 얻지 못했다(전처리에서 전경 미검출)."
         )
-    model = fit_model(X, percentile=percentile, k=k, reg=reg, margin=margin)
+    model = fit_model(
+        X, percentile=percentile, k=k, reg=reg, margin=margin, folds=folds
+    )
     saved = save_model(model, out_path, item_code=item_code)
+    n_samples, dim = int(X.shape[0]), int(model["feature_dim"])
     summary = {
         "item_code": item_code,
         "n_images": len(paths),
-        "n_samples": int(X.shape[0]),
-        "feature_dim": int(model["feature_dim"]),
+        "n_samples": n_samples,
+        "feature_dim": dim,
         "threshold": float(model["threshold"]),
+        "threshold_basis": model["threshold_basis"],
         "out_path": str(saved),
         "segment": segment,
+        "warnings": _sample_warnings(n_samples, dim, model["threshold_basis"]),
     }
     return summary
+
+
+# 표본수가 특징차원에 비해 이 배수 미만이면 적합이 불안정하다(경고).
+MIN_SAMPLES_PER_DIM = 3.0
+
+
+def _sample_warnings(n_samples: int, dim: int, basis: str) -> List[str]:
+    """학습 표본 부족/임계 산출 근거에 대한 현장 경고(한국어)."""
+    warns: List[str] = []
+    if basis == "in_sample":
+        warns.append(
+            "표본이 적어 교차검증 임계를 못 쓰고 표본내 거리로 임계를 잡았다 "
+            "— 정상품이 과다하게 재확인으로 걸릴 수 있다. 정상 이미지를 더 모아라."
+        )
+    if n_samples < MIN_SAMPLES_PER_DIM * dim:
+        warns.append(
+            f"학습 표본 {n_samples}개는 특징차원 {dim}에 비해 부족하다"
+            f"(권장 {int(MIN_SAMPLES_PER_DIM * dim)}개 이상). 정상 분포 추정이 "
+            "불안정해 오검이 늘 수 있다."
+        )
+    return warns
 
 
 def _main(argv: Optional[Sequence[str]] = None) -> int:
@@ -232,6 +320,10 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         "--margin", type=float, default=1.0,
         help="임계 여유 배율(표본외 정상 퍼짐 대비, 기본 1.0)",
     )
+    ap.add_argument(
+        "--folds", type=int, default=5,
+        help="임계 산출용 교차검증 폴드 수(기본 5). 표본이 적으면 자동 축소/폴백.",
+    )
     args = ap.parse_args(argv)
 
     out = args.out or str(
@@ -246,15 +338,24 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         k=args.k,
         reg=args.reg,
         margin=args.margin,
+        folds=args.folds,
+    )
+    basis_ko = (
+        "교차검증(표본외)"
+        if summary["threshold_basis"] == "out_of_fold"
+        else "표본내(표본 부족)"
     )
     print(
         f"[이상탐지 학습] 품목={summary['item_code']} "
         f"이미지={summary['n_images']}장 "
         f"학습표본={summary['n_samples']}개 "
         f"특징차원={summary['feature_dim']} "
-        f"임계(Mahalanobis)={summary['threshold']:.4f}"
+        f"임계(Mahalanobis)={summary['threshold']:.4f} "
+        f"임계근거={basis_ko}"
     )
     print(f"  저장: {summary['out_path']} (segment={summary['segment']})")
+    for w in summary["warnings"]:
+        print(f"  [경고] {w}")
     return 0
 
 
