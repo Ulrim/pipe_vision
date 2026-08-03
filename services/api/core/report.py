@@ -159,6 +159,11 @@ def _defect_label(code: str, korean_ok: bool) -> str:
     return code
 
 
+def defect_label(code: str) -> str:
+    """불량유형 코드의 한글 표기(외부 공개용 — 미리보기 API 등)."""
+    return _defect_label(code, True)
+
+
 # ---- 데이터 집계 ----------------------------------------------------------
 
 

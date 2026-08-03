@@ -79,6 +79,50 @@ export function upsertKpiManual(body: KpiManual): Promise<KpiManual> {
   });
 }
 
+/* ---------------- 월간 리포트 미리보기 (M12) ---------------- */
+
+/** §1.1/§1.2 목표 대비 달성 1행. achieved: null = 판정보류(실적 없음). */
+export interface ReportTarget {
+  key: string;
+  label: string;
+  label_en: string;
+  target: string;
+  actual: string;
+  achieved: boolean | null;
+}
+
+export interface ReportDefect {
+  code: string;
+  label: string;
+  count: number;
+}
+
+export interface ReportDaily {
+  date: string;
+  inspected: number;
+  defects: number;
+  /** 일자별 공정불량률(ppm) — 추세 차트용. */
+  ppm: number;
+}
+
+/**
+ * GET /kpi/report/preview 응답. PDF/XLSX 와 **동일한 서버 집계**를 그대로
+ * 받아 화면에 그린다(화면과 파일의 숫자가 어긋나지 않게 단일 산출원 사용).
+ */
+export interface ReportPreview {
+  period: string;
+  summary: KpiSummary;
+  proc_time: { p50: number | null; p95: number | null; p99: number | null };
+  targets: ReportTarget[];
+  defects: ReportDefect[];
+  daily: ReportDaily[];
+}
+
+/** GET /kpi/report/preview?period= — 리포트 미리보기 데이터. */
+export function fetchKpiReportPreview(period: string): Promise<ReportPreview> {
+  return requestJson<ReportPreview>(`/kpi/report/preview${toQuery({ period })}`);
+}
+
 export type ReportFormat = "pdf" | "xlsx";
 
 /** GET /kpi/report?period=&fmt= — 월간 리포트 파일(Blob). */

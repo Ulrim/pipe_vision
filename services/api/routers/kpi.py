@@ -160,6 +160,60 @@ def upsert_kpi_manual(
     )
 
 
+@router.get("/report/preview")
+def kpi_report_preview(
+    period: str | None = Query(None, description="대상 월 YYYY-MM (미지정 시 당월)"),
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """월간 리포트 **미리보기 데이터**(JSON) — 내려받기 전 화면 확인용 (M12).
+
+    PDF/XLSX 와 **완전히 동일한 집계 함수**(report.evaluate_targets /
+    proc_time_percentiles / aggregate_defects / aggregate_daily)를 사용한다.
+    화면과 파일이 서로 다른 계산을 하면 인수 심사에서 숫자가 어긋나므로,
+    단일 산출원을 강제하기 위해 별도 계산을 두지 않는다.
+
+    daily 의 ppm 은 일자별 공정불량률(불량÷검사×1e6)로 추세 차트용이다.
+    """
+    period = period or _current_period()
+    summary, rows = _compute_summary(period, db)
+
+    targets = [
+        {
+            "key": key,
+            "label": ko,
+            "label_en": latin,
+            "target": target_text,
+            "actual": report_gen.target_actual_text(key, summary, rows),
+            "achieved": passed,  # True/False/None(판정보류)
+        }
+        for key, ko, latin, target_text, passed in report_gen.evaluate_targets(
+            summary, rows
+        )
+    ]
+    defects = [
+        {"code": code, "label": report_gen.defect_label(code), "count": n}
+        for code, n in report_gen.aggregate_defects(rows)
+    ]
+    daily = [
+        {
+            "date": day,
+            "inspected": inspected,
+            "defects": defects_n,
+            "ppm": (defects_n / inspected * 1_000_000.0) if inspected else 0.0,
+        }
+        for day, inspected, defects_n in report_gen.aggregate_daily(rows)
+    ]
+    return {
+        "period": summary.period,
+        "summary": summary,
+        "proc_time": report_gen.proc_time_percentiles(rows),
+        "targets": targets,
+        "defects": defects,
+        "daily": daily,
+    }
+
+
 _MEDIA_TYPES = {
     "pdf": "application/pdf",
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

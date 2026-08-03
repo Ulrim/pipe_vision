@@ -194,3 +194,48 @@ def test_report_xlsx_has_target_rows(client, auth):
     assert "목표 대비 달성" in joined
     assert "공정불량률 (ppm)" in joined
     assert ("달성" in joined) or ("미달" in joined)
+
+
+def test_report_preview_matches_file_report(client, auth):
+    """GET /kpi/report/preview 는 PDF/XLSX 와 **같은 집계 결과**를 내야 한다.
+
+    화면 미리보기가 파일과 다른 숫자를 보이면 인수 심사에서 신뢰를 잃는다.
+    같은 함수(evaluate_targets/proc_time_percentiles/aggregate_*)를 쓰는지
+    응답 구조와 값으로 확인한다.
+    """
+    from core.report import (
+        aggregate_defects,
+        evaluate_targets,
+        proc_time_percentiles,
+    )
+    from routers.kpi import _compute_summary
+
+    _seed_month(client, auth)
+    r = client.get("/kpi/report/preview", headers=auth("op1"),
+                   params={"period": "2026-03"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+
+    assert body["period"] == "2026-03"
+    for key in ("summary", "proc_time", "targets", "defects", "daily"):
+        assert key in body
+
+    # 서버 내부 집계와 대조(단일 산출원 보장).
+    from db.base import SessionLocal
+    db = SessionLocal()
+    try:
+        summary, rows = _compute_summary("2026-03", db)
+        assert body["proc_time"] == proc_time_percentiles(rows)
+        assert [d["code"] for d in body["defects"]] == [
+            c for c, _n in aggregate_defects(rows)
+        ]
+        expected = [p for _k, _ko, _l, _t, p in evaluate_targets(summary, rows)]
+        assert [t["achieved"] for t in body["targets"]] == expected
+    finally:
+        db.close()
+
+
+def test_report_preview_requires_login(client):
+    """미리보기도 로그인 필요(operator+) — 무인증 접근 차단."""
+    r = client.get("/kpi/report/preview", params={"period": "2026-03"})
+    assert r.status_code in (401, 403)
