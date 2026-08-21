@@ -111,11 +111,14 @@ class InspectionPipeline:
         """품목·모드별 표면 모델 선택(캐시). 명시 주입 시 그대로 사용."""
         if self.surface_model is not None:
             return self.surface_model
+        model_mode = os.environ.get("AIVIS_SURFACE_MODEL", "auto").lower()
         mode = os.environ.get("AIVIS_SURFACE_ANOMALY", "auto").lower()
-        key = (getattr(master, "item_code", None), mode)
+        key = (getattr(master, "item_code", None), model_mode, mode)
         model = self._model_cache.get(key)
         if model is None:
-            model = resolve_surface_model(master, mode=mode)
+            model = resolve_surface_model(
+                master, mode=mode, model_mode=model_mode
+            )
             self._model_cache[key] = model
         return model
 

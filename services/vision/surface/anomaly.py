@@ -340,17 +340,48 @@ class AnomalySurfaceModel(SurfaceModel):
 
 
 def resolve_surface_model(
-    item: ItemMaster, *, mode: Optional[str] = None
+    item: ItemMaster,
+    *,
+    mode: Optional[str] = None,
+    model_mode: Optional[str] = None,
 ) -> SurfaceModel:
-    """표면 모델 팩토리(§6.3 seam). 품목에 이상탐지 모델이 있으면 사용.
+    """표면 모델 팩토리(§6.3 seam). 우선순위: ONNX > 이상탐지 npz > 고전 CV.
 
-    mode: AIVIS_SURFACE_ANOMALY(env) — on|off|auto(기본 auto).
-    - off : 항상 고전 CV(ClassicalSurfaceModel) — 현행과 동일.
+    model_mode: AIVIS_SURFACE_MODEL(env) — onnx|anomaly|classical|auto(기본).
+    - onnx     : 항상 OnnxSurfaceModel(로드 실패 시 내부적으로 classical 폴백).
+    - anomaly  : 항상 AnomalySurfaceModel(모델 없으면 classical 폴백).
+    - classical: 항상 고전 CV(ClassicalSurfaceModel).
+    - auto     : ONNX 모델(AIVIS_SURFACE_ONNX/기본 경로)이 존재하고 **로드
+                 성공**하면 OnnxSurfaceModel → 아니면 기존 이상탐지 npz 로직
+                 → 아니면 ClassicalSurfaceModel.
+
+    mode: AIVIS_SURFACE_ANOMALY(env) — on|off|auto(기본 auto). 기존 동작
+    100% 호환(auto 에서 ONNX 가 없을 때의 경로는 현행과 완전 동일).
+    - off : 이상탐지 사용 안 함(고전 CV) — 현행과 동일.
     - on  : 항상 AnomalySurfaceModel(모델 없으면 내부적으로 classical 폴백).
     - auto: 학습 모델이 있으면 AnomalySurfaceModel, 없으면 ClassicalSurfaceModel
             → 모델이 없을 때 현행 동작과 100% 동일(회귀 없음).
     """
+    from .model import OnnxSurfaceModel, resolve_model_path
+
     item_code = getattr(item, "item_code", None)
+    model_mode = (
+        model_mode or os.environ.get("AIVIS_SURFACE_MODEL", "auto")
+    ).lower()
+    if model_mode == "classical":
+        return ClassicalSurfaceModel()
+    if model_mode == "onnx":
+        return OnnxSurfaceModel()
+    if model_mode == "anomaly":
+        path = resolve_anomaly_model_path(item_code)
+        return AnomalySurfaceModel(model_path=path, item_code=item_code)
+
+    # auto: ONNX 가 존재하고 로드 성공하면 최우선.
+    if resolve_model_path() is not None:
+        onnx_model = OnnxSurfaceModel()
+        if onnx_model.loaded:
+            return onnx_model
+    # 이하 기존 이상탐지 npz 로직(AIVIS_SURFACE_ANOMALY 존중 — 회귀 없음).
     mode = (mode or os.environ.get("AIVIS_SURFACE_ANOMALY", "auto")).lower()
     if mode == "off":
         return ClassicalSurfaceModel()

@@ -37,6 +37,12 @@ from .model import (
     SurfaceModel,
     resolve_model_path,
 )
+from .onnx_meta import (
+    OnnxMeta,
+    OnnxMetaError,
+    load_onnx_meta,
+    sidecar_path,
+)
 
 __all__ = [
     "analyze_surface",
@@ -49,6 +55,11 @@ __all__ = [
     "ClassicalSurfaceModel",
     "OnnxSurfaceModel",
     "resolve_model_path",
+    # ONNX 사이드카 계약(GitHub 공개 모델 적용 경로)
+    "OnnxMeta",
+    "OnnxMetaError",
+    "load_onnx_meta",
+    "sidecar_path",
     # 이상탐지(비지도, §6.3)
     "AnomalySurfaceModel",
     "AnomalyReport",
