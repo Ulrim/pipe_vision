@@ -31,7 +31,11 @@ jobs:
           python-version: "3.11"
 
       - name: Install tooling
-        run: python -m pip install --upgrade pip ruff pytest
+        # ruff 는 반드시 버전 고정: 미고정 시 새 릴리스가 기본 규칙을 확대하면
+        # 코드 변경 없이 CI 가 임의 시점에 깨진다(실사고: 2026-08 신규 ruff 가
+        # UP045 등 736건을 소급 지적해 4개 커밋 연속 실패). 업그레이드는 이
+        # 핀을 올리고 지적사항을 함께 고치는 전용 커밋으로만 한다.
+        run: python -m pip install --upgrade pip "ruff==0.15.8" pytest
 
       # Lint every Python component that exists. Ruff is a no-op on empty trees.
       - name: Ruff lint
