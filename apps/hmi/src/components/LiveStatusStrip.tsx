@@ -169,6 +169,16 @@ export function LiveStatusStrip() {
       <span aria-hidden className={`text-hmi-lg font-black ${tone.icon}`}>
         {d.icon}
       </span>
+      {/* 현재 검사 품목 — 발주 기반 오더 전환이 현장에서 즉시 확인되도록
+          하트비트의 item_code 를 항상 병기한다(전환 후 15초 내 갱신). */}
+      {status?.item_code && (
+        <span
+          data-testid="status-item-code"
+          className="rounded-lg bg-white/60 px-2 py-0.5 text-hmi font-black tabular-nums"
+        >
+          {status.item_code}
+        </span>
+      )}
       <span className="text-hmi font-bold">{d.content}</span>
     </div>
   );

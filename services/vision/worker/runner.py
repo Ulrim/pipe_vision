@@ -121,6 +121,11 @@ class Worker:
         # 마지막 기준정보 리로드 시각(UTC). startup 성공 시 now 로 세팅되어 이후
         # item_reload_s 주기로 재조회한다(핫리로드 — 재시작 없이 캘리브레이션 반영).
         self._last_item_reload: Optional[datetime] = None
+        # 발주 기반 현재 오더(웹 PUT /master/active). None 이면 env 기본값 사용.
+        # 오더 해제(null) 시에도 마지막 값을 유지한다 — 일시 장애의 null 과
+        # 구분할 수 없으므로 전환은 항상 "새 오더 설정"으로만 일어난다(안전).
+        self._active_lot: Optional[str] = None
+        self._active_work_order: Optional[str] = None
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -224,7 +229,10 @@ class Worker:
                     return
             # 재조회 시도 시각을 먼저 기록(성공/실패와 무관하게 주기 유지).
             self._last_item_reload = now
-            fresh = self.client.refetch_item(self.cfg.item_code)
+            # 1) 발주 기반 오더 확인(베스트에포트) — 품목/LOT/작업지시 전환.
+            self._maybe_switch_order()
+            # 2) 현재 품목의 기준정보 변경 반영(오더 전환 후의 품목 기준).
+            fresh = self.client.refetch_item(self._cur_item_code())
             if fresh is None:
                 log.debug("기준정보 재조회 실패/무응답 — 기존 기준정보 유지")
                 return
@@ -236,6 +244,84 @@ class Worker:
             self._reapply_recipe_if_changed(old, fresh)
         except Exception as exc:  # noqa: BLE001
             log.warning("기준정보 재조회 예외(무시 — 기존 기준정보 유지): %s", exc)
+
+    def _maybe_switch_order(self) -> None:
+        """현재 검사 오더(GET /master/active)를 확인해 품목/LOT/작업지시 전환.
+
+        발주마다 품목(모양/외경/개수)·절단 길이가 달라진다(사용자 요구).
+        웹에서 오더를 설정하면 여기서 감지해 **재시작 없이** 전환한다:
+          - item_code 가 현재 품목과 다르면 해당 기준정보를 단발 재조회해 교체
+            (+촬영 레시피 적용). 조회 실패 시 전환 보류(다음 주기 재시도).
+          - lot/work_order 는 이후 검사 결과에 즉시 반영.
+          - 미설정(null)/요청 실패는 "정보 없음" — 아무 것도 바꾸지 않는다.
+        """
+        active = self.client.get_active_order()
+        if not active:
+            return
+        target = str(active.get("item_code") or "")
+        if not target:
+            return
+        if self.item is not None and target == self.item.item_code:
+            # 같은 품목의 새 LOT/작업지시(연속 발주) — 라벨만 갱신.
+            self._apply_active_meta(active)
+            return
+        fresh = self.client.refetch_item(target)
+        if fresh is None:
+            # 전환은 원자적(품목+LOT 동시): 품목 조회에 실패하면 LOT 도 바꾸지
+            # 않는다 — 옛 품목에 새 LOT 이 찍히는 라벨 오염 방지. 다음 주기 재시도.
+            log.warning(
+                "오더 전환 보류: 품목 %s 기준정보 조회 실패 — 다음 주기 재시도",
+                target,
+            )
+            return
+        # 호출 경로상 self.item 은 항상 존재(startup 성공 후에만 루프 진입).
+        old = self.item
+        self.item = fresh
+        self._apply_active_meta(active)
+        log.info(
+            "오더 전환: %s→%s (lot=%s, 작업지시=%s)",
+            old.item_code, fresh.item_code,
+            self._active_lot, self._active_work_order,
+        )
+        self._log_item_change(old, fresh)
+        self._reapply_recipe_if_changed(old, fresh)
+
+    def _apply_active_meta(self, active: dict) -> None:
+        """활성 오더의 LOT/작업지시를 결과 라벨에 반영(변경 시에만 로그)."""
+        new_lot = active.get("lot") or None
+        new_wo = active.get("work_order") or None
+        if new_lot != self._active_lot or new_wo != self._active_work_order:
+            log.info(
+                "오더 라벨 갱신: lot %s→%s, 작업지시 %s→%s",
+                self._active_lot, new_lot, self._active_work_order, new_wo,
+            )
+            self._active_lot = new_lot
+            self._active_work_order = new_wo
+
+    # --- 현재 오더 기준 식별자(발주 전환 반영) ---
+    def _cur_item_code(self) -> str:
+        """검사 결과에 쓸 품목코드 — 전환된 self.item 이 항상 우선."""
+        return self.item.item_code if self.item is not None else self.cfg.item_code
+
+    def _cur_lot(self) -> str:
+        """검사 결과에 쓸 LOT — 활성 오더의 lot, 없으면 env/기본값."""
+        return self._active_lot or self.cfg.lot
+
+    def _cur_work_order(self) -> Optional[str]:
+        return self._active_work_order
+
+    def _orientation(self) -> str:
+        """품목별 배치 방향(모양 대응): capture_recipe.orientation.
+
+        "horizontal"(기본, 튜브가 가로로 누움) | "vertical". 그 외 값은 경고 후
+        horizontal. 기준정보에서 관리(하드코딩 금지) — 품목 전환 시 함께 바뀐다.
+        """
+        recipe = getattr(self.item, "capture_recipe", None) or {}
+        val = str(recipe.get("orientation", "horizontal")).lower()
+        if val not in ("horizontal", "vertical"):
+            log.warning("orientation 값 무효(%r) — horizontal 로 대체", val)
+            return "horizontal"
+        return val
 
     def _log_item_change(self, old: ItemMaster, new: ItemMaster) -> None:
         """기준정보 갱신 요약 로그(무엇이 어떻게 바뀌었는지 한눈에)."""
@@ -327,7 +413,7 @@ class Worker:
             self.client.post_status(
                 {
                     "cam_id": self.cfg.cam_id,
-                    "item_code": self.cfg.item_code,
+                    "item_code": self._cur_item_code(),
                     "expected": int(expected),
                     "detected": int(detected),
                     "ng": int(ng),
@@ -399,8 +485,8 @@ class Worker:
                 grab.frame,
                 verdict,
                 images_dir=self.cfg.images_dir,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 item=self.item,
                 pending_sink=self.spool.save_image,
@@ -411,10 +497,11 @@ class Worker:
                 log.warning("이미지 저장 실패(계속 진행): %s", saved.error)
             result = to_inspection_result(
                 verdict,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
                 inspected_at=inspected_at,
+                work_order=self._cur_work_order(),
                 shift=self.cfg.shift,
                 operator=self.cfg.operator,
                 raw_image_path=saved.raw_image_path,
@@ -532,14 +619,15 @@ class Worker:
             expected = int(getattr(self.item, "expected_count", 1) or 1)
             # 판정(proc_time KPI)을 먼저 끝낸 뒤 이미지 저장(§4).
             batch = inspect_batch(
-                grab.frame, self.item, expected_count=expected
+                grab.frame, self.item, expected_count=expected,
+                axis=self._orientation(),
             )
             saved = save_batch_images(
                 grab.frame,
                 batch,
                 images_dir=self.cfg.images_dir,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
             )
@@ -547,12 +635,12 @@ class Worker:
                 log.warning("배치 이미지 저장 실패(계속 진행): %s", saved.error)
 
             meta = BatchMeta(
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
                 inspected_at=inspected_at,
                 ref_length_mm=float(self.item.ref_length_mm),
-                work_order=None,
+                work_order=self._cur_work_order(),
                 shift=self.cfg.shift,
                 operator=self.cfg.operator,
                 raw_image_path=saved.raw_image_path,

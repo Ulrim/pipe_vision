@@ -108,3 +108,16 @@ describe("LiveStatusStrip (워커 라이브니스 표기, 색+아이콘 이중�
     );
   });
 });
+
+describe("현재 검사 품목 표기 (발주 기반 오더 전환 확인)", () => {
+  it("하트비트의 item_code 를 배지로 병기한다", () => {
+    setStatus({ item_code: "HP20" });
+    render(<LiveStatusStrip />);
+    expect(screen.getByTestId("status-item-code")).toHaveTextContent("HP20");
+  });
+
+  it("하트비트가 없으면 품목 배지도 없다(대기 상태)", () => {
+    render(<LiveStatusStrip />);
+    expect(screen.queryByTestId("status-item-code")).toBeNull();
+  });
+});

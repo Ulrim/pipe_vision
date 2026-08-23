@@ -172,3 +172,42 @@ export function calibrateItem(
     },
   );
 }
+
+/* ---------------- 현재 검사 오더 (발주 기반 전환) ---------------- */
+
+/**
+ * 현재 검사 오더. 발주마다 품목(모양/외경/개수)·절단 길이가 달라지므로,
+ * 여기서 설정하면 라즈베리파이 워커가 폴링(15초 주기)해 재시작 없이
+ * 품목/LOT/작업지시를 전환한다. 미설정이면 워커는 env 기본 품목 유지.
+ */
+export interface ActiveOrder {
+  item_code: string;
+  lot: string | null;
+  work_order: string | null;
+  updated_by: string | null;
+  updated_at: string | null;
+}
+
+export interface ActiveOrderIn {
+  item_code: string;
+  lot: string | null;
+  work_order: string | null;
+}
+
+/** GET /master/active — 미설정이면 null. */
+export function fetchActiveOrder(): Promise<ActiveOrder | null> {
+  return requestJson<ActiveOrder | null>("/master/active");
+}
+
+/** PUT /master/active — 오더 설정(quality+). 404=품목 없음. */
+export function putActiveOrder(body: ActiveOrderIn): Promise<ActiveOrder> {
+  return requestJson<ActiveOrder>("/master/active", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** DELETE /master/active — 오더 해제(quality+). */
+export function clearActiveOrder(): Promise<void> {
+  return requestJson<void>("/master/active", { method: "DELETE" });
+}

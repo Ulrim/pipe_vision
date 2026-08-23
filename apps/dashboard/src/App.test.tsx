@@ -11,6 +11,9 @@ vi.mock("@/api/endpoints", () => ({
   fetchKpiSummary: vi.fn().mockResolvedValue({}),
   fetchInspections: vi.fn().mockResolvedValue([]),
   fetchItems: vi.fn().mockResolvedValue([]),
+  fetchActiveOrder: vi.fn().mockResolvedValue(null),
+  putActiveOrder: vi.fn(),
+  clearActiveOrder: vi.fn(),
   login: vi.fn(),
 }));
 

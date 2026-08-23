@@ -10,10 +10,16 @@ import { useAuthStore } from "@/store/auth";
 const fetchItems = vi.fn();
 const updateItem = vi.fn();
 const calibrateItem = vi.fn();
+const fetchActiveOrder = vi.fn();
+const putActiveOrder = vi.fn();
+const clearActiveOrder = vi.fn();
 vi.mock("@/api/endpoints", () => ({
   fetchItems: (...a: unknown[]) => fetchItems(...a),
   updateItem: (...a: unknown[]) => updateItem(...a),
   calibrateItem: (...a: unknown[]) => calibrateItem(...a),
+  fetchActiveOrder: (...a: unknown[]) => fetchActiveOrder(...a),
+  putActiveOrder: (...a: unknown[]) => putActiveOrder(...a),
+  clearActiveOrder: (...a: unknown[]) => clearActiveOrder(...a),
 }));
 
 import { MasterPage } from "./MasterPage";
@@ -38,6 +44,9 @@ beforeEach(() => {
   fetchItems.mockReset();
   updateItem.mockReset();
   calibrateItem.mockReset();
+  fetchActiveOrder.mockReset().mockResolvedValue(null);
+  putActiveOrder.mockReset();
+  clearActiveOrder.mockReset();
   useAuthStore.getState().setAuth({
     token: "t.t.t",
     username: "kim",
@@ -169,5 +178,77 @@ describe("MasterPage — 웹 캘리브레이션", () => {
     expect(await screen.findByTestId("calib-error")).toHaveTextContent(
       "scale out of range",
     );
+  });
+});
+
+describe("현재 검사 오더 (발주 기반 전환)", () => {
+  function asQuality(): void {
+    useAuthStore.setState({ role: Role.QUALITY, token: "t", username: "qa1" });
+  }
+
+  it("미설정이면 '오더 미설정' 안내를 보여준다", async () => {
+    asQuality();
+    fetchItems.mockResolvedValue([item]);
+    renderApp(<MasterPage />);
+    expect(await screen.findByTestId("active-order-empty")).toHaveTextContent(
+      "오더 미설정",
+    );
+  });
+
+  it("활성 오더가 있으면 품목/LOT 배지를 보여준다", async () => {
+    asQuality();
+    fetchItems.mockResolvedValue([item]);
+    fetchActiveOrder.mockResolvedValue({
+      item_code: "HP12", lot: "LOT-77", work_order: "WO-1",
+      updated_by: "qa1", updated_at: "2026-08-21T00:00:00Z",
+    });
+    renderApp(<MasterPage />);
+    const badge = await screen.findByTestId("active-order-badge");
+    expect(badge).toHaveTextContent("HP12");
+    expect(badge).toHaveTextContent("LOT-77");
+  });
+
+  it("품목 선택 + LOT 입력 후 적용 → putActiveOrder 올바른 body 호출", async () => {
+    asQuality();
+    fetchItems.mockResolvedValue([item]);
+    putActiveOrder.mockResolvedValue({
+      item_code: "HP12", lot: "LOT-9", work_order: null,
+      updated_by: "qa1", updated_at: "2026-08-21T00:00:00Z",
+    });
+    renderApp(<MasterPage />);
+    // 품목 목록(fetchItems)이 select 옵션으로 나타날 때까지 대기.
+    await screen.findByRole("option", { name: /HP12/ });
+
+    await userEvent.selectOptions(screen.getByTestId("order-item"), "HP12");
+    await userEvent.type(screen.getByTestId("order-lot"), "LOT-9");
+    await userEvent.click(screen.getByTestId("order-apply"));
+
+    await waitFor(() => {
+      expect(putActiveOrder).toHaveBeenCalledWith({
+        item_code: "HP12", lot: "LOT-9", work_order: null,
+      });
+    });
+    expect(await screen.findByTestId("order-msg")).toHaveTextContent("적용됨");
+  });
+
+  it("해제 클릭 → clearActiveOrder 호출", async () => {
+    asQuality();
+    fetchItems.mockResolvedValue([item]);
+    fetchActiveOrder.mockResolvedValue({
+      item_code: "HP12", lot: "L", work_order: null,
+      updated_by: "qa1", updated_at: null,
+    });
+    clearActiveOrder.mockResolvedValue(undefined);
+    renderApp(<MasterPage />);
+    await userEvent.click(await screen.findByTestId("order-clear"));
+    await waitFor(() => expect(clearActiveOrder).toHaveBeenCalled());
+  });
+
+  it("operator 는 적용 버튼이 비활성(읽기 전용)", async () => {
+    useAuthStore.setState({ role: Role.OPERATOR, token: "t", username: "op1" });
+    fetchItems.mockResolvedValue([item]);
+    renderApp(<MasterPage />);
+    await screen.findByTestId("active-order-card");
+    expect(screen.getByTestId("order-apply")).toBeDisabled();
   });
 });

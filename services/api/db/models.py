@@ -1,6 +1,7 @@
 """SQLAlchemy 2.0 ORM 모델 — CLAUDE.md §7.1 스키마 그대로 매핑.
 
-테이블: item_master, inspection, kpi_manual, app_user, sys_log, mes_quality_if(§7.3).
+테이블: item_master, inspection, kpi_manual, app_user, sys_log, mes_quality_if(§7.3),
+active_order(현재 검사 오더 단일 행, 0005 마이그레이션).
 인덱스: ix_insp_lot, ix_insp_time, ix_insp_item_verdict (§7.1),
 ux_insp_natkey (자연키 멱등 유니크, 0002 마이그레이션).
 """
@@ -47,6 +48,26 @@ class ItemMaster(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class ActiveOrder(Base):
+    """현재 검사 오더 (active_order, 단일 행 id=1).
+
+    발주마다 품목(모양/외경/개수)·절단 길이가 달라지므로 "지금 검사할 오더"를
+    웹(대시보드)에서 설정하면 워커가 폴링(15s 핫리로드 주기)해 재시작 없이
+    품목/LOT/작업지시를 전환한다. env AIVIS_ITEM_CODE 고정 방식을 대체한다.
+    """
+
+    __tablename__ = "active_order"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    item_code: Mapped[str] = mapped_column(
+        Text, ForeignKey("item_master.item_code"), nullable=False
+    )
+    lot: Mapped[str | None] = mapped_column(Text)
+    work_order: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Inspection(Base):

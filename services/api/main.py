@@ -106,6 +106,7 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(inspection.router)
 app.include_router(master.router)
+app.include_router(master.active_router)
 app.include_router(kpi.router)
 app.include_router(logs.router)
 app.include_router(mes.router)
