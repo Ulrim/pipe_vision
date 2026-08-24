@@ -56,7 +56,10 @@ mkdir -p "$IMAGES_DIR" "$SPOOL_DIR" "$(dirname "$DB_PATH")"
 # pip 설치가 실패/중단된 경우("No module named uvicorn") 그대로 기동 실패했다.
 # → venv 가 있어도 핵심 모듈 import 검사에 실패하면 의존 설치를 (재)실행한다.
 api_deps_ok() {
-  "$API_VENV" -c "import uvicorn, fastapi, sqlalchemy, aivis_types" >/dev/null 2>&1
+  # reportlab/openpyxl 포함: 월간 리포트(M12)가 requirements 에 추가된 뒤
+  # 구버전 venv(추가 전 생성)가 이 검사를 통과해 버리면 /kpi/report 가
+  # 런타임 500 으로 죽는다 — 핵심 기능 모듈은 전부 import 검사에 넣는다.
+  "$API_VENV" -c "import uvicorn, fastapi, sqlalchemy, aivis_types, reportlab, openpyxl" >/dev/null 2>&1
 }
 
 install_api_deps() {
