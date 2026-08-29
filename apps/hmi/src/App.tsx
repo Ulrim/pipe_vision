@@ -1,10 +1,20 @@
 /**
  * AIVIS 작업자 HMI 메인 화면 (CLAUDE.md §5 M6/M10).
- * - 사내 도구 전환: 전체 로그인 게이트(미인증 시 진입 차단).
- *   토큰이 없으면 LoginScreen 만 렌더, 있을 때만 검사 화면을 렌더한다.
- *   로그아웃/토큰 만료(401·WS 1008)로 세션이 폐기되면 다시 로그인 화면으로 복귀.
+ *
+ * **고정 화면 원칙(파이 7" 800x480 실측 후 재설계)**
+ * 현장 작업자는 설비 앞에서 화면을 힐끗 볼 뿐, 스크롤하지 않는다(장갑도 낀다).
+ * 그런데 이전 레이아웃은 800x480 에서 문서 높이가 1011px 이라 **531px 가 잘려**
+ * 판정(OK/NG)조차 스크롤해야 보였다 — 검사 화면으로서 치명적이었다.
+ * 그래서 화면을 `h-full overflow-hidden` 3단 고정 구조로 바꾼다:
+ *
+ *   [상단바 ~52px]  품목·LOT / 검출 / 상태 / 시각
+ *   [본문  flex-1 ]  판정(초대형) | 판정 이미지     ← 남는 높이를 전부 차지
+ *   [하단바 ~56px]  누적 카운터 + 최근 결과 타일
+ *
+ * 어떤 요소도 본문을 밀어내지 못하며(알람은 오버레이), 화면이 커지면 본문이
+ * 늘어날 뿐 구조는 같다 — 파이 LCD 와 사무실 PC 가 같은 화면을 본다.
  * - WS /ws/live 구독(자동 재연결, ?token= 으로 JWT 인증).
- * - 최신 검사결과 카드 + NG 알람 배너 + 최근 이력 + 재확인 다이얼로그.
+ * - 미인증 시 LoginScreen 게이트.
  */
 import { useState } from "react";
 import type { InspectionResult } from "@aivis/shared-types";
@@ -12,19 +22,16 @@ import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useLiveStore } from "@/store/liveStore";
 import { useBatches } from "@/hooks/useBatches";
 import { useAuthStore } from "@/store/authStore";
-import { ConnectionIndicator } from "@/components/ConnectionIndicator";
-import { LiveStatusStrip } from "@/components/LiveStatusStrip";
+import { HmiHeader } from "@/components/HmiHeader";
 import { AlarmBanner } from "@/components/AlarmBanner";
 import { InspectionCard } from "@/components/InspectionCard";
 import { BatchCard } from "@/components/BatchCard";
 import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
-import { AuthStatus } from "@/components/AuthStatus";
 import { LoginScreen } from "@/components/LoginScreen";
 
 export default function App() {
   // 전체 로그인 게이트: 세션(토큰)이 없으면 본문 대신 로그인 화면만 렌더.
-  // 로그인/로그아웃/만료 시 session 변화로 게이트가 자동 전환된다.
   const session = useAuthStore((s) => s.session);
   if (!session) {
     return <LoginScreen />;
@@ -32,10 +39,6 @@ export default function App() {
   return <AppShell />;
 }
 
-/**
- * 인증된 본문. 게이트를 통과(토큰 보유)했을 때만 마운트되므로,
- * useLiveSocket 은 항상 유효한 토큰으로 WS 에 연결한다.
- */
 function AppShell() {
   useLiveSocket();
   const latest = useLiveStore((s) => s.latest);
@@ -45,46 +48,30 @@ function AppShell() {
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
 
   return (
-    <div className="min-h-full bg-gray-100 p-4 md:p-6">
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-hmi-lg font-black text-gray-900">
-          AIVIS 실시간 검사
-        </h1>
-        <div className="flex flex-wrap items-center gap-3">
-          <ConnectionIndicator />
-          <AuthStatus />
-        </div>
-      </header>
+    <div className="relative flex h-full flex-col overflow-hidden bg-gray-100">
+      <HmiHeader />
 
-      {/* 워커 라이브니스 상태 스트립: 검사 이벤트 0건이어도 원인을 상단에 표기. */}
-      <div className="mb-4">
-        <LiveStatusStrip />
-      </div>
+      <main className="flex min-h-0 flex-1 flex-col p-2">
+        {/* 최신 그룹이 다중 튜브 배치면 배치 화면, 아니면 단일(하위호환). */}
+        {latestBatch?.isBatch ? (
+          <BatchCard batch={latestBatch} onReview={setReviewing} />
+        ) : (
+          <InspectionCard result={latest} onReview={setReviewing} />
+        )}
+      </main>
 
-      <div className="mb-4">
+      {/* 알람은 오버레이가 아니라 **흐름 안**에 둔다. 겹쳐 띄우면 판정과
+          재확인 버튼을 가려버린다(800x480 실측 확인). 흐름에 두면 판정 영역이
+          그만큼 줄 뿐 스크롤은 생기지 않는다. 평소에는 아무것도 렌더하지
+          않으므로 화면을 차지하지도 않는다. */}
+      <div className="flex-none px-2 pb-2 empty:hidden">
         <AlarmBanner />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          {/* 최신 그룹이 다중 튜브 배치면 배치 카드, 아니면 기존 단일 카드(하위호환). */}
-          {latestBatch?.isBatch ? (
-            <BatchCard batch={latestBatch} onReview={setReviewing} />
-          ) : (
-            <InspectionCard result={latest} onReview={setReviewing} />
-          )}
-        </div>
-        <aside className="flex flex-col gap-3">
-          <h2 className="text-hmi font-bold text-gray-700">최근 검사</h2>
-          <RecentFeed batches={batches} onSelect={setReviewing} />
-        </aside>
-      </div>
+      <RecentFeed batches={batches} onSelect={setReviewing} />
 
       {reviewing && (
-        <ReviewDialog
-          result={reviewing}
-          onClose={() => setReviewing(null)}
-        />
+        <ReviewDialog result={reviewing} onClose={() => setReviewing(null)} />
       )}
     </div>
   );

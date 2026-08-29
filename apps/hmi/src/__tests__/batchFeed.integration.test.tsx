@@ -80,10 +80,8 @@ describe("App 배치 통합 (다중 튜브 → 배치 카드 1개)", () => {
     expect(card).toHaveAttribute("data-verdict", "NG");
     // 튜브별 표기 4개.
     expect(screen.getAllByTestId("batch-tube")).toHaveLength(4);
-    // NG 개수 요약.
-    expect(screen.getByTestId("batch-ng-summary")).toHaveTextContent(
-      "총 4개 중 2개 NG",
-    );
+    // NG 개수는 초대형 판정 텍스트에 실린다(재설계).
+    expect(screen.getByTestId("batch-verdict-text")).toHaveTextContent("NG 2");
     // 최근 검사(피드)에도 배치 요약 행 1개.
     expect(screen.getAllByTestId("batch-feed-row")).toHaveLength(1);
   });
@@ -151,7 +149,7 @@ describe("App 배치 통합 (다중 튜브 → 배치 카드 1개)", () => {
       expect(screen.getByTestId("ng-alarm-batch")).toBeInTheDocument(),
     );
     expect(screen.getByTestId("ng-alarm-batch")).toHaveTextContent(
-      "배치 3개 중 1개 NG",
+      "미확인 NG · 1/3개",
     );
   });
 });

@@ -1,14 +1,23 @@
 /**
- * 최근 검사 이력 목록 (M10 보조). 배치 단위로 묶어 표시한다.
- * - 배치 그룹(튜브 2건 이상): 요약 행 1개(총 N개 중 NG M개, 전체 판정).
- *   행 클릭 시 배치 내 NG 튜브를 재확인 대상으로 넘긴다.
- * - 단일 튜브(하위호환): 기존 개별 행(feed-row) 유지, NG 클릭 시 재확인.
- * 최신 배치가 위(그룹 순서는 groupFeed 가 최신순 보장).
+ * 최근 검사 이력 — 하단 압축 스트립 (M10 보조).
+ *
+ * 설계 근거(파이 7" 800x480 실측 후 재설계):
+ * - 이전에는 우측 세로 목록이라 판정 영역을 좁혔고, 480px 화면에서는 잘려서
+ *   보이지도 않았다. 작업자에게 필요한 건 **흐름**("방금 몇 개나 나갔고 불량이
+ *   몰리고 있나")이지 개별 행의 상세가 아니다. 상세는 관리자 웹의 일이다.
+ * - 그래서 하단 한 줄(약 56px)로 압축한다:
+ *      누적 카운터(검사 n · 불량 m)  +  최근 결과 타일(최신이 왼쪽)
+ * - 타일은 색 단독이 아니라 ✓/✕ 기호를 함께 쓴다(색약 고려). NG 타일은
+ *   눌러서 재확인할 수 있고 터치 타겟은 44px 이상.
+ * - **색 규칙(고성능 HMI)**: 양품 타일은 무채색, NG 타일만 빨강. 그래야
+ *   조용한 회색 줄에서 빨강이 튀어 불량이 몰리는 구간이 한눈에 보인다.
  */
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
 import type { BatchGroup } from "@/lib/batching";
-import { VerdictBadge } from "./VerdictBadge";
+
+/** 화면 폭에 들어가는 만큼만(넘치면 가로 스크롤 대신 잘라낸다). */
+const MAX_TILES = 12;
 
 export interface RecentFeedProps {
   batches: BatchGroup[];
@@ -16,107 +25,98 @@ export interface RecentFeedProps {
 }
 
 export function RecentFeed({ batches, onSelect }: RecentFeedProps) {
-  if (batches.length === 0) {
-    return (
-      <div className="rounded-xl bg-white p-4 text-center text-gray-400">
-        수신된 검사결과가 없습니다.
-      </div>
-    );
+  // 누적 집계: 이 화면이 켜진 뒤 수신한 전체(튜브 단위).
+  let total = 0;
+  let ng = 0;
+  for (const b of batches) {
+    total += b.total;
+    ng += b.ngCount;
   }
+
   return (
-    <ul className="flex flex-col gap-2" data-testid="recent-feed">
-      {batches.map((b, i) =>
-        b.isBatch ? (
-          <BatchRow key={b.key} batch={b} onSelect={onSelect} />
-        ) : (
-          <SingleRow
-            key={b.tubes[0]?.id ?? `idx-${i}`}
-            result={b.tubes[0]}
-            onSelect={onSelect}
-          />
-        ),
+    <footer
+      className="flex flex-none items-center gap-3 border-t-2 border-gray-300 bg-white px-3 py-2"
+      data-testid="recent-feed"
+    >
+      <div className="flex flex-none items-baseline gap-2">
+        <span className="text-hmi-cap font-semibold text-gray-500">누적</span>
+        <span className="text-hmi-body font-black tabular-nums text-gray-900">
+          {total}
+        </span>
+        <span className="text-hmi-cap font-semibold text-gray-500">불량</span>
+        <span
+          className={`text-hmi-body font-black tabular-nums ${
+            ng > 0 ? "text-ng-fg" : "text-gray-400"
+          }`}
+          data-testid="recent-ng-count"
+        >
+          {ng}
+        </span>
+      </div>
+
+      {batches.length === 0 ? (
+        <span className="text-hmi-cap text-gray-400">
+          수신된 검사결과가 없습니다.
+        </span>
+      ) : (
+        <ul className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+          {batches.slice(0, MAX_TILES).map((b, i) => (
+            <BatchTile
+              key={b.key ?? `b-${i}`}
+              batch={b}
+              onSelect={onSelect}
+            />
+          ))}
+        </ul>
       )}
-    </ul>
+    </footer>
   );
 }
 
-function BatchRow({
+function BatchTile({
   batch,
   onSelect,
 }: {
   batch: BatchGroup;
   onSelect?: (r: InspectionResult) => void;
 }) {
-  const ng = batch.verdict === Verdict.NG;
-  // 배치 행 클릭 시 첫 NG 튜브를 재확인 대상으로.
-  const firstNg = batch.tubes.find((t) => t.final_verdict === Verdict.NG);
-  return (
-    <li>
-      <button
-        type="button"
-        onClick={() => firstNg && onSelect?.(firstNg)}
-        className={`flex w-full items-center justify-between gap-3 rounded-lg border-2 bg-white px-4 py-3 text-left ${
-          ng ? "border-ng" : "border-gray-200"
-        } ${firstNg ? "active:scale-[0.99]" : "cursor-default"}`}
-        data-testid="batch-feed-row"
-        data-verdict={batch.verdict}
-        data-total={batch.total}
-        data-ng={batch.ngCount}
-      >
-        <span className="flex flex-col">
-          <span className="text-hmi font-bold">
-            {batch.item_code}
-            <span className="ml-2 rounded bg-gray-800 px-2 py-0.5 text-sm font-bold text-white">
-              배치 {batch.total}개
-            </span>
-          </span>
-          <span className="text-sm text-gray-500">
-            LOT {batch.lot} ·{" "}
-            {new Date(batch.inspected_at).toLocaleTimeString("ko-KR")}
-            {ng && (
-              <span className="ml-1 font-bold text-ng-fg">
-                · NG {batch.ngCount}/{batch.total}
-              </span>
-            )}
-          </span>
-        </span>
-        <VerdictBadge
-          verdict={batch.verdict}
-          size="sm"
-          label={ng ? "NG" : "OK"}
-        />
-      </button>
-    </li>
-  );
-}
+  const isNg = batch.verdict === Verdict.NG;
+  // NG 배치는 첫 NG 튜브를 재확인 대상으로 넘긴다.
+  const target = isNg
+    ? (batch.tubes.find((t) => t.final_verdict === Verdict.NG) ?? batch.tubes[0])
+    : null;
+  const clickable = !!target && !!onSelect;
+  const time = new Date(batch.inspected_at).toLocaleTimeString("ko-KR", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
-function SingleRow({
-  result,
-  onSelect,
-}: {
-  result: InspectionResult;
-  onSelect?: (r: InspectionResult) => void;
-}) {
-  const ng = result.final_verdict === Verdict.NG;
   return (
-    <li>
+    <li className="flex-none">
       <button
         type="button"
-        onClick={() => ng && onSelect?.(result)}
-        className={`flex w-full items-center justify-between gap-3 rounded-lg border-2 bg-white px-4 py-3 text-left ${
-          ng ? "border-ng" : "border-gray-200"
-        } ${ng ? "active:scale-[0.99]" : "cursor-default"}`}
-        data-testid="feed-row"
-        data-verdict={result.final_verdict}
+        disabled={!clickable}
+        onClick={() => clickable && onSelect?.(target)}
+        data-testid={batch.isBatch ? "batch-feed-row" : "feed-row"}
+        data-verdict={batch.verdict}
+        aria-label={`${time} ${isNg ? `불량 ${batch.ngCount}개` : "양품"}`}
+        className={`flex h-11 items-center gap-1 rounded-lg border-2 px-2 ${
+          isNg
+            ? "border-ng bg-ng text-white"
+            : "border-gray-300 bg-white text-gray-500"
+        } ${clickable ? "active:scale-95" : "cursor-default"}`}
       >
-        <span className="flex flex-col">
-          <span className="text-hmi font-bold">{result.item_code}</span>
-          <span className="text-sm text-gray-500">
-            LOT {result.lot} ·{" "}
-            {new Date(result.inspected_at).toLocaleTimeString("ko-KR")}
-          </span>
+        <span aria-hidden className="text-hmi-cap font-black">
+          {isNg ? "✕" : "✓"}
         </span>
-        <VerdictBadge verdict={result.final_verdict} size="sm" />
+        {batch.isBatch && (
+          <span className="text-hmi-cap font-black tabular-nums">
+            {isNg ? batch.ngCount : batch.total}
+          </span>
+        )}
+        <span className="text-hmi-cap font-semibold tabular-nums opacity-80">
+          {time}
+        </span>
       </button>
     </li>
   );

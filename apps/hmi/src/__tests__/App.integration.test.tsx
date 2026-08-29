@@ -51,12 +51,15 @@ afterEach(() => {
 });
 
 describe("App 통합 (WS → 카드 / NG 알람 / 재확인 PATCH)", () => {
-  it("WS open 시 연결 인디케이터가 '실시간 연결됨' 으로 바뀐다", async () => {
+  it("WS open 시 상단 상태 배지가 '연결 끊김' 을 벗어난다", async () => {
+    // 재설계: 별도 연결 배지 대신 상단 바의 상태 배지 하나로 통합했다
+    // (480px 화면에서 배지를 여러 개 둘 자리가 없다). 연결 전에는 '연결 끊김',
+    // 연결 후에는 하트비트 유무에 따라 '대기 중'/'검사 중' 이 된다.
     renderApp();
+    const health = () => screen.getByTestId("header-health");
+    expect(health()).toHaveTextContent("연결 끊김");
     MockWebSocket.last().triggerOpen();
-    await waitFor(() =>
-      expect(screen.getByText("실시간 연결됨")).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(health()).not.toHaveTextContent("연결 끊김"));
   });
 
   it("inspection 메시지 수신 시 검사 카드가 렌더된다", async () => {
@@ -68,8 +71,10 @@ describe("App 통합 (WS → 카드 / NG 알람 / 재확인 PATCH)", () => {
       expect(screen.getByTestId("inspection-card")).toBeInTheDocument(),
     );
     const card = screen.getByTestId("inspection-card");
-    expect(card).toHaveTextContent("LOT-001");
     expect(card).toHaveAttribute("data-verdict", "OK");
+    // 재설계: LOT 는 결과마다 반복하지 않고 **상단 바**에 한 번만 둔다
+    // (한 오더 내내 같은 값이라 판정 영역의 자리를 쓸 이유가 없다).
+    expect(screen.getByTestId("header-lot")).toHaveTextContent("LOT-001");
   });
 
   it("alarm 메시지 수신 시 NG 알람 배너를 보여준다", async () => {
@@ -83,7 +88,9 @@ describe("App 통합 (WS → 카드 / NG 알람 / 재확인 PATCH)", () => {
     await waitFor(() =>
       expect(screen.getByTestId("ng-alarm")).toBeInTheDocument(),
     );
-    expect(screen.getByText(/LOT-NG/)).toBeInTheDocument();
+    // 재설계: LOT 는 상단 바에 이미 있어 알람 줄에서는 뺐다(좁은 줄에서 잘렸다).
+    // 이 줄의 역할은 '아직 확인하지 않은 NG 가 있다'를 붙잡아 두는 것.
+    expect(screen.getByTestId("ng-alarm")).toHaveTextContent("미확인 NG");
   });
 
   it("연속 NG 임계 초과 시 관리자 확인 배너가 뜨고 확인 시 사라진다", async () => {

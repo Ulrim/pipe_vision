@@ -177,9 +177,8 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
 
     // 세션 저장 → 게이트 통과 → 본문 마운트 → WS 연결(토큰 부착).
     await waitFor(() =>
-      expect(
-        screen.getByRole("status", { name: /연결 상태/ }),
-      ).toBeInTheDocument(),
+      // 재설계: 연결/워커 상태가 상단 바 배지 하나로 통합됐다.
+      expect(screen.getByTestId("header-health")).toBeInTheDocument(),
     );
     await waitFor(() => expect(MockWebSocket.instances.length).toBe(1));
     const ws = MockWebSocket.last();
@@ -199,9 +198,8 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
     ws.triggerOpen();
 
     await waitFor(() =>
-      expect(
-        screen.getByRole("status", { name: /연결 상태/ }),
-      ).toBeInTheDocument(),
+      // 재설계: 연결/워커 상태가 상단 바 배지 하나로 통합됐다.
+      expect(screen.getByTestId("header-health")).toBeInTheDocument(),
     );
 
     // 백엔드가 토큰을 거부 → 1008 Policy Violation 으로 닫음.
@@ -272,10 +270,13 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
     renderApp();
     MockWebSocket.last().triggerOpen();
 
+    // 재설계: 로그아웃은 상단 ⋯ 메뉴 안으로 옮겼다 — 현장에서 실수로 눌러
+    // 검사 화면이 사라지는 것을 막기 위해 평소에는 감춰 둔다.
     await waitFor(() =>
-      expect(screen.getByTestId("auth-status")).toBeInTheDocument(),
+      expect(screen.getByTestId("header-menu")).toBeInTheDocument(),
     );
-    fireEvent.click(screen.getByTestId("auth-logout-button"));
+    fireEvent.click(screen.getByTestId("header-menu"));
+    fireEvent.click(screen.getByTestId("menu-logout"));
 
     expect(useAuthStore.getState().session).toBeNull();
     expect(getAuthToken()).toBeNull();
