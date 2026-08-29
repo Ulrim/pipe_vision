@@ -6,13 +6,14 @@ export interface NavItem {
   label: string;
 }
 
-/** 대시보드 5대 화면(M11~M13). App.tsx 라우트와 1:1 대응. */
+/** 대시보드 화면 목록(M11~M13 + 현장 장비 모니터링). App.tsx 라우트와 1:1 대응. */
 export const NAV: NavItem[] = [
   { to: "/kpi", label: "KPI" },
   { to: "/inspections", label: "검사이력" },
   { to: "/statistics", label: "불량통계" },
   { to: "/report", label: "월간리포트" },
   { to: "/master", label: "기준정보" },
+  { to: "/monitor", label: "시스템 모니터링" },
 ];
 
 /** 현재 경로에 대응하는 NAV 라벨(헤더에 "지금 어디 있는지" 표시용). 매칭 없으면 빈 문자열. */
@@ -24,7 +25,7 @@ export function useCurrentNavLabel(): string {
 
 /**
  * 대시보드 심플 네비게이션(사용자 요청: "평소엔 심플, 필요할 때만 메뉴").
- * 평소엔 "메뉴" 버튼만 노출되고, 클릭 시 5개 화면이 세로 드롭다운으로 펼쳐진다.
+ * 평소엔 "메뉴" 버튼만 노출되고, 클릭 시 전체 화면이 세로 드롭다운으로 펼쳐진다.
  * 바깥 클릭/Esc로 닫히고, 항목 선택 시 이동과 동시에 자동으로 닫힌다.
  */
 export function NavMenu(): JSX.Element {
@@ -74,7 +75,7 @@ export function NavMenu(): JSX.Element {
           role="menu"
           aria-label="대시보드 메뉴"
           data-testid="nav-menu"
-          className="absolute left-0 top-full z-20 mt-1 w-40 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          className="absolute left-0 top-full z-20 mt-1 w-48 rounded-md border border-slate-200 bg-white py-1 shadow-lg"
         >
           {NAV.map((n) => (
             <NavLink
@@ -82,7 +83,7 @@ export function NavMenu(): JSX.Element {
               to={n.to}
               role="menuitem"
               className={({ isActive }) =>
-                `block px-3 py-2 text-sm font-medium ${
+                `block whitespace-nowrap px-3 py-2 text-sm font-medium ${
                   isActive ? "bg-brand text-white" : "text-slate-600 hover:bg-slate-100"
                 }`
               }

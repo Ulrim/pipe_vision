@@ -211,3 +211,66 @@ export function putActiveOrder(body: ActiveOrderIn): Promise<ActiveOrder> {
 export function clearActiveOrder(): Promise<void> {
   return requestJson<void>("/master/active", { method: "DELETE" });
 }
+
+/* ---------------- 시스템 모니터링 (현장 라즈베리파이 원격 감시) ---------------- */
+
+/** 라즈베리파이 하드웨어 자원. 측정 불가 항목은 null(0 과 구분해야 함). */
+export interface SystemResources {
+  cpu_temp_c: number | null;
+  cpu_percent: number | null;
+  load_1m: number | null;
+  mem_total_mb: number | null;
+  mem_used_mb: number | null;
+  mem_percent: number | null;
+  disk_total_gb: number | null;
+  disk_used_gb: number | null;
+  disk_percent: number | null;
+  /** true = 전원 부족/과열로 CPU 스로틀 감지. */
+  throttled: boolean | null;
+}
+
+/** 워커는 하트비트 지연을 stale 로 구분(정지와 다름). */
+export interface SystemServices {
+  db: "up" | "down";
+  worker: "up" | "stale" | "down";
+  worker_last_seen_s: number | null;
+}
+
+export interface SystemInspectionWindow {
+  total: number;
+  ng: number;
+  ng_rate_pct: number;
+}
+
+export interface SystemInspection {
+  last_hour: SystemInspectionWindow;
+  today: SystemInspectionWindow;
+  avg_proc_time_ms: number | null;
+  p95_proc_time_ms: number | null;
+  last_inspected_at: string | null;
+  mes_pending: number;
+}
+
+export interface SystemError {
+  ts: string;
+  message: string;
+}
+
+/** GET /system/status 응답(operator+). */
+export interface SystemStatus {
+  ts: string;
+  system: SystemResources;
+  services: SystemServices;
+  inspection: SystemInspection;
+  active_order: {
+    item_code: string;
+    lot: string | null;
+    work_order: string | null;
+  } | null;
+  recent_errors: SystemError[];
+}
+
+/** GET /system/status — 현장 장비 상태 스냅샷(5초 주기 폴링용). */
+export function fetchSystemStatus(): Promise<SystemStatus> {
+  return requestJson<SystemStatus>("/system/status");
+}

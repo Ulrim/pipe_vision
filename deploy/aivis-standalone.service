@@ -1,0 +1,67 @@
+# AIVIS 독립형(모드 B) 전체 스택 — 부팅 자동시작 유닛
+# =============================================================================
+# 이 유닛이 띄우는 것: scripts/aivis-standalone.sh 한 개 프로세스가
+#   api(sqlite) + 검사 워커(picam|sim) + HMI 화면(:5173) + 대시보드(:5174)
+# 를 모두 자식으로 기동한다. 라즈베리파이 1대만으로 완결되는 현장 구성.
+#
+# ★ deploy/aivis-vision-pi.service 와 용도가 다르다 — 둘을 동시에 쓰지 마라!
+#   · aivis-vision-pi.service : 워커만 실행하는 "엣지→클라우드" 모드 유닛.
+#     검사 결과를 원격(클라우드) api 로 보낸다. 파이에는 화면/DB 가 없다.
+#   · aivis-standalone.service(이 파일) : 파이 1대에 전부 올리는 "독립형" 모드.
+#   둘을 함께 켜면 카메라 장치를 두 프로세스가 동시에 열어 충돌하고,
+#   같은 제품이 두 번 검사·적재된다. 반드시 하나만 enable 할 것:
+#     sudo systemctl disable --now aivis-vision.service    # 독립형을 쓸 때
+#
+# 설치는 스크립트로 하는 것을 권장한다(경로/사용자 자동 치환):
+#     sudo bash /opt/aivis/scripts/aivis-install-service.sh
+#     sudo bash /opt/aivis/scripts/aivis-install-service.sh --uninstall
+# 수동 설치 시 아래 User / WorkingDirectory / ExecStart 를 실제 배치에 맞게 수정.
+# 운영 안내: docs/OPERATIONS_PI.md
+# =============================================================================
+[Unit]
+Description=AIVIS standalone stack (api + vision worker + HMI + dashboard)
+Documentation=file:///opt/aivis/docs/OPERATIONS_PI.md
+After=network-online.target
+Wants=network-online.target
+# 워커 전용 유닛과 동시 기동 방지(카메라 점유 충돌).
+Conflicts=aivis-vision.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+# picamera2 카메라 장치 접근(video) + GPU 메모리(render) 권한.
+SupplementaryGroups=video render
+
+# 저장소 위치. 배치 경로가 다르면 설치 스크립트가 자동으로 바꿔 준다.
+WorkingDirectory=/opt/aivis
+
+# 선택적 환경파일(없어도 기동 — 앞의 '-' 가 그 뜻).
+# 예: AIVIS_HOME, AIVIS_CAMERA, AIVIS_ITEM_CODE, API_PORT, JWT_SECRET …
+EnvironmentFile=-/etc/aivis/standalone.env
+Environment=AIVIS_HOME=/var/lib/aivis
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/bin/bash /opt/aivis/scripts/aivis-standalone.sh
+
+# 현장 무인 운영: 크래시/카메라 일시장애 시 항상 재기동.
+Restart=always
+RestartSec=10
+# 첫 기동 때 파이썬 의존 설치가 일어나면 오래 걸릴 수 있다.
+TimeoutStartSec=900
+# 종료 시 자식(api/워커/화면 서버)까지 정리.
+KillMode=control-group
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aivis
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=false
+# 검사 데이터(DB/이미지/스풀) 디렉터리를 자동 생성·소유하게 한다.
+StateDirectory=aivis
+
+[Install]
+WantedBy=multi-user.target

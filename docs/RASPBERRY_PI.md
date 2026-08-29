@@ -13,6 +13,11 @@ genicam 교체는 HAL 경계 뒤에서 투명).
 > 은 인프라/배포 메타다. 애플리케이션 소스(`services/*`, `apps/*`, `packages/*`)는 변경하지
 > 않는다.
 
+> 📗 **현장 담당자(비개발자)용 일상 운영 안내는 [`docs/OPERATIONS_PI.md`](OPERATIONS_PI.md)**
+> 를 본다 — 메뉴형 조작(`scripts/aivis.sh`), 원클릭 업데이트(`scripts/aivis-update.sh`),
+> 파이 터미널 모니터(`scripts/aivis-monitor.py`), 부팅 자동시작 등록, 문제 대처.
+> 이 문서(RASPBERRY_PI.md)는 **설치·카메라·캘리브레이션 등 기술 상세**를 다룬다.
+
 ---
 
 ## 0. 두 배포 모드 (먼저 결정)

@@ -22,7 +22,7 @@ from aivis_types import (
     Verdict,
 )
 
-from core import local_queue
+from core import heartbeat, local_queue
 from core.config import get_settings
 from core.inspection_service import save_inspection
 from core.logging import write_log
@@ -212,7 +212,12 @@ async def broadcast_status(
 
     인증: create_inspection 과 동일한 내부 가드(require_internal). `AIVIS_SERVICE_TOKEN`
     설정 시 X-Service-Token/Bearer 일치 필요, 미설정 시 사내 화이트리스트 허용.
+
+    부수효과: 수신 시각을 core.heartbeat 에 기록해 GET /system/status 가 워커
+    생존(up/stale/down)을 판정한다. 기록은 메모리 전용(DB 미기록)이라 고빈도
+    하트비트가 로그/테이블을 오염시키지 않는다.
     """
+    heartbeat.record(body.cam_id)
     await hub.broadcast(make_event("status", body.model_dump(mode="json")))
     return {"status": "broadcast"}
 

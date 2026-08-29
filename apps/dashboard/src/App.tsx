@@ -6,6 +6,7 @@ import { StatisticsPage } from "@/pages/StatisticsPage";
 import { KpiPage } from "@/pages/KpiPage";
 import { ReportPage } from "@/pages/ReportPage";
 import { MasterPage } from "@/pages/MasterPage";
+import { MonitorPage } from "@/pages/MonitorPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NavMenu, useCurrentNavLabel } from "@/components/NavMenu";
 
@@ -101,6 +102,14 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <MasterPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/monitor"
+            element={
+              <ProtectedRoute>
+                <MonitorPage />
               </ProtectedRoute>
             }
           />
