@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from aivis_types import LogCategory, Role
 
+from core import updater
 from core.config import get_settings
 from core.heartbeat import last_seen as heartbeat_last_seen
 from core.report import proc_time_percentiles
@@ -464,3 +465,101 @@ def system_status(
         active_order=active,
         recent_errors=errors,
     )
+
+
+# ---- 프로그램 자체 업데이트 (현장 사용자용) --------------------------------
+#
+# 현장 담당자는 개발자가 아니다. 터미널에서 `git pull` 을 치게 할 수 없으므로
+# 관리자 대시보드의 버튼 하나로 업데이트가 끝나야 한다. 아래 두 엔드포인트가
+# 그 화면을 뒷받침한다(실행 로직·안전 규칙은 core/updater.py 참조).
+#
+# 권한: **관리자 전용**. 업데이트는 검사를 잠시 멈추고 서비스를 재시작하므로
+# 작업자·품질관리자가 교대 중에 누를 수 있으면 안 된다.
+
+
+class UpdateVersion(BaseModel):
+    """현재 설치본 정보. 사용자에게 커밋 해시는 의미가 없어 날짜·설명을 함께 준다."""
+
+    available: bool          # 자동 업데이트 가능한 설치 형태인가(git 체크아웃)
+    # 업데이트 후 프로그램이 **스스로 재시작**할 수 있는가(부팅 자동시작 등록됨).
+    # false 면 파일만 갱신되고 실행 중인 프로그램은 이전 버전 그대로다 —
+    # 비개발자는 알아챌 수 없으므로 화면이 반드시 이 사실을 알려야 한다.
+    restart_supported: bool = False
+    commit: Optional[str] = None
+    date: Optional[str] = None
+    subject: Optional[str] = None
+    branch: Optional[str] = None
+
+
+class UpdateRemote(BaseModel):
+    """원격 최신본 확인 결과."""
+
+    reachable: bool          # 인터넷/저장소에 닿았는가
+    behind: Optional[int] = None      # 몇 개 버전 뒤처졌나(0이면 최신)
+    latest_date: Optional[str] = None
+    latest_subject: Optional[str] = None
+    error: Optional[str] = None
+
+
+class UpdateProgress(BaseModel):
+    """업데이트 진행 상태(화면이 폴링해서 그대로 표시)."""
+
+    state: str               # idle | running | success | failed
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    exit_code: Optional[int] = None
+    log_tail: list[str] = []
+
+
+class UpdateInfo(BaseModel):
+    current: UpdateVersion
+    progress: UpdateProgress
+
+
+class UpdateStartResult(BaseModel):
+    started: bool
+    message: str
+
+
+@router.get("/update", response_model=UpdateInfo)
+def get_update_info(
+    _user: CurrentUser = Depends(require_min_role(Role.ADMIN)),
+):
+    """현재 버전 + 업데이트 진행 상태. (네트워크를 쓰지 않아 빠르다.)
+
+    화면은 업데이트 중 이 엔드포인트를 폴링해 진행 로그를 보여준다. 업데이트가
+    서비스를 재시작하면 API 가 잠깐 끊기는데, 상태를 파일에 두므로 재시작 뒤에도
+    결과(성공/실패)를 그대로 읽을 수 있다.
+    """
+    return UpdateInfo(
+        current=UpdateVersion(
+            **updater.current_version(),
+            restart_supported=updater.restart_supported(),
+        ),
+        progress=UpdateProgress(**updater.get_state().as_dict()),
+    )
+
+
+@router.post("/update/check", response_model=UpdateRemote)
+def check_update(
+    _user: CurrentUser = Depends(require_min_role(Role.ADMIN)),
+):
+    """새 버전이 있는지 확인만 한다(원격 조회, 설치본은 건드리지 않음).
+
+    POST 인 이유: 네트워크를 쓰는 부수효과가 있어 캐시/프리페치 대상이 되면
+    곤란하다. 인터넷이 없는 현장에서는 reachable=false 로 조용히 알려준다.
+    """
+    return UpdateRemote(**updater.check_remote())
+
+
+@router.post("/update/start", response_model=UpdateStartResult)
+def start_update(
+    _user: CurrentUser = Depends(require_min_role(Role.ADMIN)),
+):
+    """업데이트 실행(분리 프로세스). 즉시 반환하고 진행은 GET /system/update 로 본다.
+
+    실행 대상은 저장소의 고정 스크립트 하나이며 사용자 입력이 명령줄에 섞이지
+    않는다(임의 명령 실행 불가). 완료 후 서비스가 자동 재시작된다.
+    """
+    ok, message = updater.start_update(restart=True)
+    return UpdateStartResult(started=ok, message=message)

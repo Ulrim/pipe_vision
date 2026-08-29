@@ -274,3 +274,77 @@ export interface SystemStatus {
 export function fetchSystemStatus(): Promise<SystemStatus> {
   return requestJson<SystemStatus>("/system/status");
 }
+
+/* ---------------- 프로그램 업데이트 (현장 사용자용, admin 전용) ---------------- */
+
+/**
+ * 현재 설치본 정보. 현장 담당자에게 커밋 해시는 의미가 없으므로 화면은
+ * date(설치 날짜)·subject(한 줄 설명)를 앞세우고 commit/branch 는 보조로만 쓴다.
+ * available=false = 자동 업데이트가 불가한 설치 형태(git 체크아웃 아님).
+ */
+export interface UpdateVersion {
+  available: boolean;
+  commit: string | null;
+  date: string | null;
+  subject: string | null;
+  branch: string | null;
+  /**
+   * 업데이트 후 프로그램이 **스스로 다시 시작할 수 있는 설치인가**
+   * (부팅 자동시작 유닛 등록 여부). false 면 파일만 갱신되고 재시작을
+   * 건너뛰므로, 화면에 "완료"가 떠도 실행 중인 프로그램은 이전 버전이다.
+   * 비개발자는 이를 알아챌 수 없으므로 화면이 반드시 미리 안내해야 한다.
+   */
+  restart_supported: boolean;
+}
+
+/** 업데이트 진행 상태(화면이 3초 주기로 폴링해 그대로 표시). */
+export interface UpdateProgress {
+  state: "idle" | "running" | "success" | "failed";
+  started_at: number | null;
+  finished_at: number | null;
+  exit_code: number | null;
+  log_tail: string[];
+}
+
+export interface UpdateInfo {
+  current: UpdateVersion;
+  progress: UpdateProgress;
+}
+
+/** 원격 최신본 확인 결과. behind=0 이면 최신, reachable=false 면 인터넷/저장소 접근 실패. */
+export interface UpdateRemote {
+  reachable: boolean;
+  behind: number | null;
+  latest_date: string | null;
+  latest_subject: string | null;
+  error: string | null;
+}
+
+export interface UpdateStartResult {
+  started: boolean;
+  message: string;
+}
+
+/**
+ * GET /system/update — 현재 버전 + 진행 상태(admin).
+ * 네트워크를 쓰지 않아 가볍다. 업데이트 중에는 이 요청이 API 재시작으로
+ * 잠시 실패할 수 있으며, 화면은 그 구간을 정상(재시작 중)으로 처리한다.
+ */
+export function fetchUpdateInfo(): Promise<UpdateInfo> {
+  return requestJson<UpdateInfo>("/system/update");
+}
+
+/** POST /system/update/check — 새 버전 확인만(원격 조회, 설치본 미변경, admin). */
+export function checkUpdate(): Promise<UpdateRemote> {
+  return requestJson<UpdateRemote>("/system/update/check", { method: "POST" });
+}
+
+/**
+ * POST /system/update/start — 업데이트 시작(admin).
+ * 분리 프로세스로 수 분간 진행되고 완료 후 서비스(API 포함)가 자동 재시작된다.
+ */
+export function startUpdate(): Promise<UpdateStartResult> {
+  return requestJson<UpdateStartResult>("/system/update/start", {
+    method: "POST",
+  });
+}

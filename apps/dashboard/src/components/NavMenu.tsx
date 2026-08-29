@@ -6,7 +6,7 @@ export interface NavItem {
   label: string;
 }
 
-/** 대시보드 화면 목록(M11~M13 + 현장 장비 모니터링). App.tsx 라우트와 1:1 대응. */
+/** 대시보드 화면 목록(M11~M13 + 현장 장비 모니터링/업데이트). App.tsx 라우트와 1:1 대응. */
 export const NAV: NavItem[] = [
   { to: "/kpi", label: "KPI" },
   { to: "/inspections", label: "검사이력" },
@@ -14,6 +14,7 @@ export const NAV: NavItem[] = [
   { to: "/report", label: "월간리포트" },
   { to: "/master", label: "기준정보" },
   { to: "/monitor", label: "시스템 모니터링" },
+  { to: "/update", label: "프로그램 업데이트" },
 ];
 
 /** 현재 경로에 대응하는 NAV 라벨(헤더에 "지금 어디 있는지" 표시용). 매칭 없으면 빈 문자열. */

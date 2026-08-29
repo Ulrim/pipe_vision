@@ -14,6 +14,7 @@ function renderNavMenu(route = "/kpi") {
         <Route path="/kpi" element={<div>KPI 화면</div>} />
         <Route path="/inspections" element={<div>검사이력 화면</div>} />
         <Route path="/monitor" element={<div>모니터링 화면</div>} />
+        <Route path="/update" element={<div>업데이트 화면</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -27,19 +28,20 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("메뉴 버튼 클릭 시 6개 항목이 나타난다", async () => {
+  it("메뉴 버튼 클릭 시 7개 항목이 나타난다", async () => {
     const user = userEvent.setup();
     renderNavMenu();
     await user.click(screen.getByTestId("nav-menu-button"));
     expect(screen.getByTestId("nav-menu")).toBeInTheDocument();
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByRole("menuitem")).toHaveLength(6);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(7);
     expect(screen.getByRole("menuitem", { name: "KPI" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "검사이력" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "불량통계" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "월간리포트" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "기준정보" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "시스템 모니터링" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "프로그램 업데이트" })).toBeInTheDocument();
   });
 
   it("시스템 모니터링 항목 클릭 시 /monitor 로 이동한다", async () => {
@@ -48,6 +50,14 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     await user.click(screen.getByTestId("nav-menu-button"));
     await user.click(screen.getByRole("menuitem", { name: "시스템 모니터링" }));
     expect(await screen.findByText("모니터링 화면")).toBeInTheDocument();
+  });
+
+  it("프로그램 업데이트 항목 클릭 시 /update 로 이동한다", async () => {
+    const user = userEvent.setup();
+    renderNavMenu("/kpi");
+    await user.click(screen.getByTestId("nav-menu-button"));
+    await user.click(screen.getByRole("menuitem", { name: "프로그램 업데이트" }));
+    expect(await screen.findByText("업데이트 화면")).toBeInTheDocument();
   });
 
   it("현재 활성 페이지 항목은 강조 스타일(bg-brand)이 적용된다", async () => {
