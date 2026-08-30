@@ -9,10 +9,11 @@
 
 ## 0. 한 장 요약 (이것만 외우면 됨)
 
-| 하고 싶은 일 | 명령 |
+| 하고 싶은 일 | 방법 |
 |---|---|
+| **처음 설치** (한 번만) | `bash ~/pipe_vision/scripts/aivis-install.sh` — 자동실행 등록까지 한 번에 |
+| **프로그램 최신으로** | 관리자 대시보드 → **프로그램 업데이트** → 버튼 클릭 (터미널 불필요) |
 | 뭐든 조작(메뉴) | `bash ~/pipe_vision/scripts/aivis.sh` |
-| 프로그램 최신으로 | `bash ~/pipe_vision/scripts/aivis-update.sh` |
 | 지금 상태 보기 | `bash ~/pipe_vision/scripts/aivis.sh status` |
 | 실시간 모니터 | `bash ~/pipe_vision/scripts/aivis.sh monitor` |
 | 사무실 PC 접속 주소 | `bash ~/pipe_vision/scripts/aivis.sh urls` |
@@ -32,47 +33,75 @@
 - Camera Module 3 (IMX708), 7인치 LCD, 정품 전원어댑터(전원 부족은 오작동의 흔한 원인)
 - 파이가 사내 네트워크(유선 권장)에 연결되어 있을 것
 
-### 1-2. 소프트웨어 설치
-`docs/RASPBERRY_PI.md` 의 **STEP 1~3** 을 순서대로 수행한다(시스템 패키지 → 저장소
-배치 → 워커 venv 생성). 요약하면 다음과 같다.
+### 1-2. 설치 — 명령 한 줄
+
+파이에 SSH로 접속하거나 파이 화면에서 터미널을 열고, 아래를 **그대로 복사해
+붙여넣으세요.** 설치부터 부팅 자동실행 등록까지 한 번에 끝납니다.
 
 ```bash
-# 1) 시스템 패키지
-sudo apt update
-sudo apt install -y git python3-venv python3-picamera2 python3-opencv
-
-# 2) 저장소 내려받기 (예: 홈 폴더)
-cd ~
-git clone https://github.com/Ulrim/pipe_vision.git
-cd pipe_vision
-
-# 3) 검사 워커용 파이썬 환경 (카메라 라이브러리 상속이 핵심)
-cd services/vision
-python3 -m venv --system-site-packages .venv
-.venv/bin/pip install httpx numpy
-.venv/bin/pip install -e ~/pipe_vision/packages/shared-types/python
+sudo apt update && sudo apt install -y git
+git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
 cd ~/pipe_vision
+bash scripts/aivis-install.sh
 ```
 
-### 1-3. 첫 기동(수동)
+> 중간에 **관리자 비밀번호**를 한 번 물어봅니다(파이 로그인 비밀번호).
+> 파이에서는 **20~30분** 걸립니다(화면 만들기가 오래 걸립니다). 끝날 때까지
+> 창을 닫지 마세요. `sudo` 를 앞에 붙이지 마세요 — 스크립트가 알아서 씁니다.
+
+설치가 하는 일:
+
+| 단계 | 내용 |
+|---|---|
+| 1/6 | 준비 확인 (시스템·카메라·디스크 여유) |
+| 2/6 | 필요한 프로그램 설치 (python, 카메라·영상 라이브러리, node) |
+| 3/6 | 검사 프로그램 환경 만들기 |
+| 4/6 | 화면 만들기 (작업자 화면 + 관리자 대시보드) |
+| 5/6 | **부팅 자동실행 등록** — 전원만 켜면 검사 시작 |
+| 6/6 | 시작 + 접속 주소 안내 |
+
+끝나면 이런 안내가 나옵니다:
+
+```
+===============================================================
+  설치가 끝났습니다
+---------------------------------------------------------------
+   작업자 화면 (HMI)   http://192.168.0.42:5173
+   관리자 대시보드      http://192.168.0.42:5174
+   파이 화면에서는      http://localhost:5173
+
+   로그인   아이디: admin   비밀번호: aivis1234
+   첫 로그인 후 비밀번호를 바꾸세요.
+---------------------------------------------------------------
+   전원을 켜면 자동으로 시작됩니다.
+===============================================================
+```
+
+**이제 파이 전원을 껐다 켜도 검사가 저절로 시작됩니다.** 확인하려면 파이를
+재부팅한 뒤 1~2분 기다렸다가 위 주소로 접속해 보세요.
+
+#### 설치가 도중에 멈췄다면
+같은 명령을 **다시 실행**하면 됩니다(이미 끝난 단계는 건너뜁니다).
+실패 메시지에 원인과 해결 방법이 함께 나옵니다.
+
+#### 자주 나오는 안내
+- `카메라 라이브러리(picamera2)가 없어 실제 촬영은 되지 않습니다`
+  → `sudo apt install python3-picamera2` 실행 후 설치 명령 재실행.
+- `라즈베리파이가 아닌 환경으로 보입니다` → 파이가 아닌 PC에서 실행한 경우.
+  시험용으로는 그대로 진행해도 됩니다(카메라 없이 시뮬레이터 동작).
+
+#### 옵션 (필요할 때만)
 ```bash
-bash scripts/aivis.sh start
+bash scripts/aivis-install.sh --no-service   # 자동실행 등록 없이 설치만
+bash scripts/aivis-install.sh --no-build     # 화면 만들기 건너뛰기(빠름)
+bash scripts/aivis-install.sh --help         # 도움말
 ```
-처음 실행하면 API 용 파이썬 패키지를 자동으로 설치하므로 **수 분** 걸린다.
-"시작 완료" 와 접속 주소가 나오면 성공이다.
-
-> 화면(HMI/대시보드)이 "빌드 산출물 없음" 이라고 나오면 화면을 아직 안 만든 것이다:
-> ```bash
-> npm install
-> npm run build          # HMI + 대시보드 둘 다 (파이에서 10분 이상 걸릴 수 있음)
-> bash scripts/aivis.sh restart
-> ```
 
 ---
 
-## 2. 부팅 자동시작 등록 (권장)
+## 2. 부팅 자동시작 — 확인 및 해제
 
-파이 전원을 켜면 검사 시스템이 저절로 뜨게 한다. 한 번만 등록하면 된다.
+§1-2 의 설치 명령을 쓰면 **이미 등록되어 있습니다**. 아래는 확인·변경용입니다.
 
 ```bash
 sudo bash scripts/aivis-install-service.sh
