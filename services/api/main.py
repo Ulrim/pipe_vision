@@ -6,6 +6,8 @@ sqlite/개발은 init_db 로 테이블 생성, 운영(postgres)은 Alembic.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aivis_types import Role
 from core.config import get_settings
+from core.retention import cleanup_images, storage_usage
 from core.security import hash_password
 from db.base import SessionLocal, engine, init_db
 from db.models import AppUser, ItemMaster
@@ -75,6 +78,36 @@ def _seed_demo_item() -> None:
         db.close()
 
 
+async def _retention_loop() -> None:
+    """검사 이미지 정리를 주기적으로 돌린다(디스크 고갈 방지).
+
+    지우는 규칙이 없어 현장 SD카드가 가득 찼던 문제 때문에 추가했다(하루 약
+    8GB 씩 쌓인다). 기동 직후 한 번 돌려 이미 가득 찬 장비를 즉시 구제하고,
+    이후 주기적으로 유지한다. 정리 실패가 검사를 멈추면 안 되므로 모든 예외를
+    삼킨다.
+    """
+    settings = get_settings()
+    interval_s = max(600, settings.retention_interval_s)
+    log = logging.getLogger("aivis.api.retention")
+    first = True
+    while True:
+        try:
+            if first:
+                # 기동 시 1회만 전체 사용량을 남긴다. 파일 수가 많으면 스캔이
+                # 비싸므로 매 주기 반복하지 않는다(디스크 상태 진단용 기록).
+                first = False
+                log.info(
+                    "이미지 저장소 상태: %s",
+                    await asyncio.to_thread(storage_usage, settings.images_dir),
+                )
+            await asyncio.to_thread(cleanup_images, settings.images_dir)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("이미지 정리 실패(계속 진행): %s", exc)
+        await asyncio.sleep(interval_s)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 개발/테스트(sqlite)는 테이블 자동 생성. 운영은 Alembic upgrade 로 관리.
@@ -82,7 +115,18 @@ async def lifespan(app: FastAPI):
         init_db()
     _seed_admin()
     _seed_demo_item()
-    yield
+    task = None
+    if get_settings().retention_enabled:
+        task = asyncio.create_task(_retention_loop())
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
 
 
 app = FastAPI(

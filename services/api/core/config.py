@@ -76,6 +76,14 @@ class Settings:
             os.getenv("ALLOWED_ORIGINS")
         )
 
+        # 검사 이미지 자동 정리(디스크 고갈 방지). 끄면 이미지가 무한히 쌓여
+        # 현장 SD카드가 며칠 만에 가득 찬다(하루 약 8GB) — 특별한 이유가
+        # 없으면 켜 둔다. 보관 기간은 core/retention.py 의 env 로 조정.
+        self.retention_enabled: bool = _bool("AIVIS_RETENTION_ENABLED", True)
+        self.retention_interval_s: int = int(
+            os.getenv("AIVIS_RETENTION_INTERVAL_S", "3600")
+        )
+
         # 키오스크 자동 로그인: 파이 자체 화면(루프백)에서 작업자 권한을 자동
         # 발급한다. 현장 작업자가 교대마다 장갑 낀 손으로 터치 키보드에
         # 로그인하는 것을 없애기 위함(외부 접속은 여전히 로그인 필요).

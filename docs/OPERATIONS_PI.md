@@ -330,18 +330,45 @@ AIVIS_CAMERA=sim bash scripts/aivis.sh restart
 ```
 
 ### 7-2. 디스크가 가득 찼다
-증상: 모니터 디스크 85%↑, 저장 실패 로그.
+증상: 모니터 디스크 85%↑, 저장 실패 로그, 업데이트·설치가 `npm install 실패` 로 끝남.
+
+**원인은 거의 항상 검사 이미지다.** 검사 1건마다 원본(raw)과 판정(result)
+이미지가 저장되고, 경계값으로 판정된 건은 재확인본(review)까지 한 장 더 남는다.
+1.5초 간격으로 돌리면 **하루 5~8GB** 씩 쌓인다.
+
+**지금 프로그램은 스스로 정리한다** (기본값: 원본 2일 / 양품 판정 7일 /
+불량 판정 180일 / 재확인본 730일, 남은 공간이 2GB 밑으로 떨어지면 오래된 것부터
+추가 삭제). 아래는 **이미 가득 차서 업데이트조차 못 받는 장비**를 구제할 때.
+
 ```bash
-df -h /                                  # 남은 용량
-du -sh /var/lib/aivis/images/*           # 어디가 큰지
+# 1) 무엇이 얼마나 먹고 있는지
+df -h /var/lib/aivis
+du -sh /var/lib/aivis/images/*        # raw / result / review 별 용량
 
-# 30일보다 오래된 검사 이미지 삭제(먼저 백업 권장!)
-find /var/lib/aivis/images -type f -mtime +30 -name '*.jpg' -delete
+# 2) 정리 — 먼저 "무엇을 지울지"만 보여준다
+bash scripts/aivis-clean-images.sh
 
-# 백업(외장 USB 로)
-bash scripts/backup.sh                   # 사용법은 scripts/backup.sh 참조
+# 3) 확인했으면 실제 삭제
+bash scripts/aivis-clean-images.sh --yes
 ```
-근본 대책: 외장 SSD/USB 를 `/var/lib/aivis` 로 마운트하거나 보관 기간 정책을 정한다.
+검사 이력(DB)·통계·KPI 는 그대로 남는다. 사라지는 것은 이미지뿐이고,
+화면에서는 "이미지 없음" 으로 표시된다.
+
+보관 기간을 바꾸려면 `/etc/default/aivis` (또는 서비스 환경파일)에 넣는다:
+
+| 환경변수 | 기본 | 뜻 |
+|---|---|---|
+| `AIVIS_RETAIN_RAW_DAYS` | 2 | 원본 이미지 보관일 |
+| `AIVIS_RETAIN_OK_DAYS` | 7 | 양품 판정 이미지 보관일 |
+| `AIVIS_RETAIN_NG_DAYS` | 180 | 불량 판정 이미지 보관일 |
+| `AIVIS_RETAIN_REVIEW_DAYS` | 730 | 재확인(재학습용) 이미지 보관일 |
+| `AIVIS_DISK_MIN_FREE_MB` | 2000 | 이 밑으로 떨어지면 긴급 정리 |
+| `AIVIS_RETENTION_ENABLED` | true | 자동 정리 끄기(`false`) |
+
+0 으로 두면 그 분류는 기간으로 지우지 않는다(긴급 정리 대상에는 여전히 포함).
+
+근본 대책: 외장 SSD/USB 를 `/var/lib/aivis` 로 마운트하면 보관 기간을 넉넉히
+늘릴 수 있다. 백업은 `bash scripts/backup.sh`.
 
 ### 7-3. 검사 워커가 멈췄다("정지"/"응답지연")
 ```bash
