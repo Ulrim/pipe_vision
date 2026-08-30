@@ -1,12 +1,15 @@
 """인증/권한 라우터 (CLAUDE.md §5 M14, §7.4)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import secrets
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from aivis_types import LoginRequest, Role, TokenResponse, UserCreate, UserPublic
 
+from core.config import get_settings
 from core.logging import write_log
 from aivis_types import LogCategory
 from core.security import (
@@ -37,6 +40,57 @@ def login(body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
     user = _authenticate(db, body.username, body.password)
     token = create_access_token(user.username, user.role)
     write_log(db, category=LogCategory.USER, message=f"login {user.username}")
+    return TokenResponse(
+        access_token=token, role=Role(user.role), username=user.username
+    )
+
+
+# --- 키오스크 자동 로그인 — 파이 자체 화면 전용 -----------------------------
+# 현장 문제: 작업자 화면(7인치 LCD)은 설비 앞 벽에 붙어 있고, 작업자는 장갑을
+# 낀 채로 화면을 힐끗 본다. 그런데 토큰이 8시간(1교대)마다 만료돼 **교대마다
+# 터치 키보드로 아이디·비밀번호를 입력**해야 했다 — 현장에서 쓸 수 없는 흐름이다.
+#
+# 그래서 **파이 자신의 화면(루프백에서 온 요청)** 에 한해 작업자 권한 토큰을
+# 자동 발급한다. 판단 근거: 그 요청은 파이에 물리적으로 접근할 수 있는 사람만
+# 만들 수 있고(공장 안), 사무실 PC 에서 파이 IP 로 접속하면 루프백이 아니라
+# 여전히 로그인을 요구한다. 발급 권한도 **작업자(operator)** 로 한정해
+# 기준정보 변경·프로그램 업데이트 같은 관리 동작은 불가능하다.
+_KIOSK_USER = "kiosk"
+
+
+def _is_loopback(request: Request) -> bool:
+    """요청이 이 장비 자신(파이)에서 왔는가."""
+    host = (request.client.host if request.client else "") or ""
+    return host in ("127.0.0.1", "::1", "localhost")
+
+
+@router.post("/kiosk", response_model=TokenResponse)
+def kiosk_login(request: Request, db: Session = Depends(get_db)) -> TokenResponse:
+    """파이 화면 자동 로그인(작업자 권한). 루프백 요청만 허용.
+
+    비활성(AIVIS_KIOSK_AUTOLOGIN=false)이거나 외부 접속이면 403 — 클라이언트는
+    조용히 일반 로그인 화면으로 넘어간다.
+    """
+    if not get_settings().kiosk_autologin:
+        raise HTTPException(status_code=403, detail="키오스크 자동 로그인 비활성")
+    if not _is_loopback(request):
+        raise HTTPException(
+            status_code=403, detail="이 장비의 화면에서만 사용할 수 있습니다"
+        )
+    user = db.get(AppUser, _KIOSK_USER)
+    if not user or not user.active:
+        # 계정이 없으면 이 시점에 만든다(설치 절차를 단순하게 유지).
+        # 비밀번호는 무작위 — 이 계정으로는 일반 로그인을 하지 않는다.
+        user = AppUser(
+            username=_KIOSK_USER,
+            pw_hash=hash_password(secrets.token_urlsafe(32)),
+            role=Role.OPERATOR.value,
+            active=True,
+        )
+        db.merge(user)
+        db.commit()
+        user = db.get(AppUser, _KIOSK_USER)
+    token = create_access_token(user.username, user.role)
     return TokenResponse(
         access_token=token, role=Role(user.role), username=user.username
     )

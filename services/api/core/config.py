@@ -76,6 +76,11 @@ class Settings:
             os.getenv("ALLOWED_ORIGINS")
         )
 
+        # 키오스크 자동 로그인: 파이 자체 화면(루프백)에서 작업자 권한을 자동
+        # 발급한다. 현장 작업자가 교대마다 장갑 낀 손으로 터치 키보드에
+        # 로그인하는 것을 없애기 위함(외부 접속은 여전히 로그인 필요).
+        self.kiosk_autologin: bool = _bool("AIVIS_KIOSK_AUTOLOGIN", True)
+
         # 데모 품목 시드(item_master FK 충족). 데모 배포에서 True 로 켠다.
         self.seed_demo_item: bool = _bool("AIVIS_SEED_DEMO_ITEM", False)
         self.demo_item_code: str = os.getenv("AIVIS_DEMO_ITEM_CODE", "HP12")

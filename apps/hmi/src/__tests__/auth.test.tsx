@@ -70,6 +70,14 @@ function makeFetchMock(updated: InspectionResult, reviewStatuses: number[] = [20
     const url = String(input);
     const headers = (init?.headers ?? {}) as Record<string, string>;
     seen.push({ url, auth: headers.Authorization, method: init?.method });
+    if (url.includes("/auth/kiosk")) {
+      // 파이 자체 화면이 아닌 클라이언트(사무실 PC 등) → 서버가 거절한다.
+      // 이 경우 평소대로 로그인 폼이 떠야 한다.
+      return new Response(JSON.stringify({ detail: "이 장비의 화면에서만" }), {
+        status: 403,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     if (url.includes("/auth/login")) {
       return new Response(JSON.stringify(TOKEN_RES), {
         status: 200,
@@ -153,9 +161,10 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
 
     renderApp();
 
-    // 로그인 화면만 보이고, 검사 화면(헤더/연결 인디케이터)은 렌더되지 않는다.
-    expect(screen.getByTestId("login-screen")).toBeInTheDocument();
-    expect(screen.queryByText("AIVIS 실시간 검사")).toBeInTheDocument(); // 로그인 화면 제목
+    // 파이 화면 자동 로그인(/auth/kiosk)을 먼저 시도하고, 거절되면(사무실 PC 등)
+    // 그때 로그인 폼이 뜬다 — 그래서 비동기로 기다린다.
+    expect(await screen.findByTestId("login-screen")).toBeInTheDocument();
+    expect(screen.queryByText("AIVIS 검사")).toBeInTheDocument(); // 로그인 화면 제목
     expect(screen.queryByRole("status")).not.toBeInTheDocument(); // ConnectionIndicator 없음
     // 미인증이므로 WS 연결 시도조차 없다(토큰 없음).
     expect(MockWebSocket.instances.length).toBe(0);
@@ -167,6 +176,8 @@ describe("인증 통합 (로그인 / Bearer 첨부 / 401 재시도)", () => {
 
     renderApp();
 
+    // 자동 로그인 시도가 끝나 폼이 뜬 뒤에 입력한다.
+    await screen.findByTestId("login-screen");
     fireEvent.change(screen.getByTestId("login-username"), {
       target: { value: "kim" },
     });
