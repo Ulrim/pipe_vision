@@ -49,6 +49,23 @@ WORKER_VENV="${AIVIS_WORKER_VENV:-$REPO/services/vision/.venv/bin/python}"
 
 log() { echo "[standalone] $*"; }
 
+# --- 잘못된 브랜치(옛 버전) 조기 감지 --------------------------------------
+# 저장소 기본 브랜치(main)에는 현장 운영 도구가 없다. clone 시 -b 를 빼먹으면
+# 옛 버전을 받게 되고, 사용자는 "No such file or directory" 만 보고 원인을
+# 알 수 없다. 여기서 미리 알려준다(막지는 않는다 — 기동 자체는 가능하므로).
+if [ -z "${AIVIS_SKIP_BRANCH_CHECK:-}" ] && command -v git >/dev/null 2>&1; then
+  if [ ! -f "$REPO/scripts/aivis.sh" ] || [ ! -f "$REPO/scripts/aivis-update.sh" ]; then
+    _cur_branch="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    echo "[standalone] ================================================================"
+    echo "[standalone]  주의: 현장 운영 도구가 없는 버전입니다 (브랜치: $_cur_branch)"
+    echo "[standalone]  최신으로 맞추려면:"
+    echo "[standalone]    cd $REPO"
+    echo "[standalone]    git fetch origin claude/eloquent-gauss-O6wDP"
+    echo "[standalone]    git checkout -B claude/eloquent-gauss-O6wDP origin/claude/eloquent-gauss-O6wDP"
+    echo "[standalone] ================================================================"
+  fi
+fi
+
 mkdir -p "$IMAGES_DIR" "$SPOOL_DIR" "$(dirname "$DB_PATH")"
 
 # --- api venv 준비 ---------------------------------------------------------

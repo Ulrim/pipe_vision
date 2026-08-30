@@ -40,11 +40,24 @@
 
 ```bash
 sudo apt update && sudo apt install -y git
-git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
+git clone -b claude/eloquent-gauss-O6wDP \
+  https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
 cd ~/pipe_vision
 bash scripts/aivis-install.sh
 ```
 
+> **`-b claude/eloquent-gauss-O6wDP` 를 빼먹지 마세요.** 이 부분이 없으면
+> 옛 버전(설치 스크립트가 없는)을 받게 되어
+> `scripts/aivis-install.sh: No such file or directory` 오류가 납니다.
+>
+> **이미 받아둔 폴더가 있다면** 새로 받지 말고 최신으로 맞추세요:
+> ```bash
+> cd ~/pipe_vision
+> git fetch origin claude/eloquent-gauss-O6wDP
+> git checkout -B claude/eloquent-gauss-O6wDP origin/claude/eloquent-gauss-O6wDP
+> bash scripts/aivis-install.sh
+> ```
+>
 > 중간에 **관리자 비밀번호**를 한 번 물어봅니다(파이 로그인 비밀번호).
 > 파이에서는 **20~30분** 걸립니다(화면 만들기가 오래 걸립니다). 끝날 때까지
 > 창을 닫지 마세요. `sudo` 를 앞에 붙이지 마세요 — 스크립트가 알아서 씁니다.
