@@ -265,16 +265,72 @@ elif ! command -v npm >/dev/null 2>&1; then
   warn "npm 이 없어 건너뜁니다. 화면 없이 검사만 동작합니다."
 else
   cd "$REPO" || die "저장소로 이동 실패"
+
+  # 화면 빌드는 파이에서 가장 잘 깨지는 단계다(디스크·메모리를 크게 쓴다).
+  # 실패한 뒤 "인터넷/디스크를 확인하세요" 같은 **추측**만 내놓으면 사용자는
+  # 아무것도 할 수 없다. 그래서 (1) 시작 전에 자원을 재보고, (2) 실패하면
+  # npm 이 남긴 실제 로그를 화면에 꺼내 보여준다.
+  BUILD_MIN_MB=1500   # node_modules 만 1GB 이상. 여유까지 감안한 하한.
+  FREE_MB="$(df -Pm "$REPO" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [ -n "${FREE_MB:-}" ] && [ "$FREE_MB" -lt "$BUILD_MIN_MB" ]; then
+    die "[4/6] 디스크 여유가 부족합니다 (남은 공간 ${FREE_MB}MB, 최소 ${BUILD_MIN_MB}MB 필요).
+    화면 만들기에는 1GB 이상이 필요합니다. 공간을 확보한 뒤 다시 실행하세요:
+      sudo apt clean            # 패키지 캐시 삭제
+      rm -rf ~/.npm/_cacache    # npm 캐시 삭제
+      df -h $REPO               # 남은 공간 확인
+    공간 확보가 어려우면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
+      bash scripts/aivis-install.sh --no-build"
+  fi
+
+  # 메모리 부족(OOM)은 파이 4에서 흔하다 — 미리 알려 스왑을 늘리게 한다.
+  MEM_TOTAL_MB="$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+  SWAP_MB="$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+  if [ -n "${MEM_TOTAL_MB:-}" ] && [ "$MEM_TOTAL_MB" -lt 4500 ] \
+     && [ -n "${SWAP_MB:-}" ] && [ "$SWAP_MB" -lt 1000 ]; then
+    warn "메모리 ${MEM_TOTAL_MB}MB / 스왑 ${SWAP_MB}MB — 빌드 중 메모리 부족이 날 수 있습니다."
+    warn "실패하면 스왑을 2GB 로 늘린 뒤 다시 시도하세요(아래 실패 안내에 명령 있음)."
+  fi
+
+  # npm 실패 시 npm 이 남긴 디버그 로그의 **핵심 줄**을 꺼내 보여준다.
+  show_npm_log() {
+    local logdir="${HOME}/.npm/_logs"
+    local latest
+    latest="$(ls -t "$logdir"/*debug*.log 2>/dev/null | head -1)"
+    [ -n "$latest" ] || return 0
+    echo >&2
+    echo >&2 "  ── npm 오류 로그 (마지막 부분) ──────────────────────────"
+    grep -iE "error|ENOSPC|ENOMEM|ETIMEDOUT|ENOTFOUND|EACCES|killed" "$latest" \
+      | tail -12 | sed 's/^/  /' >&2 || tail -12 "$latest" | sed 's/^/  /' >&2
+    echo >&2 "  ────────────────────────────────────────────────────────"
+    echo >&2 "  전체 로그: $latest"
+  }
+
   if [ ! -d node_modules ]; then
-    info "화면 재료 내려받는 중… (10분 이상 걸릴 수 있습니다)"
-    npm install --no-audit --no-fund || die "[4/6] npm install 실패 — 인터넷 연결/디스크 여유를 확인하세요."
+    info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
+    if ! npm install --no-audit --no-fund; then
+      show_npm_log
+      die "[4/6] 화면 재료 내려받기(npm install) 실패.
+    위 로그에서 원인을 확인하세요. 흔한 원인과 조치:
+      · ENOSPC(공간 부족)  → sudo apt clean; rm -rf ~/.npm/_cacache
+      · Killed / ENOMEM(메모리 부족) → 스왑 2GB 로 늘린 뒤 재시도:
+          sudo dphys-swapfile swapoff
+          sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+          sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+      · ETIMEDOUT / ENOTFOUND(네트워크) → 인터넷 연결 확인 후 재시도
+    급하면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
+      bash scripts/aivis-install.sh --no-build"
+    fi
   fi
   info "작업자 화면 만드는 중…"
-  npm run build --workspace @aivis/hmi >/dev/null \
-    || die "[4/6] 작업자 화면 빌드 실패"
+  npm run build --workspace @aivis/hmi >/dev/null || {
+    show_npm_log
+    die "[4/6] 작업자 화면 빌드 실패 (메모리 부족이면 위 스왑 안내를 참고하세요)."
+  }
   info "관리자 대시보드 만드는 중…"
-  npm run build --workspace @aivis/dashboard >/dev/null \
-    || die "[4/6] 관리자 대시보드 빌드 실패"
+  npm run build --workspace @aivis/dashboard >/dev/null || {
+    show_npm_log
+    die "[4/6] 관리자 대시보드 빌드 실패 (메모리 부족이면 위 스왑 안내를 참고하세요)."
+  }
   ok "화면 준비 완료"
 fi
 
