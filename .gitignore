@@ -89,3 +89,11 @@ Thumbs.db
 .idea/
 .vscode/
 *.log
+
+# ---------- 전남 데이터포털 업로드 코드(비밀값) ----------
+# 전남테크노파크가 전달한 유형별 설정 파일(jntp-raw/processed/ai-model.conf)은 커밋 금지.
+scripts/jntp/*.conf
+jntp*.conf
+!scripts/jntp/*.conf.example
+# 포털 제출용 내보내기 작업 폴더
+portal_export/
