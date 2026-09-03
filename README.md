@@ -69,7 +69,7 @@ pipe_vision/
 ├── docker-compose.gpu.yml    # vision GPU(CUDA/onnxruntime-gpu) override
 ├── .env.example              # 환경변수 템플릿 (cp .env.example .env)
 ├── .github/workflows/ci.yml  # CI (python lint+test / node build / compose 검증)
-├── docs/                     # ARCHITECTURE / API / DATA_MODEL / MES_INTERFACE
+├── docs/                     # ARCHITECTURE / API / DATA_MODEL / DATA_DEFINITION / JNTP_DATA_PORTAL
 ├── services/
 │   ├── vision/               # [vision-ai] 취득→전처리→길이/표면→판정 파이프라인
 │   ├── api/                  # [backend] FastAPI, DB, WS, KPI, MES 어댑터
@@ -176,6 +176,8 @@ Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdo
 - [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — 런타임 토폴로지·7단계 파이프라인·소유권 경계
 - [`docs/RASPBERRY_PI.md`](./docs/RASPBERRY_PI.md) — Pi 4 + Camera Module 3 엣지 모듈 설치·운영(picam)·캘리브레이션
 - [`docs/API.md`](./docs/API.md) · [`docs/DATA_MODEL.md`](./docs/DATA_MODEL.md)
+- [`docs/DATA_DEFINITION.md`](./docs/DATA_DEFINITION.md) — 전남TP 양식 AI솔루션 데이터 정의서(원시/가공/AI분석 3종, 협약서 제16조). 제출용 DOCX 는 `node scripts/docs/md2docx.js docs/DATA_DEFINITION.md <out.docx> --break-h2` 로 생성
+- [`docs/JNTP_DATA_PORTAL.md`](./docs/JNTP_DATA_PORTAL.md) — 전남 AX 데이터포털 제출 절차(스크립트/API 연계)·전송 규칙·연동 일정 (`services/data-ops/portal`, `scripts/jntp/`)
 
 ---
 

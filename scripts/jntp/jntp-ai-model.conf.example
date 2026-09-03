@@ -1,0 +1,5 @@
+# 전남 AX 오픈플랫폼 데이터포털 업로드 설정 — ai-model 데이터용 (전남테크노파크 제공 파일의 예시)
+# 실제 파일은 담당 부서가 전달한 jntp-ai-model.conf 를 ~/jntp/ 에 두고 chmod 600 으로 보호한다.
+# 업로드 코드는 비밀값이다. 저장소에 절대 커밋하지 말 것(.gitignore: scripts/jntp/*.conf).
+JNTP_UPLOAD_CODE=REPLACE_WITH_AI_MODEL_UPLOAD_CODE
+JNTP_API_BASE=https://jntp-data.pai-world.com/api

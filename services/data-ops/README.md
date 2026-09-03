@@ -108,6 +108,30 @@ python -m retrain.cli thresholds --item HP12 --min-samples 10
 - 임계 제안은 사람이 검토 후 `item_master` 에 반영하는 **제안값**(자동 적용 안 함).
 - 표본 부족 시 현재 임계 유지(보수적).
 
+### 2.3 데이터포털 제출 (`portal/`, 협약서 제16조)
+
+전남 AX 오픈플랫폼 데이터포털에 원시/가공/AI분석 데이터셋 3종을 제출한다. 폴더 구성·레코드
+명세의 단일 진실원은 `portal/layout.py`(정의서 `docs/DATA_DEFINITION.md` 와 1:1), 절차·일정은
+`docs/JNTP_DATA_PORTAL.md`.
+
+```bash
+cd services/data-ops
+export PYTHONPATH=../api
+
+python -m portal.cli schema                                   # 명세 출력(정의서 대조)
+python -m portal.cli export --dataset all --out /data/portal_export     # 내보내기만(A안: upload.sh 전송)
+python -m portal.cli run --out /data/portal_export \
+    --conf-raw ~/jntp/jntp-raw.conf --conf-processed ~/jntp/jntp-processed.conf \
+    --conf-ai-model ~/jntp/jntp-ai-model.conf                 # B안: 증분 내보내기 + API 업로드 + 정리
+python -m portal.cli status --out /data/portal_export         # 워터마크/대기 회차
+```
+
+- 원시(`raw/`): 검사 원본 이미지 + 촬영 메타 인덱스(JSONL), 학습 촬영본·캘리브레이션은 `--include-capture/--include-calib`.
+- 가공(`processed/`): 사이드카 라벨·정답셋 매니페스트·작업자 재확인(오검·미검) 라벨·기준정보 스냅샷.
+- AI분석(`ai-analysis/`): 판정 레코드(JSONL)·결과 오버레이 이미지·월간 KPI(§1.1 산출식)·FAT/SAT/MSA 리포트.
+- 개인정보 후보 필드(`operator`/`inspector`/`updated_by`)는 제외. 업로드 코드는 설정 파일(권한 600)로만 보관, 커밋 금지.
+- 전송 규칙(500 MiB/5 GiB/상대경로/재전송=갱신)을 사전 검사하며, 실패 회차는 보존 후 다음 실행에서 재전송한다.
+
 ---
 
 ## 3. 테스트
@@ -116,7 +140,7 @@ python -m retrain.cli thresholds --item HP12 --min-samples 10
 # MES 어댑터/워치독/전송 (services/api)
 cd services/api && python -m pytest mes/tests -q
 
-# 라벨링/재학습 (services/data-ops)
+# 라벨링/재학습/데이터포털 제출 (services/data-ops)
 cd services/data-ops && python -m pytest -q
 ```
 
