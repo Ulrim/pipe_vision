@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchKpiSummary } from "@/api/endpoints";
+import { fetchKpiSummary, fetchKpiTargets } from "@/api/endpoints";
 import { KpiGauge } from "@/components/KpiGauge";
+import { KpiManualForm } from "@/components/KpiManualForm";
 import { buildKpiGauges, procTimeSpec } from "@/lib/kpi";
 import { fmtNum, currentPeriod } from "@/lib/format";
 
@@ -14,8 +15,16 @@ export function KpiPage(): JSX.Element {
     queryFn: () => fetchKpiSummary(period),
   });
 
-  const gauges = data ? buildKpiGauges(data) : [];
-  const procSpec = data ? procTimeSpec(data) : null;
+  // 목표치는 서버가 단일 출처(GET /kpi/targets). 화면이 자체 상수를 들고 있으면
+  // 리포트(PDF)와 다른 기준으로 합격을 찍게 된다.
+  const { data: targets } = useQuery({
+    queryKey: ["kpi-targets"],
+    queryFn: fetchKpiTargets,
+    staleTime: 5 * 60_000,
+  });
+
+  const gauges = buildKpiGauges(data, targets);
+  const procSpec = procTimeSpec(data, targets);
 
   return (
     <div className="space-y-4">
@@ -59,9 +68,14 @@ export function KpiPage(): JSX.Element {
             <Stat k="Claim" v={fmtNum(data.claim_count, 0)} />
             <Stat k="작업공수지수" v={fmtNum(data.workload_index, 2)} />
             <Stat k="리드타임(일)" v={fmtNum(data.lead_time_days, 1)} />
+            <Stat k="총 출하수량" v={fmtNum(data.shipped_qty, 0)} />
+            <Stat k="출하유출 부적합" v={fmtNum(data.leak_defect_qty, 0)} />
+            <Stat k="출하유출불량률(ppm)" v={fmtNum(data.shipment_leak_ppm, 1)} />
           </dl>
         </div>
       )}
+
+      <KpiManualForm period={period} summary={data} />
     </div>
   );
 }

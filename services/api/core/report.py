@@ -28,6 +28,7 @@ LABELS: dict[str, tuple[str, str]] = {
     "kpi": ("KPI 요약 (사업계획서 §1.1)", "KPI Summary (sec 1.1)"),
     "total_inspected": ("총 검사수량", "Total inspected"),
     "process_defect_ppm": ("공정불량률 (ppm)", "Process defect (ppm)"),
+    "shipment_leak_ppm": ("출하유출불량률 (ppm)", "Shipment leakage (ppm)"),
     "inspection_defect_rate_pct": ("검사불량률 (%)", "Inspection defect (%)"),
     "auto_inspection_rate_pct": ("자동검사율 (%)", "Auto inspection (%)"),
     "storage_mes_rate_pct": ("저장·MES 연계율 (%)", "Storage/MES link (%)"),
@@ -77,15 +78,78 @@ AXIS_INK = "#52514e"
 GRID_INK = "#d8d7d3"
 
 # ---- §1.1/§1.2 목표치(인수 합격 기준) --------------------------------------
-# (키, 한글라벨, 라틴라벨, 목표문구, 판정함수) — 판정함수는 실적값→합격여부.
-# 목표를 코드 한 곳에 두어 리포트/대시보드가 같은 기준을 쓰게 한다.
-KPI_TARGETS: list[tuple[str, str, str, str, str]] = [
-    ("process_defect_ppm", "공정불량률 (ppm)", "Process defect (ppm)", "600 이하", "lte:600"),
-    ("inspection_defect_rate_pct", "검사불량률 (%)", "Inspection defect (%)", "30 이하", "lte:30"),
-    ("auto_inspection_rate_pct", "자동검사율 (%)", "Auto inspection (%)", "100", "gte:100"),
-    ("storage_mes_rate_pct", "저장·MES 연계율 (%)", "Storage/MES link (%)", "100", "gte:100"),
-    ("p95_proc_time_ms", "처리속도 p95 (ms)", "Proc time p95 (ms)", "300 이하", "lte:300"),
-]
+# (키, 한글라벨, 라틴라벨, 목표값, 비교방향) — 목표를 코드 한 곳에 두어
+# 리포트/대시보드/미리보기가 같은 기준을 쓰게 한다.
+#
+# **불량률 지표가 두 개인 이유**: 계약 성과지표와 개발지침(CLAUDE.md §1.1)이
+# 서로 다른 지표를 쓴다.
+#   - 공정불량률(ppm)      = 공정 중 걸러낸 불량 ÷ 총 검사수량 — 자동 산출
+#   - 출하유출불량률(ppm)  = 출하 후 발견된 부적합 ÷ 총 출하수량 — 수기 입력 필요
+# 이름도 산출식도 분모도 다르므로 한쪽으로 환산할 수 없다. 어느 쪽을 인수
+# 기준으로 삼을지는 계약 확인 사항이라 **둘 다 표에 낸다**. 한쪽만 싣고
+# 합격을 찍으면 인수 심사에서 잣대가 어긋난다.
+#
+# 목표값은 env 로 덮어쓸 수 있다(현장 재협의 시 코드 수정 없이 반영):
+#   AIVIS_KPI_TARGET_PROCESS_PPM / _LEAK_PPM / _INSPECTION_PCT / _PROC_MS
+_TARGET_DEFAULTS = {
+    # CLAUDE.md §1.1 (개발지침 기준)
+    "process_defect_ppm": 600.0,
+    "inspection_defect_rate_pct": 30.0,
+    # 계약 성과지표 기준
+    "shipment_leak_ppm": 1000.0,
+    "p95_proc_time_ms": 300.0,
+}
+
+
+def _target(key: str, env: str) -> float:
+    try:
+        return float(os.getenv(env, str(_TARGET_DEFAULTS[key])))
+    except (TypeError, ValueError):
+        return _TARGET_DEFAULTS[key]
+
+
+def kpi_targets() -> list[tuple[str, str, str, str, str]]:
+    """(키, 한글라벨, 라틴라벨, 목표문구, 판정규칙) — env 반영된 목표표.
+
+    호출 시점에 env 를 읽는다(모듈 임포트 시점에 굳히면 테스트/현장에서
+    환경변수를 바꿔도 반영되지 않는다).
+    """
+    proc = _target("process_defect_ppm", "AIVIS_KPI_TARGET_PROCESS_PPM")
+    leak = _target("shipment_leak_ppm", "AIVIS_KPI_TARGET_LEAK_PPM")
+    insp = _target("inspection_defect_rate_pct", "AIVIS_KPI_TARGET_INSPECTION_PCT")
+    ms = _target("p95_proc_time_ms", "AIVIS_KPI_TARGET_PROC_MS")
+    return [
+        (
+            "process_defect_ppm",
+            "공정불량률 (ppm)",
+            "Process defect (ppm)",
+            f"{proc:g} 이하",
+            f"lte:{proc}",
+        ),
+        (
+            "shipment_leak_ppm",
+            "출하유출불량률 (ppm)",
+            "Shipment leakage (ppm)",
+            f"{leak:g} 이하",
+            f"lte:{leak}",
+        ),
+        (
+            "inspection_defect_rate_pct",
+            "검사불량률 (%)",
+            "Inspection defect (%)",
+            f"{insp:g} 이하",
+            f"lte:{insp}",
+        ),
+        ("auto_inspection_rate_pct", "자동검사율 (%)", "Auto inspection (%)", "100", "gte:100"),
+        ("storage_mes_rate_pct", "저장·MES 연계율 (%)", "Storage/MES link (%)", "100", "gte:100"),
+        (
+            "p95_proc_time_ms",
+            "처리속도 p95 (ms)",
+            "Proc time p95 (ms)",
+            f"{ms:g} 이하",
+            f"lte:{ms}",
+        ),
+    ]
 
 
 def proc_time_percentiles(rows: list[Inspection]) -> dict[str, Optional[float]]:
@@ -119,13 +183,16 @@ def evaluate_targets(
     pct = proc_time_percentiles(rows)
     actuals: dict[str, Optional[float]] = {
         "process_defect_ppm": summary.process_defect_ppm,
+        # 수기 입력(출하수량/유출 부적합수량)이 없으면 None → 표에 "판정보류".
+        # 0 으로 채우면 "유출 없음(합격)"으로 잘못 읽힌다.
+        "shipment_leak_ppm": summary.shipment_leak_ppm,
         "inspection_defect_rate_pct": summary.inspection_defect_rate_pct,
         "auto_inspection_rate_pct": summary.auto_inspection_rate_pct,
         "storage_mes_rate_pct": summary.storage_mes_rate_pct,
         "p95_proc_time_ms": pct["p95"],
     }
     out: list[tuple[str, str, str, str, Optional[bool]]] = []
-    for key, ko, latin, target_text, rule in KPI_TARGETS:
+    for key, ko, latin, target_text, rule in kpi_targets():
         val = actuals.get(key)
         if val is None:
             out.append((key, ko, latin, target_text, None))
@@ -241,7 +308,7 @@ def _defect_bar_chart(breakdown: list[tuple[str, int]], font: str, korean_ok: bo
 def _daily_trend_chart(
     daily: list[tuple[str, int, int]], font: str, korean_ok: bool
 ):
-    """일자별 불량률(ppm) 추세 라인차트 + 목표선(600ppm).
+    """일자별 공정불량률(ppm) 추세 라인차트 + 목표선.
 
     단일 시리즈이므로 범례 없이 제목이 계열을 지칭한다(§규칙). 목표선은
     점선 + 문자 라벨을 함께 달아 색 없이도 의미가 전달되게 한다.
@@ -264,7 +331,10 @@ def _daily_trend_chart(
     lc.lines[0].strokeColor = colors.HexColor(SERIES_1)
     lc.lines[0].strokeWidth = 2
     lc.joinedLines = 1
-    top = max(max(ppm), 600.0) * 1.2
+    # 목표선은 공정불량률 기준(이 차트가 그리는 지표). 출하유출불량률은
+    # 일자별로 산출할 수 없어(출하수량이 월 단위 수기 입력) 여기 오지 않는다.
+    goal = _target("process_defect_ppm", "AIVIS_KPI_TARGET_PROCESS_PPM")
+    top = max(max(ppm), goal) * 1.2
     lc.valueAxis.valueMin = 0
     lc.valueAxis.valueMax = top
     lc.valueAxis.strokeColor = colors.HexColor(GRID_INK)
@@ -283,15 +353,15 @@ def _daily_trend_chart(
     lc.categoryAxis.labels.fontSize = 7
     lc.categoryAxis.labels.fillColor = colors.HexColor(AXIS_INK)
     d.add(lc)
-    # 목표선(600ppm) — 점선 + 문자 라벨(색 단독 의존 금지).
-    y = lc.y + (600.0 / top) * lc.height if top > 0 else lc.y
+    # 목표선 — 점선 + 문자 라벨(색 단독 의존 금지).
+    y = lc.y + (goal / top) * lc.height if top > 0 else lc.y
     if lc.y <= y <= lc.y + lc.height:
         ln = Line(lc.x, y, lc.x + lc.width, y)
         ln.strokeColor = colors.HexColor(STATUS_CRITICAL)
         ln.strokeDashArray = [3, 2]
         ln.strokeWidth = 1
         d.add(ln)
-        tgt = "목표 600ppm" if korean_ok else "target 600ppm"
+        tgt = f"목표 {goal:g}ppm" if korean_ok else f"target {goal:g}ppm"
         s = String(lc.x + 2, y + 3, tgt, fontName=font, fontSize=7)
         s.fillColor = colors.HexColor(AXIS_INK)
         d.add(s)
@@ -383,6 +453,10 @@ def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
         [_lab("total_inspected", korean_ok), f"{summary.total_inspected}"],
         [_lab("defect_count", korean_ok), f"{summary.defect_count}"],
         [_lab("process_defect_ppm", korean_ok), f"{summary.process_defect_ppm:.3f}"],
+        # 수기 입력이 없으면 "-" — 0 으로 찍으면 유출이 없었던 것으로 오독된다.
+        [_lab("shipment_leak_ppm", korean_ok),
+         ("-" if summary.shipment_leak_ppm is None
+          else f"{summary.shipment_leak_ppm:.3f}")],
         [_lab("inspection_defect_rate_pct", korean_ok),
          f"{summary.inspection_defect_rate_pct:.3f}"],
         [_lab("auto_inspection_rate_pct", korean_ok),
@@ -532,6 +606,7 @@ def render_xlsx(summary: KpiSummary, rows: list[Inspection]) -> bytes:
         (LABELS["total_inspected"][0], summary.total_inspected),
         (LABELS["defect_count"][0], summary.defect_count),
         (LABELS["process_defect_ppm"][0], summary.process_defect_ppm),
+        (LABELS["shipment_leak_ppm"][0], summary.shipment_leak_ppm),
         (LABELS["inspection_defect_rate_pct"][0], summary.inspection_defect_rate_pct),
         (LABELS["auto_inspection_rate_pct"][0], summary.auto_inspection_rate_pct),
         (LABELS["storage_mes_rate_pct"][0], summary.storage_mes_rate_pct),

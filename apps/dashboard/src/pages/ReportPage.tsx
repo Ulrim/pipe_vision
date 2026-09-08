@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   fetchKpiReport,
   fetchKpiReportPreview,
+  fetchKpiTargets,
   type ReportFormat,
   type ReportTarget,
 } from "@/api/endpoints";
@@ -46,8 +47,16 @@ export function ReportPage(): JSX.Element {
     queryFn: () => fetchKpiReportPreview(period),
   });
 
+  // 게이지 목표치도 서버가 단일 출처(GET /kpi/targets) — 미리보기 표와
+  // 게이지가 다른 기준을 쓰면 같은 화면 안에서 숫자가 어긋난다.
+  const { data: targets } = useQuery({
+    queryKey: ["kpi-targets"],
+    queryFn: fetchKpiTargets,
+    staleTime: 5 * 60_000,
+  });
+
   const summary = preview?.summary;
-  const gauges = summary ? buildKpiGauges(summary) : [];
+  const gauges = buildKpiGauges(summary, targets);
 
   async function download(fmt: ReportFormat): Promise<void> {
     setBusy(fmt);

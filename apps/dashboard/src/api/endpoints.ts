@@ -71,7 +71,22 @@ export function fetchKpiSummary(period: string): Promise<KpiSummary> {
   return requestJson<KpiSummary>(`/kpi/summary${toQuery({ period })}`);
 }
 
-/** POST /kpi/manual — 작업공수/리드타임/Claim upsert(quality+). */
+/** 인수 기준 목표치 1행 (GET /kpi/targets). 서버가 단일 출처. */
+export interface KpiTarget {
+  key: string;
+  label: string;
+  label_en: string;
+  target_text: string;
+  target_value: number;
+  direction: "lower" | "higher";
+}
+
+/** GET /kpi/targets — 리포트와 화면이 공유하는 목표치. */
+export function fetchKpiTargets(): Promise<KpiTarget[]> {
+  return requestJson<KpiTarget[]>("/kpi/targets");
+}
+
+/** POST /kpi/manual — 작업공수/리드타임/Claim/출하수량 upsert(quality+). */
 export function upsertKpiManual(body: KpiManual): Promise<KpiManual> {
   return requestJson<KpiManual>("/kpi/manual", {
     method: "POST",

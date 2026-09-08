@@ -211,6 +211,10 @@ export interface KpiManual {
   claim_count?: number | null;
   workload_index?: number | null;
   lead_time_days?: number | null;
+  /** 총 출하수량 — 출하유출불량률(계약 지표) 분모. */
+  shipped_qty?: number | null;
+  /** 출하 후 고객에서 발견된 부적합 수량 — 출하유출불량률 분자. */
+  leak_defect_qty?: number | null;
   note?: string | null;
 }
 
@@ -238,6 +242,10 @@ export interface KpiSummary {
   claim_count?: number | null;
   workload_index?: number | null;
   lead_time_days?: number | null;
+  shipped_qty?: number | null;
+  leak_defect_qty?: number | null;
+  /** 출하유출불량률(ppm). 수기 입력이 없으면 null. */
+  shipment_leak_ppm?: number | null;
 }
 
 /* =========================================================================

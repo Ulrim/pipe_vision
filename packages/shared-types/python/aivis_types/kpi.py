@@ -24,6 +24,12 @@ class KpiManual(BaseModel):
     claim_count: Optional[int] = Field(None, ge=0, description="Claim 건수")
     workload_index: Optional[float] = Field(None, description="작업공수 지수")
     lead_time_days: Optional[float] = Field(None, description="수주출하 리드타임(일)")
+    # 출하유출불량률(계약 성과지표) 산출용. 시스템은 "출하 후 고객에서 발견된
+    # 부적합"을 알 수 없으므로 이 두 값만 수기로 받는다.
+    shipped_qty: Optional[int] = Field(None, ge=0, description="총 출하수량")
+    leak_defect_qty: Optional[int] = Field(
+        None, ge=0, description="출하 후 발견된 부적합 수량(고객 반품/클레임)"
+    )
     note: Optional[str] = Field(None, description="비고")
 
 
@@ -72,3 +78,14 @@ class KpiSummary(BaseModel):
     claim_count: Optional[int] = Field(None, description="Claim 건수(수기 입력)")
     workload_index: Optional[float] = Field(None, description="작업공수 지수(수기 입력)")
     lead_time_days: Optional[float] = Field(None, description="리드타임(일, 수기 입력)")
+    shipped_qty: Optional[int] = Field(None, description="총 출하수량(수기 입력)")
+    leak_defect_qty: Optional[int] = Field(
+        None, description="출하 후 발견된 부적합 수량(수기 입력)"
+    )
+    shipment_leak_ppm: Optional[float] = Field(
+        None,
+        description=(
+            "출하유출불량률(ppm) = 출하 후 부적합/총출하 × 1,000,000. "
+            "계약 성과지표. 수기 입력(shipped_qty, leak_defect_qty) 이 있어야 산출된다."
+        ),
+    )

@@ -9,6 +9,8 @@ import App from "./App";
 // 페이지 데이터 fetch 가 보호 라우팅 검증과 무관하도록 엔드포인트 모킹(네트워크 차단).
 vi.mock("@/api/endpoints", () => ({
   fetchKpiSummary: vi.fn().mockResolvedValue({}),
+  fetchKpiTargets: vi.fn().mockResolvedValue([]),
+  upsertKpiManual: vi.fn(),
   fetchInspections: vi.fn().mockResolvedValue([]),
   fetchItems: vi.fn().mockResolvedValue([]),
   fetchActiveOrder: vi.fn().mockResolvedValue(null),

@@ -142,6 +142,9 @@ class KpiManual(Base):
     claim_count: Mapped[int | None] = mapped_column(Integer)
     workload_index: Mapped[float | None] = mapped_column(Numeric)
     lead_time_days: Mapped[float | None] = mapped_column(Numeric)
+    # 출하유출불량률(계약 성과지표) 산출용 — 시스템이 알 수 없는 값이라 수기 입력.
+    shipped_qty: Mapped[int | None] = mapped_column(Integer)
+    leak_defect_qty: Mapped[int | None] = mapped_column(Integer)
     note: Mapped[str | None] = mapped_column(Text)
 
 

@@ -5,6 +5,13 @@
 - 검사불량률(%)          = (오검수량 + 미검수량) ÷ 총 검사수량 × 100
 - 자동검사율(%)          = AI 자동판정 완료수량 ÷ 총 검사대상수량 × 100
 - 데이터 저장&MES 연계율(%) = 정상 저장·연계 건수 ÷ 전체 검사 건수 × 100
+- 출하유출불량률(ppm)    = 출하 후 발견된 부적합 ÷ 총 출하수량 × 1,000,000
+  (계약 성과지표. 공정불량률과 분자·분모가 모두 달라 환산 불가. 출하 후 정보라
+   시스템이 알 수 없으므로 kpi_manual 수기 입력이 있어야 산출된다.)
+
+목표치(인수 기준)는 core/report.kpi_targets() 한 곳에만 둔다. 리포트(PDF/XLSX)와
+대시보드 게이지가 서로 다른 목표로 합격을 찍으면 인수 심사에서 숫자가 어긋난다.
+GET /kpi/targets 가 그 단일 출처를 화면에 내려준다.
 """
 from __future__ import annotations
 
@@ -101,6 +108,19 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
     # 수기 KPI(있으면 함께 노출): 해당 월 1일 키.
     manual = db.get(KpiManualRow, datetime(start.year, start.month, 1))
 
+    # 출하유출불량률(ppm) — **계약 성과지표**. 공정불량률과 다른 지표다.
+    #   공정불량률 = 공정 중 걸러낸 불량 ÷ 총 검사수량   (시스템이 자동 산출)
+    #   출하유출불량률 = 출하 후 발견된 부적합 ÷ 총 출하수량 (수기 입력 필요)
+    # 검사에서 걸러낸 불량은 고객에게 가지 않으므로 두 값은 같아질 수 없다.
+    # 수기 입력이 없으면 None — 0 으로 채우면 "유출 없음"으로 오독된다.
+    shipped_qty = manual.shipped_qty if manual else None
+    leak_defect_qty = manual.leak_defect_qty if manual else None
+    shipment_leak_ppm: float | None = None
+    if shipped_qty and leak_defect_qty is not None:
+        shipment_leak_ppm = round(
+            _rate(leak_defect_qty, shipped_qty, 1_000_000.0), 3
+        )
+
     summary = KpiSummary(
         period=f"{start.year:04d}-{start.month:02d}",
         total_inspected=total_inspected,
@@ -118,8 +138,35 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
         claim_count=manual.claim_count if manual else None,
         workload_index=(float(manual.workload_index) if manual and manual.workload_index is not None else None),
         lead_time_days=(float(manual.lead_time_days) if manual and manual.lead_time_days is not None else None),
+        shipped_qty=shipped_qty,
+        leak_defect_qty=leak_defect_qty,
+        shipment_leak_ppm=shipment_leak_ppm,
     )
     return summary, rows
+
+
+@router.get("/targets")
+def kpi_targets(
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """인수 기준 목표치 목록 — 리포트와 대시보드의 **단일 출처**.
+
+    대시보드가 목표값을 자체 상수로 들고 있으면 env 로 목표를 바꿨을 때
+    화면과 리포트가 어긋난다. 그래서 화면도 이 API 를 통해 같은 값을 쓴다.
+    """
+    out = []
+    for key, ko, latin, target_text, rule in report_gen.kpi_targets():
+        op, bound = rule.split(":")
+        out.append({
+            "key": key,
+            "label": ko,
+            "label_en": latin,
+            "target_text": target_text,
+            "target_value": float(bound),
+            # lte = 낮을수록 좋음(불량률), gte = 높을수록 좋음(달성률)
+            "direction": "lower" if op == "lte" else "higher",
+        })
+    return out
 
 
 @router.get("/summary", response_model=KpiSummary)
@@ -149,6 +196,8 @@ def upsert_kpi_manual(
     row.claim_count = body.claim_count
     row.workload_index = body.workload_index
     row.lead_time_days = body.lead_time_days
+    row.shipped_qty = body.shipped_qty
+    row.leak_defect_qty = body.leak_defect_qty
     row.note = body.note
     db.commit()
     return KpiManual(
@@ -156,6 +205,8 @@ def upsert_kpi_manual(
         claim_count=row.claim_count,
         workload_index=(float(row.workload_index) if row.workload_index is not None else None),
         lead_time_days=(float(row.lead_time_days) if row.lead_time_days is not None else None),
+        shipped_qty=row.shipped_qty,
+        leak_defect_qty=row.leak_defect_qty,
         note=row.note,
     )
 

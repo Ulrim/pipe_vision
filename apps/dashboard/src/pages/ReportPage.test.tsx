@@ -9,6 +9,22 @@ const fetchKpiReport = vi.fn();
 vi.mock("@/api/endpoints", () => ({
   fetchKpiReportPreview: (...a: unknown[]) => fetchKpiReportPreview(...a),
   fetchKpiReport: (...a: unknown[]) => fetchKpiReport(...a),
+  // 게이지 목표치는 서버가 단일 출처 — 화면이 자체 상수를 쓰지 않는다.
+  fetchKpiTargets: () =>
+    Promise.resolve([
+      { key: "process_defect_ppm", label: "공정불량률 (ppm)",
+        label_en: "Process defect (ppm)", target_text: "600 이하",
+        target_value: 600, direction: "lower" },
+      { key: "inspection_defect_rate_pct", label: "검사불량률 (%)",
+        label_en: "Inspection defect (%)", target_text: "30 이하",
+        target_value: 30, direction: "lower" },
+      { key: "auto_inspection_rate_pct", label: "자동검사율 (%)",
+        label_en: "Auto inspection (%)", target_text: "100",
+        target_value: 100, direction: "higher" },
+      { key: "storage_mes_rate_pct", label: "저장·MES 연계율 (%)",
+        label_en: "Storage/MES link (%)", target_text: "100",
+        target_value: 100, direction: "higher" },
+    ]),
 }));
 
 const triggerBlobDownload = vi.fn();
