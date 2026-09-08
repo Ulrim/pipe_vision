@@ -139,11 +139,11 @@
   },
   "metric3_latency": {
     "count": 1000,
-    "p50_ms": 7.0,
+    "p50_ms": 6.0,
     "p95_ms": 8.0,
-    "p99_ms": 9.0,
-    "max_ms": 10.0,
-    "mean_ms": 6.706,
+    "p99_ms": 11.0,
+    "max_ms": 59.0,
+    "mean_ms": 6.402,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -198,5 +198,5 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-09-08T15:23:39.002053+00:00"
+  "generated_at": "2026-09-08T15:29:04.564602+00:00"
 }

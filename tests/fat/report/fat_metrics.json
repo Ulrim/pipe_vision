@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "8.000ms",
+      "measured": "7.000ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -134,10 +134,10 @@
   "metric3_latency": {
     "count": 1000,
     "p50_ms": 6.0,
-    "p95_ms": 8.0,
-    "p99_ms": 10.0,
-    "max_ms": 15.0,
-    "mean_ms": 6.565,
+    "p95_ms": 7.0,
+    "p99_ms": 8.0,
+    "max_ms": 10.0,
+    "mean_ms": 6.259,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -156,5 +156,5 @@
     "임계값은 ItemMaster(기준정보)에서 읽음 — 하드코딩 아님.",
     "지표4: POST /inspection(내부토큰) 적재 → DB 조회 + MES watchdog 1회 연계."
   ],
-  "generated_at": "2026-09-08T15:23:17.642446+00:00"
+  "generated_at": "2026-09-08T15:28:45.638112+00:00"
 }
