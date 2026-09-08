@@ -4,6 +4,8 @@
   python -m labeling.cli build --dataset /data/dataset/raw --out gt.json
   python -m labeling.cli build --dataset /data/dataset/raw --view SIDE --out gt_side.json
   python -m labeling.cli inspect --image HP12_SIDE_SCR_20260610-141233_007.jpg
+  python -m labeling.cli dataset --manifest export.json --images /var/lib/aivis/images \
+      --out dataset/raw
 
 AIVIS_DATASET_DIR 환경변수(부록 A.6)를 --dataset 기본값으로 사용.
 """
@@ -14,6 +16,7 @@ import json
 import os
 import sys
 
+from labeling.dataset_build import build_dataset, load_manifest
 from labeling.groundtruth import build_groundtruth, load_item, write_manifest
 
 
@@ -45,6 +48,21 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_dataset(args: argparse.Namespace) -> int:
+    """대시보드 라벨(GET /labels/export)을 학습용 폴더 구조로 펼친다.
+
+    라벨을 붙여도 학습을 돌릴 수 없으면 아무 일도 일어나지 않는다 — 이 명령이
+    라벨링 화면과 train_anomaly.py 사이의 빈 칸을 메운다.
+    """
+    images = args.images or os.getenv("AIVIS_IMAGES_DIR")
+    if not images:
+        print("이미지 경로 미지정(--images 또는 AIVIS_IMAGES_DIR)", file=sys.stderr)
+        return 2
+    report = build_dataset(load_manifest(args.manifest), images, args.out)
+    print(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="labeling.cli", description="AIVIS 정답셋 빌더")
     sub = p.add_subparsers(dest="command", required=True)
@@ -58,11 +76,20 @@ def main(argv: list[str] | None = None) -> int:
     i = sub.add_parser("inspect", help="단일 이미지 정답 항목 출력")
     i.add_argument("--image", required=True, help="이미지 경로")
 
+    d = sub.add_parser(
+        "dataset", help="라벨 매니페스트 -> 학습용 클래스 폴더(dataset/raw/<CLASS>)"
+    )
+    d.add_argument("--manifest", required=True, help="GET /labels/export 저장 파일")
+    d.add_argument("--images", default=None, help="AIVIS_IMAGES_DIR")
+    d.add_argument("--out", default="dataset/raw", help="출력 루트")
+
     args = p.parse_args(argv)
     if args.command == "build":
         return _cmd_build(args)
     if args.command == "inspect":
         return _cmd_inspect(args)
+    if args.command == "dataset":
+        return _cmd_dataset(args)
     p.print_help()
     return 1
 

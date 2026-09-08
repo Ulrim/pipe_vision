@@ -363,3 +363,64 @@ export function startUpdate(): Promise<UpdateStartResult> {
     method: "POST",
   });
 }
+
+/* ---------------- 정답 라벨링 (부록 A.2/A.5, M16) ---------------- */
+
+/** 라벨링 대기 1건 (GET /labels/queue). */
+export interface LabelQueueItem {
+  inspection_id: number;
+  lot: string;
+  item_code?: string | null;
+  inspected_at: string;
+  final_verdict?: string | null;
+  defect_codes: string[];
+  review_flag: boolean;
+  meas_length_mm?: number | null;
+  has_result_image: boolean;
+  has_raw_image: boolean;
+}
+
+/** 저장된 라벨 1건. labels 빈 배열 = 정상(OK). */
+export interface LabelOut {
+  inspection_id: number;
+  labels: string[];
+  border: boolean;
+  length_mm_gt?: number | null;
+  note?: string | null;
+  labeled_by?: string | null;
+  labeled_at?: string | null;
+}
+
+/** 클래스별 라벨링 진척 vs 부록 A.2 목표수량. */
+export interface LabelProgress {
+  labeled_total: number;
+  unlabeled_total: number;
+  border_count: number;
+  by_class: Record<string, { count: number; target: number }>;
+}
+
+/**
+ * GET /labels/queue — 값이 큰 것부터(재확인 대상 → NG → 나머지).
+ * 라벨링은 사람 시간이 드는 일이라 순서가 곧 비용이다.
+ */
+export function fetchLabelQueue(limit = 30, itemCode?: string): Promise<LabelQueueItem[]> {
+  const q = new URLSearchParams({ limit: String(limit) });
+  if (itemCode) q.set("item_code", itemCode);
+  return requestJson<LabelQueueItem[]>(`/labels/queue?${q.toString()}`);
+}
+
+/** GET /labels/progress — 무엇이 부족한지. */
+export function fetchLabelProgress(): Promise<LabelProgress> {
+  return requestJson<LabelProgress>("/labels/progress");
+}
+
+/** PUT /labels/{id} — 라벨 저장(quality+). */
+export function putLabel(
+  inspectionId: number,
+  body: { labels: string[]; border: boolean; length_mm_gt?: number | null; note?: string | null },
+): Promise<LabelOut> {
+  return requestJson<LabelOut>(`/labels/${inspectionId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}

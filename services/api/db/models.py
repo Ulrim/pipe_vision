@@ -1,7 +1,8 @@
 """SQLAlchemy 2.0 ORM 모델 — CLAUDE.md §7.1 스키마 그대로 매핑.
 
 테이블: item_master, inspection, kpi_manual, app_user, sys_log, mes_quality_if(§7.3),
-active_order(현재 검사 오더 단일 행, 0005 마이그레이션).
+active_order(현재 검사 오더 단일 행, 0005 마이그레이션),
+inspection_label(사람이 붙인 정답 라벨, 0007 마이그레이션).
 인덱스: ix_insp_lot, ix_insp_time, ix_insp_item_verdict (§7.1),
 ux_insp_natkey (자연키 멱등 유니크, 0002 마이그레이션).
 """
@@ -146,6 +147,38 @@ class KpiManual(Base):
     shipped_qty: Mapped[int | None] = mapped_column(Integer)
     leak_defect_qty: Mapped[int | None] = mapped_column(Integer)
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class InspectionLabel(Base):
+    """사람이 붙인 정답 라벨 (inspection_label) — 부록 A.5, M16.
+
+    **왜 별도 테이블인가**: inspection.manual_verdict 는 현장 작업자가 NG 를
+    재확인한 OK/NG 한 글자다. 모델 학습에는 그것으로 부족하다. "왜 불량인가"
+    (유분기인지 변색인지 스크래치인지), "경계 사례인가"까지 있어야 항목별
+    정확도(§1.2 목표 95%)를 측정하고 학습셋을 만들 수 있다. 검사 판정을 담는
+    inspection 행을 사람이 덧칠하지 않고 별도로 쌓아, 언제든 원 판정과 대조할 수
+    있게 한다.
+
+    labels 는 배열이다(부록 A.5): 복합불량은 ["OIL","DIS"] 처럼 기록되고
+    §7.2 defect_codes 에 그대로 매핑된다. 빈 배열 = 정상(OK).
+    """
+
+    __tablename__ = "inspection_label"
+
+    inspection_id: Mapped[int] = mapped_column(
+        ForeignKey("inspection.id", ondelete="CASCADE"), primary_key=True
+    )
+    labels: Mapped[list[str]] = mapped_column(StringArray, default=list)
+    #: 작업자도 OK/NG 가 갈리는 경계 샘플(부록 A.2) — 정확도 95% 돌파의 핵심이라
+    #: 버리지 않고 따로 표시해 모은다.
+    border: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: 길이 정답(mm). 측정 정확도 검증용이라 길이 라벨링 시에만 채운다.
+    length_mm_gt: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    note: Mapped[str | None] = mapped_column(Text)
+    labeled_by: Mapped[str | None] = mapped_column(Text)
+    labeled_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class AppUser(Base):

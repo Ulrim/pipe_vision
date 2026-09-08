@@ -5,6 +5,7 @@ import { InspectionsPage } from "@/pages/InspectionsPage";
 import { StatisticsPage } from "@/pages/StatisticsPage";
 import { KpiPage } from "@/pages/KpiPage";
 import { ReportPage } from "@/pages/ReportPage";
+import { LabelingPage } from "@/pages/LabelingPage";
 import { MasterPage } from "@/pages/MasterPage";
 import { MonitorPage } from "@/pages/MonitorPage";
 import { UpdatePage } from "@/pages/UpdatePage";
@@ -95,6 +96,14 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <ReportPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/labeling"
+            element={
+              <ProtectedRoute>
+                <LabelingPage />
               </ProtectedRoute>
             }
           />

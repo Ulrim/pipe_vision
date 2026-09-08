@@ -26,6 +26,12 @@ from .vision import (
     SurfaceResult,
     VerdictResult,
 )
+from .labeling import (
+    LabelIn,
+    LabelOut,
+    LabelProgress,
+    LabelQueueItem,
+)
 from .kpi import (
     KpiManual,
     KpiSummary,
@@ -39,6 +45,10 @@ from .auth import (
 )
 
 __all__ = [
+    "LabelIn",
+    "LabelOut",
+    "LabelProgress",
+    "LabelQueueItem",
     # enums
     "CameraView",
     "DefectCode",

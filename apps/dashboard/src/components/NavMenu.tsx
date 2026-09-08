@@ -12,6 +12,7 @@ export const NAV: NavItem[] = [
   { to: "/inspections", label: "검사이력" },
   { to: "/statistics", label: "불량통계" },
   { to: "/report", label: "월간리포트" },
+  { to: "/labeling", label: "정답 라벨링" },
   { to: "/master", label: "기준정보" },
   { to: "/monitor", label: "시스템 모니터링" },
   { to: "/update", label: "프로그램 업데이트" },

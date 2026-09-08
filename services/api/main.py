@@ -1,6 +1,6 @@
 """AIVIS API 앱 조립 (CLAUDE.md §3,§4,§7).
 
-라우터: auth, inspection, master, kpi, logs, mes, system, ws/live.
+라우터: auth, inspection, master, kpi, labels, logs, mes, system, ws/live.
 헬스체크 /health (compose healthcheck 계약).
 sqlite/개발은 init_db 로 테이블 생성, 운영(postgres)은 Alembic.
 """
@@ -19,7 +19,17 @@ from core.retention import cleanup_images, storage_usage
 from core.security import hash_password
 from db.base import SessionLocal, engine, init_db
 from db.models import AppUser, ItemMaster
-from routers import auth, inspection, kpi, logs, master, mes, system, ws_live
+from routers import (
+    auth,
+    inspection,
+    kpi,
+    labels,
+    logs,
+    master,
+    mes,
+    system,
+    ws_live,
+)
 
 
 def _seed_admin() -> None:
@@ -152,6 +162,7 @@ app.include_router(inspection.router)
 app.include_router(master.router)
 app.include_router(master.active_router)
 app.include_router(kpi.router)
+app.include_router(labels.router)
 app.include_router(logs.router)
 app.include_router(mes.router)
 app.include_router(system.router)

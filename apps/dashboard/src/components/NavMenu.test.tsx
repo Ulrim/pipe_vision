@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { NavMenu } from "./NavMenu";
+import { NAV, NavMenu } from "./NavMenu";
 
 /** NavMenu 는 라우팅 컨텍스트만 필요 — App 전체보다 가벼운 단독 렌더로 검증. */
 function renderNavMenu(route = "/kpi") {
@@ -34,7 +34,7 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     await user.click(screen.getByTestId("nav-menu-button"));
     expect(screen.getByTestId("nav-menu")).toBeInTheDocument();
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByRole("menuitem")).toHaveLength(7);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(NAV.length);
     expect(screen.getByRole("menuitem", { name: "KPI" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "검사이력" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "불량통계" })).toBeInTheDocument();
