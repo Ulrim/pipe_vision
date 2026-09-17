@@ -37,6 +37,11 @@ from sqlalchemy.orm import Session
 from db.models import Inspection, ItemMaster, KpiManual
 from labeling.groundtruth import LabelParseError, build_groundtruth, parse_filename
 from portal.layout import (
+    KST,
+    dataset_raw_name,
+    dataset_result_name,
+    iso_kst,
+    to_kst,
     AI_INSPECTIONS_DIR,
     AI_KPI_DIR,
     AI_REPORTS_DIR,
@@ -84,11 +89,8 @@ def make_run_id(now: datetime | None = None) -> str:
 
 
 def _iso(dt: datetime | None) -> str | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.isoformat()
+    """정의서 시각 표기 = 현장 기준시(KST, +09:00). DB 는 UTC 라 변환한다."""
+    return iso_kst(dt)
 
 
 def _num(v: Any) -> float | int | None:
@@ -165,9 +167,13 @@ def _ext(path: Path) -> str:
 
 
 def _partition(prefix: str, ts: datetime, name: str) -> str:
-    """{prefix}/YYYY/MM/DD/{name} (UTC 날짜 파티션)."""
-    ts = _as_utc(ts)
-    return f"{prefix}/{ts:%Y}/{ts:%m}/{ts:%d}/{name}"
+    """{prefix}/YYYY/MM/DD/{name} — 정의서대로 **검사일자(KST)** 파티션.
+
+    UTC 로 자르면 KST 자정 직후(=UTC 전날 15시 이후) 검사분이 하루 앞 폴더에
+    들어가, 제출 시 수집기간과 폴더가 어긋난다.
+    """
+    k = to_kst(ts)
+    return f"{prefix}/{k:%Y}/{k:%m}/{k:%d}/{name}"
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:
@@ -289,16 +295,35 @@ def _inspection_rows(db: Session, since: datetime | None, until: datetime) -> li
 
 
 def _portal_raw_path(row: Inspection) -> str | None:
-    """운영 원본 이미지의 원시 데이터셋 내 경로(inspection/YYYY/MM/DD/name)."""
+    """운영 원본의 원시 데이터셋 내 경로 (정의서 3-2 규격 파일명으로 개명).
+
+    디스크의 운영 파일명은 그대로 두고 제출본에서만 규격명을 쓴다. 워커는 이미지를
+    저장한 뒤에야 POST 하고 그때 DB 가 id 를 채번하므로, 저장 시점에는 파일명에
+    넣을 inspection_id 가 존재하지 않는다. 반대로 여기서는 행과 파일이 모두
+    손에 있어 규격명을 정확히 만들 수 있다.
+    """
     if not row.raw_image_path:
         return None
-    return _partition(RAW_INSPECTION_DIR, row.inspected_at, Path(row.raw_image_path).name)
+    return _partition(
+        RAW_INSPECTION_DIR,
+        row.inspected_at,
+        dataset_raw_name(
+            row.lot, row.item_code, row.inspection_stage, row.inspected_at, row.id
+        ),
+    )
 
 
 def _portal_result_path(row: Inspection) -> str | None:
+    """판정 오버레이의 AI분석 데이터셋 내 경로 (정의서 5-2 규격 파일명)."""
     if not row.result_image_path:
         return None
-    return _partition(AI_RESULT_DIR, row.inspected_at, Path(row.result_image_path).name)
+    return _partition(
+        AI_RESULT_DIR,
+        row.inspected_at,
+        dataset_result_name(
+            row.lot, row.item_code, row.inspected_at, row.id, row.final_verdict
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +374,11 @@ def export_raw(db: Session, out_dir: str | os.PathLike[str], opts: ExportOptions
         w.place(src, dst_rel)
         width, height = image_dimensions(src)
         rec = RawImageRecord(
-            file_path=dst_rel, file_name=src.name, file_type=_ext(src),
+            # file_name 은 제출본의 이름이다(디스크 원본명이 아님) — 정의서 3-3 의
+            # file_path 와 file_name 예시가 같은 파일을 가리켜야 한다.
+            file_path=dst_rel, file_name=Path(dst_rel).name, file_type=_ext(src),
             file_size=src.stat().st_size, source="inspection",
+            inspection_stage=row.inspection_stage,
             captured_at=_iso(row.inspected_at), cam_id=row.cam_id, item_code=row.item_code,
             view=opts.view, width=width, height=height, lot=row.lot,
             work_order=row.work_order, inspection_id=row.id,
@@ -365,11 +393,17 @@ def export_raw(db: Session, out_dir: str | os.PathLike[str], opts: ExportOptions
             cls = img.parent.name if img.parent != raw_dir else "UNSORTED"
             dst_rel = f"{RAW_CAPTURE_DIR}/{cls}/{img.name}"
             w.place(img, dst_rel)
-            item_code = view = captured_at = None
+            item_code = view = captured_at = stage = None
             try:
                 parsed = parse_filename(img.name)
                 item_code, view = parsed["item"], parsed["view"]
-                captured_at = datetime.strptime(parsed["ts"], "%Y%m%d-%H%M%S").isoformat()
+                stage = parsed.get("stage")
+                # 학습 촬영 파일명의 시각은 현장 시계(KST)로 찍힌다.
+                captured_at = (
+                    datetime.strptime(parsed["ts"], "%Y%m%d-%H%M%S")
+                    .replace(tzinfo=KST)
+                    .isoformat()
+                )
             except (LabelParseError, ValueError):
                 summary.skipped.append({"path": str(img), "reason": "파일명 규칙 불일치(부록 A.4) — 메타 일부 누락"})
             sc = _sidecar(img) or {}
@@ -379,6 +413,7 @@ def export_raw(db: Session, out_dir: str | os.PathLike[str], opts: ExportOptions
                 file_size=img.stat().st_size, source="capture",
                 captured_at=sc.get("captured_at") or captured_at,
                 cam_id=sc.get("cam_id"), item_code=sc.get("item_code") or item_code,
+                inspection_stage=sc.get("inspection_stage") or stage,
                 view=sc.get("view") or view, width=width, height=height, capture_class=cls,
             ))
 
@@ -473,7 +508,8 @@ def export_processed(db: Session, out_dir: str | os.PathLike[str], opts: ExportO
             cls = p.parent.name if p.parent != raw_dir else "UNSORTED"
             rec = LabelRecord(
                 image_path=f"{RAW_CAPTURE_DIR}/{cls}/{p.name}",
-                item_code=it.item_code, view=it.view, labels=list(it.labels),
+                item_code=it.item_code, inspection_stage=it.inspection_stage,
+                view=it.view, labels=list(it.labels),
                 border=it.border, length_mm_gt=it.length_mm_gt, scale_ref_mm=it.scale_ref_mm,
                 lighting=it.meta.get("lighting"), captured_at=it.meta.get("captured_at"),
                 note=it.meta.get("note"), label_source=it.source,
@@ -583,6 +619,7 @@ def _to_inspection_record(row: Inspection) -> InspectionRecord:
         oil_score=_num(row.oil_score), discolor_score=_num(row.discolor_score),
         scratch_score=_num(row.scratch_score), final_verdict=row.final_verdict,
         defect_codes=list(row.defect_codes or []), confidence=_num(row.confidence),
+        inspection_stage=row.inspection_stage,
         proc_time_ms=row.proc_time_ms, review_flag=bool(row.review_flag),
         manual_verdict=row.manual_verdict, mes_synced=bool(row.mes_synced),
         raw_image_path=_portal_raw_path(row), result_image_path=_portal_result_path(row),

@@ -83,6 +83,9 @@ class Inspection(Base):
         Text, ForeignKey("item_master.item_code")
     )
     cam_id: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 검사 단계(CUT_LENGTH|POST_WASH_SURFACE). 데이터 정의서 5-3 필수 항목.
+    #: 기존 행은 NULL — 단계 구분이 없던 시절의 데이터라 사후 추정하지 않는다.
+    inspection_stage: Mapped[str | None] = mapped_column(Text)
     inspected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -119,6 +122,8 @@ class Inspection(Base):
         Index("ix_insp_lot", "lot"),
         Index("ix_insp_time", "inspected_at"),
         Index("ix_insp_item_verdict", "item_code", "final_verdict"),
+        # 단계별 정확도·불량률 집계가 기본 조회 축이 된다(품목 × 단계).
+        Index("ix_insp_stage", "inspection_stage", "final_verdict"),
         # 자연키 멱등(POST /inspection 재전송 중복 방지, MES idem_key 와 동일 구성).
         # cam_id+inspected_at 선두 → 자연키 동등 조회가 인덱스만으로 즉시 좁혀짐.
         # tube_index 포함: 같은 프레임(배치)의 튜브 N개(0..N-1)를 별도 행으로 저장.

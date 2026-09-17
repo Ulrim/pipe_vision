@@ -6,6 +6,7 @@ vision / data-mes / backend / frontend(via TS mirror) 가 공유한다.
 from __future__ import annotations
 
 from .enums import (
+    InspectionStage,
     CameraView,
     DefectCode,
     LogCategory,
@@ -45,6 +46,7 @@ from .auth import (
 )
 
 __all__ = [
+    "InspectionStage",
     "LabelIn",
     "LabelOut",
     "LabelProgress",

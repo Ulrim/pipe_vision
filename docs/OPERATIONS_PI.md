@@ -370,6 +370,24 @@ bash scripts/aivis-clean-images.sh --yes
 근본 대책: 외장 SSD/USB 를 `/var/lib/aivis` 로 마운트하면 보관 기간을 넉넉히
 늘릴 수 있다. 백업은 `bash scripts/backup.sh`.
 
+### 7-2-1. 검사 단계 설정 (스테이션마다 다름)
+
+이 장비가 **어느 공정 지점**에서 찍는지를 알려줘야 한다. 데이터 정의서가 이미지·
+라벨·판정 기록 전부에 이 값을 요구하고, 나중에 단계별 정확도를 집계하는 축이 된다.
+
+```bash
+# /etc/default/aivis (또는 서비스 환경파일)
+AIVIS_INSPECTION_STAGE=CUT_LENGTH          # 절단 후 길이 검사 (기본값)
+# AIVIS_INSPECTION_STAGE=POST_WASH_SURFACE # 세척 후 표면 검사
+```
+
+두 값 중 하나만 쓸 수 있다. 오타가 나면 경고를 남기고 `CUT_LENGTH` 로 돌아간다 —
+잘못된 값으로 계속 쌓이면 나중에 되돌릴 수 없기 때문이다. 바꾼 뒤에는 재시작한다.
+
+```bash
+bash scripts/aivis.sh restart
+```
+
 ### 7-3. 검사 워커가 멈췄다("정지"/"응답지연")
 ```bash
 bash scripts/aivis.sh logs        # 마지막 오류 확인 (Ctrl+C 로 빠져나옴)

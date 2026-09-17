@@ -19,6 +19,7 @@ def inspection_to_schema(row: Inspection) -> InspectionResult:
         work_order=row.work_order,
         item_code=row.item_code,
         cam_id=row.cam_id,
+        inspection_stage=row.inspection_stage,
         inspected_at=row.inspected_at,
         tube_index=row.tube_index if row.tube_index is not None else 0,
         shift=row.shift,

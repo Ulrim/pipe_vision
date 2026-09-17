@@ -224,6 +224,8 @@ class BatchMeta:
     item_code: str
     cam_id: str
     inspected_at: datetime
+    #: 검사 단계(CUT_LENGTH|POST_WASH_SURFACE) — 한 프레임의 모든 튜브가 공유한다.
+    inspection_stage: Optional[str] = None
     ref_length_mm: Optional[float] = None
     work_order: Optional[str] = None
     shift: Optional[str] = None
@@ -250,6 +252,7 @@ def tube_to_inspection(
         work_order=batch_meta.work_order,
         item_code=batch_meta.item_code,
         cam_id=batch_meta.cam_id,
+        inspection_stage=batch_meta.inspection_stage,
         inspected_at=batch_meta.inspected_at,
         tube_index=max(0, int(tube.index) - 1),
         shift=batch_meta.shift,

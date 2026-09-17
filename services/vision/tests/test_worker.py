@@ -613,3 +613,31 @@ def test_worker_run_once_survives_post_status_exception(tmp_path):
     assert ok is True  # 검사결과 적재는 정상.
     assert len(backend.posted) == 1
     worker.shutdown()
+
+
+# --- 검사 단계 설정 (데이터 정의서 필수 항목) --------------------------------
+
+
+def test_worker_config_inspection_stage_default(monkeypatch):
+    """기본값은 절단 후 길이 검사(현행 단일 스테이션 위치)."""
+    monkeypatch.delenv("AIVIS_INSPECTION_STAGE", raising=False)
+    assert WorkerConfig.from_env().inspection_stage == "CUT_LENGTH"
+
+
+def test_worker_config_inspection_stage_from_env(monkeypatch):
+    """스테이션마다 설정으로 고정한다(소문자 입력도 허용)."""
+    monkeypatch.setenv("AIVIS_INSPECTION_STAGE", "post_wash_surface")
+    assert WorkerConfig.from_env().inspection_stage == "POST_WASH_SURFACE"
+
+
+def test_worker_config_invalid_stage_falls_back(monkeypatch, caplog):
+    """오타는 경고하고 기본값으로 떨어진다.
+
+    조용히 통과시키면 그 스테이션의 데이터 전체가 잘못된 단계로 적재되고,
+    단계별 정확도를 집계할 때야 드러난다 — 그때는 되돌릴 수 없다.
+    """
+    monkeypatch.setenv("AIVIS_INSPECTION_STAGE", "SURFACE")
+    with caplog.at_level("WARNING"):
+        cfg = WorkerConfig.from_env()
+    assert cfg.inspection_stage == "CUT_LENGTH"
+    assert any("AIVIS_INSPECTION_STAGE" in r.message for r in caplog.records)

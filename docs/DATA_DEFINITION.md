@@ -172,8 +172,8 @@
 
 | 데이터 명 | 디렉토리 구조 | | | 상세 설명 |
 |---|---|---|---|---|
-| 검사 원본 이미지 | raw/ | inspection/ | YYYY/MM/DD/ | 운영 검사 원본. 검사일자(UTC) 파티션. 파일명 `{LOT}_{품목}_{YYYYMMDDHHmmssSSS}_{OK\|NG}.jpg` (예 `LOT20260902_HP12_20260902100500123_NG.jpg`) |
-| 학습·검증용 촬영본 | raw/ | capture/ | OK/ LEN/ OIL/ DIS/ SCR/ MULTI/ BORDER/ | 클래스별 폴더. 파일명 `{품목}_{END\|SIDE}_{클래스}_{YYYYMMDD-HHmmss}_{일련}.jpg` (예 `HP12_SIDE_SCR_20260610-141233_007.jpg`). END=단면 구도, SIDE=측면(길이) 구도 |
+| 검사 원본 이미지 | raw/ | inspection/ | YYYY/MM/DD/ | 운영 검사 원본. 검사일자(**KST**) 파티션. 파일명 `{LOT}_{품목}_{STAGE}_{YYYYMMDDHHmmssSSS}_{inspection_id}.jpg` (예 `LOT20260902_HP12_CUT_20260902100500123_12345.jpg`). **판정(OK/NG)을 넣지 않는다** — 학습 입력이 될 원본 이름에 정답이 박히면 파일명으로 정렬·분할하는 순간 라벨이 샌다. 연계는 `inspection_id` 로 한다. STAGE 토큰은 `CUT`(절단 후 길이)/`WASH`(세척 후 표면) |
+| 학습·검증용 촬영본 | raw/ | capture/ | OK/ LEN/ OIL/ DIS/ SCR/ MULTI/ BORDER/ | 클래스별 폴더. 파일명 `{품목}_{STAGE}_{END\|SIDE}_{클래스}_{YYYYMMDD-HHmmss}_{일련}.jpg` (예 `HP12_POST_WASH_SURFACE_SIDE_SCR_20260610-141233_007.jpg`). END=단면 구도, SIDE=측면(길이) 구도. 여기서는 STAGE 전체 이름을 쓴다 — 구도 토큰(END/SIDE)이 앵커라 밑줄이 섞여도 경계가 유지된다 |
 | 캘리브레이션 촬영 | raw/ | calib/ | | 스케일 기준자(게이지) 포함 촬영. 품목·해상도·거리 변경 시마다 세트 추가 |
 | 촬영 메타 인덱스 | raw/ | index/ | | `raw_images_{회차ID}.jsonl` — 회차(전송)마다 1파일, 이미지 1장 = 1행(3-3 명세) |
 
@@ -199,14 +199,15 @@ raw/                                   ← 포털 업로드 코드(원시) 데�
 |---|---|---|---|---|---|---|---|
 | 기본정보 | schema_version | 명세 버전 | string | | 1.0 | 필수 | 명세 개정 시 증가 |
 | 파일정보 | file_path | 데이터셋 루트 기준 상대경로 | string | | inspection/2026/09/02/LOT20260902_HP12_20260902100500123_NG.jpg | 필수 | 이미지 파일과 1:1 연결 키 |
-| 파일정보 | file_name | 파일명 | string | | LOT20260902_HP12_20260902100500123_NG.jpg | 필수 | 3-2 파일명 규칙 |
+| 파일정보 | file_name | 파일명 | string | | LOT20260902_HP12_CUT_20260902100500123_12345.jpg | 필수 | 3-2 파일명 규칙(제출본 이름 — 디스크 원본명이 아님) |
 | 파일정보 | file_type | 확장자 | string | | jpg | 필수 | jpg / png |
 | 파일정보 | file_size | 파일 크기 | integer | byte | 812345 | 필수 | |
 | 파일정보 | width | 이미지 가로 | integer | px | 2304 | 선택 | 헤더 판독 실패 시 null |
 | 파일정보 | height | 이미지 세로 | integer | px | 1296 | 선택 | |
 | 촬영정보 | source | 출처 구분 | string | | inspection | 필수 | inspection(운영 검사) / capture(학습 촬영) / calib(캘리브레이션) |
-| 촬영정보 | captured_at | 촬영(검사) 시각 | string | ISO-8601 | 2026-09-02T10:05:00.123+00:00 | 필수(운영) | 다른 데이터셋과 연동하는 핵심 시각 정보 |
+| 촬영정보 | captured_at | 촬영(검사) 시각 | string | ISO-8601 | 2026-09-02T10:05:00.123+09:00 | 필수(운영) | 다른 데이터셋과 연동하는 핵심 시각 정보 |
 | 촬영정보 | cam_id | 카메라 ID | string | | PI-CAM1 | 필수(운영) | 다중 스테이션 구분 |
+| 촬영정보 | inspection_stage | 검사 단계 | string | | CUT_LENGTH | 필수 | CUT_LENGTH(절단 후 길이) / POST_WASH_SURFACE(세척 후 표면). 단계 구분 이전 수집분은 null |
 | 촬영정보 | item_code | 품목 코드 | string | | HP12 | 필수 | 기준정보 `item_master.item_code` |
 | 촬영정보 | view | 촬영 구도 | string | | SIDE | 필수 | SIDE(측면·길이) / END(단면) |
 | 생산정보 | lot | LOT 번호 | string | | LOT20260902 | 선택(운영 필수) | |
@@ -221,7 +222,7 @@ raw/                                   ← 포털 업로드 코드(원시) 데�
 
 | 카테고리 | 속성명 | 항목 설명 | 값 | 단위 |
 |---|---|---|---|---|
-| 원본 이미지 | 찍은 날짜 | 촬영 시각(파일명·인덱스 `captured_at`) | 2026-09-02 10:05:00.123 | |
+| 원본 이미지 | 찍은 날짜 | 촬영 시각(파일명·인덱스 `captured_at`, KST) | 2026-09-02 10:05:00.123 (+09:00) | |
 | 원본 이미지 | 사진 크기 | 캡처 해상도(촬영 레시피 width×height) | 2304 × 1296 (풀해상도 4608 × 2592) | px |
 | 원본 이미지 | 너비 / 높이 | | 2304 / 1296 | px |
 | 원본 이미지 | 비트 수준 | BGR 3채널 8bit | 24 | bit |
@@ -299,7 +300,7 @@ raw/                                   ← 포털 업로드 코드(원시) 데�
 
 | 데이터 명 | 디렉토리 구조 | | | 상세 설명 |
 |---|---|---|---|---|
-| 결함 라벨 데이터 | processed/ | labels/ | OK/ LEN/ OIL/ DIS/ SCR/ MULTI/ BORDER/ | 이미지와 동일 파일명의 `.json` 라벨(예 `HP12_SIDE_SCR_20260610-141233_007.json`). 원시 `capture/{클래스}/` 와 1:1 |
+| 결함 라벨 데이터 | processed/ | labels/ | OK/ LEN/ OIL/ DIS/ SCR/ MULTI/ BORDER/ | 이미지와 동일 파일명의 `.json` 라벨(예 `HP12_POST_WASH_SURFACE_SIDE_SCR_20260610-141233_007.json`). 원시 `capture/{클래스}/` 와 1:1 |
 | 결함 라벨 데이터 | processed/ | groundtruth/ | | `gt_manifest.json` — 라벨 전량 집계 매니페스트(건수·OK/NG·경계 샘플 수·오류 목록·항목 배열) |
 | 작업자 재확인 라벨 | processed/ | review/ | | `review_labels.jsonl` — 재확인 대상·불일치 검사 1건 = 1행(전량 스냅샷, 회차마다 갱신) |
 | 판정 기준정보 | processed/ | master/ | | `item_master.json` — 품목별 기준정보 스냅샷(버전 포함) |
@@ -321,6 +322,7 @@ processed/                             ← 포털 업로드 코드(가공) 데�
 | 기본정보 | schema_version | 명세 버전 | string | | 1.0 | 필수 | |
 | 연계정보 | image_path | 원시 데이터셋 내 이미지 경로 | string | | capture/SCR/HP12_SIDE_SCR_20260610-141233_007.jpg | 필수 | 원시 3-3 `file_path` 와 연결 |
 | 촬영정보 | item_code | 품목 코드 | string | | HP12 | 필수 | |
+| 촬영정보 | inspection_stage | 검사 단계 | string | | POST_WASH_SURFACE | 필수 | CUT_LENGTH(절단 후 길이) / POST_WASH_SURFACE(세척 후 표면). 단계 구분 이전 수집분은 null |
 | 촬영정보 | view | 촬영 구도 | string | | SIDE | 필수 | SIDE / END |
 | 라벨 | labels | 불량 코드 배열 | array[string] | | ["SCR"] | 필수 | 정상은 빈 배열 []. 2종 이상이면 MULTI 를 함께 기록(예 ["OIL","DIS","MULTI"]). 코드표는 4-5 |
 | 라벨 | border | 경계 샘플 여부 | boolean | | true | 필수 | 검수자 간 판정이 갈리는 애매 사례 태그(정확도 95% 달성의 핵심) |
@@ -341,7 +343,7 @@ processed/                             ← 포털 업로드 코드(가공) 데�
 | 연계정보 | inspection_id | 검사결과 ID | integer | | 12345 | 필수 | 원시 인덱스·AI분석 레코드와 조인 키 |
 | 생산정보 | lot | LOT 번호 | string | | LOT20260902 | 필수 | |
 | 촬영정보 | item_code | 품목 코드 | string | | HP12 | 필수 | |
-| 촬영정보 | inspected_at | 검사 시각 | string | ISO-8601 | 2026-09-02T10:05:00.123+00:00 | 필수 | |
+| 촬영정보 | inspected_at | 검사 시각 | string | ISO-8601 | 2026-09-02T10:05:00.123+09:00 | 필수 | |
 | 판정 | final_verdict | AI 최종 판정 | string | | NG | 필수 | OK / NG |
 | 라벨 | manual_verdict | 작업자 재확인 판정 | string | | OK | 선택 | OK / NG / null(미입력) |
 | 라벨 | miss_kind | 오검·미검 유형 | string | | system_ng_human_ok | 선택 | system_ng_human_ok(오검: AI NG→사람 OK) / system_ok_human_ng(미검: AI OK→사람 NG) / null(재확인 대상만 표시) |
@@ -366,18 +368,18 @@ processed/                             ← 포털 업로드 코드(가공) 데�
 | 배치 | expected_count | 프레임당 튜브 개수 | integer | 개 | 1 | 필수 | 2 이상이면 다중 튜브 모드 |
 | 품목 | outer_diameter_mm | 튜브 외경 | number | mm | 12.7 | 선택 | 분리·직경 검증 힌트 |
 | 이력 | version | 기준정보 버전 | integer | | 3 | 필수 | 변경 시 +1 |
-| 이력 | updated_at | 최종 수정 시각 | string | ISO-8601 | 2026-09-01T09:00:00+00:00 | 선택 | 수정자(개인정보)는 제외 |
+| 이력 | updated_at | 최종 수정 시각 | string | ISO-8601 | 2026-09-01T09:00:00+09:00 | 선택 | 수정자(개인정보)는 제외 |
 
 ### 4-4. 파일데이터 메타정보
 
 | 카테고리 | 항목명 | data_type | 항목 설명 | 값 | 단위 |
 |---|---|---|---|---|---|
-| 라벨 JSON | file_name | label | 이미지와 동일 파일명 + .json | HP12_SIDE_SCR_20260610-141233_007.json | |
+| 라벨 JSON | file_name | label | 이미지와 동일 파일명 + .json | HP12_POST_WASH_SURFACE_SIDE_SCR_20260610-141233_007.json | |
 | 라벨 JSON | file_path | label | 데이터셋 내 경로 | labels/SCR/HP12_SIDE_SCR_20260610-141233_007.json | |
 | 라벨 JSON | encoding / file_type | label | | UTF-8 / json | |
 | 라벨 JSON | file_size | label | | 약 0.3~0.6 | KB |
 | 정답셋 매니페스트 | file_name | groundtruth | 전량 집계 | gt_manifest.json | |
-| 정답셋 매니페스트 | generated_at | groundtruth | 생성 시각 | 2026-09-03T02:17:00+00:00 | |
+| 정답셋 매니페스트 | generated_at | groundtruth | 생성 시각 | 2026-09-03T02:17:00+09:00 | |
 | 재확인 라벨 | file_name / file_type | review | 1행 = 검사 1건 | review_labels.jsonl / jsonl(줄 단위 JSON) | |
 | 재확인 라벨 | file_size | review | 1행 약 0.5 KB | 약 0.5~1.5 | MB |
 | 기준정보 | file_name / file_type | master | 품목 스냅샷 | item_master.json / json | |
@@ -420,7 +422,7 @@ processed/                             ← 포털 업로드 코드(가공) 데�
 ```json
 {
   "schema_version": "1.0",
-  "generated_at": "2026-09-03T02:17:00+00:00",
+  "generated_at": "2026-09-03T02:17:00+09:00",
   "count": 620, "ok_count": 240, "ng_count": 380, "border_count": 45,
   "errors": [],
   "items": [ { "image_path": "capture/OK/HP12_SIDE_OK_20260610-141000_001.jpg", "labels": [], "border": false, "...": "..." } ]
@@ -467,7 +469,7 @@ processed/                             ← 포털 업로드 코드(가공) 데�
 | 데이터 명 | 디렉토리 구조 | | | 상세 설명 |
 |---|---|---|---|---|
 | 판정 결과 레코드 | ai-analysis/ | inspections/ | YYYY/MM/ | `inspections_{YYYYMMDD}_{회차ID}.jsonl` — 검사일자별 파일, 1행 = 튜브 1개 판정(5-3 명세). 회차 접미사로 같은 날 재전송 시 덮어쓰기 방지 |
-| 판정 오버레이 이미지 | ai-analysis/ | result/ | YYYY/MM/DD/ | 원본과 동일 파일명의 결과 이미지(`{LOT}_{품목}_{YYYYMMDDHHmmssSSS}_{OK\|NG}.jpg`). OK 초록/NG 빨강 테두리·헤더, 길이·점수·불량코드 패널, REVIEW 배지, 다중 튜브 박스·번호 |
+| 판정 오버레이 이미지 | ai-analysis/ | result/ | YYYY/MM/DD/ | 원본 `inspection_id` 를 기준으로 생성한 결과 이미지(`{LOT}_{품목}_{YYYYMMDDHHmmssSSS}_{inspection_id}_{OK\|NG}.jpg`). 판정 결과물이라 OK/NG 를 붙인다 — 정답 누설 문제가 없고 불량만 골라 보는 일이 잦다. OK 초록/NG 빨강 테두리·헤더, 길이·점수·불량코드 패널, REVIEW 배지, 다중 튜브 박스·번호 |
 | 월간 KPI | ai-analysis/ | kpi/ | | `kpi_{YYYY-MM}.json` — 사업 KPI 산출식 그대로 월 집계(회차마다 재산출·갱신) |
 | 검증 리포트 | ai-analysis/ | reports/ | | `fat_metrics.json/.md`, `sat_metrics.json/.md`, `msa_length.json/.md` — 인수 합격기준 4지표 자동 검증 결과 |
 
@@ -489,7 +491,8 @@ ai-analysis/                           ← 포털 업로드 코드(AI 모델·�
 | 식별 | inspection_id | ai_analysis_result | 검사결과 ID(원시 인덱스·재확인 라벨과 조인) | 12345 | |
 | 식별 | lot / work_order | ai_analysis_result | LOT 번호 / 작업지시 번호 | LOT20260902 / WO-2026-0912 | |
 | 식별 | item_code / cam_id | ai_analysis_result | 품목 코드 / 카메라 ID | HP12 / PI-CAM1 | |
-| 식별 | inspected_at | ai_analysis_result | 예측 처리 시각(predicted_at) | 2026-09-02T10:05:00.123+00:00 | ISO-8601 |
+| 식별 | inspection_stage | ai_analysis_result | 검사 단계 | CUT_LENGTH | CUT_LENGTH / POST_WASH_SURFACE |
+| 식별 | inspected_at | ai_analysis_result | 예측 처리 시각(predicted_at) | 2026-09-02T10:05:00.123+09:00 | ISO-8601(KST) |
 | 식별 | tube_index | ai_analysis_result | 프레임 내 튜브 순번(0=단일) | 0 | |
 | 식별 | shift | ai_analysis_result | 작업 교대 | A | |
 | 분석 | analysis_purpose | ai_analysis_result | 분석 목적(고정) | header_pipe_quality_inspection | |
@@ -515,9 +518,9 @@ ai-analysis/                           ← 포털 업로드 코드(AI 모델·�
 
 | 카테고리 | 항목명 | data_type | 항목 설명 | 값(예시) | 단위 |
 |---|---|---|---|---|---|
-| 이미지 | file_name | ai_analysis_result | 원본과 동일 파일명 | LOT20260902_HP12_20260902100500123_NG.jpg | |
+| 이미지 | file_name | ai_analysis_result | 결과 오버레이 파일명 | LOT20260902_HP12_20260902100500123_12345_NG.jpg | |
 | 이미지 | file_path | ai_analysis_result | 데이터셋 내 경로 | result/2026/09/02/LOT20260902_HP12_20260902100500123_NG.jpg | |
-| 이미지 | captured_at / device_id | ai_analysis_result | 검사 시각 / 카메라 ID | 2026-09-02T10:05:00.123+00:00 / PI-CAM1 | |
+| 이미지 | captured_at / device_id | ai_analysis_result | 검사 시각 / 카메라 ID | 2026-09-02T10:05:00.123+09:00 / PI-CAM1 | |
 | 이미지 | data_type | ai_analysis_result | 데이터 유형 | inspection_overlay | |
 | 이미지 | width / height | ai_analysis_result | 원본과 동일 해상도 | 2304 / 1296 | px |
 | 이미지 | file_type / file_size | ai_analysis_result | 확장자 / 용량 | jpg / 약 0.5~1.0 | MB |

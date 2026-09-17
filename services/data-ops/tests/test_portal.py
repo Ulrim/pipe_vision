@@ -19,7 +19,14 @@ from portal.export import (
     export_raw,
     image_dimensions,
 )
-from portal.layout import EXCLUDED_PERSONAL_FIELDS, InspectionRecord, describe_schema
+from portal.layout import (
+    EXCLUDED_PERSONAL_FIELDS,
+    InspectionRecord,
+    dataset_raw_name,
+    dataset_result_name,
+    describe_schema,
+    stage_token,
+)
 from portal.upload import (
     FakePortalTransport,
     PortalUploader,
@@ -73,11 +80,13 @@ def _seed(db) -> list[Inspection]:
     a = "raw/L1_HP12_20260902100000000_OK.jpg"
     b = "raw/L1_HP12_20260902100500000_NG.jpg"
     r1 = _add(db, datetime(2026, 9, 2, 10, 0), raw_image_path=a, result_image_path=a.replace("raw/", "result/"),
-              operator="김작업", meas_length_mm=250.1, deviation_mm=0.1, proc_time_ms=12, mes_synced=True)
+              operator="김작업", inspection_stage="CUT_LENGTH", meas_length_mm=250.1,
+              deviation_mm=0.1, proc_time_ms=12, mes_synced=True)
     r2 = _add(db, datetime(2026, 9, 2, 10, 5), final_verdict="NG", defect_codes=["SCR"], raw_image_path=b,
-              result_image_path=b.replace("raw/", "result/"), tube_index=0, scratch_score=0.91, proc_time_ms=18)
+              result_image_path=b.replace("raw/", "result/"), tube_index=0, scratch_score=0.91,
+              inspection_stage="CUT_LENGTH", proc_time_ms=18)
     r3 = _add(db, datetime(2026, 9, 2, 10, 5), raw_image_path=b, result_image_path=b.replace("raw/", "result/"),
-              tube_index=1, proc_time_ms=18, review_flag=True)
+              tube_index=1, inspection_stage="CUT_LENGTH", proc_time_ms=18, review_flag=True)
     r4 = _add(db, datetime(2026, 9, 2, 11, 0), raw_image_path="raw/missing.jpg", result_image_path="result/missing.jpg")
     return [r1, r2, r3, r4]
 
@@ -104,7 +113,8 @@ def test_schema_excludes_personal_fields():
             for names in schema[ds]["records"].values():
                 assert f not in names
     rec = InspectionRecord(inspection_id=1, lot="L", work_order=None, item_code="HP12", cam_id="c",
-                           inspected_at="2026-09-02T10:00:00+00:00", tube_index=0, shift=None,
+                           inspection_stage="CUT_LENGTH",
+                           inspected_at="2026-09-02T19:00:00+09:00", tube_index=0, shift=None,
                            ref_length_mm=None, meas_length_mm=None, deviation_mm=None, length_verdict=None,
                            oil_score=None, discolor_score=None, scratch_score=None, final_verdict="OK")
     assert "operator" not in rec.as_dict()
@@ -120,20 +130,25 @@ def test_export_raw_layout_index_and_multitube(db, tmp_path):
     out = tmp_path / "out" / "raw"
     s = export_raw(db, out, ExportOptions(images_dir=str(images), until=UNTIL, run_id="r1"))
 
-    assert (out / "inspection/2026/09/02/L1_HP12_20260902100000000_OK.jpg").is_file()
-    assert (out / "inspection/2026/09/02/L1_HP12_20260902100500000_NG.jpg").is_file()
+    # 정의서 3-2 규격명: {LOT}_{품목}_{STAGE}_{stamp(KST)}_{inspection_id}.jpg
+    # 원본에는 판정(OK/NG)이 들어가지 않는다 — 학습 입력에 정답이 새면 안 된다.
+    assert (out / "inspection/2026/09/02/L1_HP12_CUT_20260902190000000_1.jpg").is_file()
+    assert (out / "inspection/2026/09/02/L1_HP12_CUT_20260902190500000_2.jpg").is_file()
+    assert not list((out / "inspection").rglob("*_OK.jpg"))
+    assert not list((out / "inspection").rglob("*_NG.jpg"))
     idx = out / "index/raw_images_r1.jsonl"
     recs = [json.loads(line) for line in idx.read_text(encoding="utf-8").splitlines()]
     assert s.records == 2 and len(recs) == 2
     by_name = {r["file_name"]: r for r in recs}
-    ng = by_name["L1_HP12_20260902100500000_NG.jpg"]
+    ng = by_name["L1_HP12_CUT_20260902190500000_2.jpg"]
     assert ng["tube_count"] == 2                      # 프레임 1장 = 튜브 2행
     assert ng["width"] == 640 and ng["height"] == 480
     assert ng["file_path"].startswith("inspection/2026/09/02/")
     assert ng["source"] == "inspection" and ng["view"] == "SIDE" and ng["cam_id"] == "cam-01"
     assert "operator" not in ng
     assert any(k["reason"] == "원본 파일 없음" for k in s.skipped)   # missing.jpg
-    assert s.since is None and s.until == UNTIL.isoformat()
+    assert s.since is None
+    assert datetime.fromisoformat(s.until) == UNTIL   # 표기는 KST, 시점은 동일
 
 
 def test_export_raw_incremental_window(db, tmp_path):
@@ -167,10 +182,11 @@ def test_export_ai_analysis_records_images_kpi(db, tmp_path):
         assert r["analysis_purpose"] == "header_pipe_quality_inspection"
     ng = next(r for r in recs if r["final_verdict"] == "NG")
     assert ng["defect_codes"] == ["SCR"] and ng["scratch_score"] == pytest.approx(0.91)
-    assert ng["result_image_path"] == "result/2026/09/02/L1_HP12_20260902100500000_NG.jpg"
-    assert ng["raw_image_path"] == "inspection/2026/09/02/L1_HP12_20260902100500000_NG.jpg"
+    # 정의서 5-2 규격명: 판정 결과물이므로 OK/NG 를 붙인다.
+    assert ng["result_image_path"] == "result/2026/09/02/L1_HP12_20260902190500000_2_NG.jpg"
+    assert ng["raw_image_path"] == "inspection/2026/09/02/L1_HP12_CUT_20260902190500000_2.jpg"
     assert (out / ng["result_image_path"]).is_file()
-    assert (out / "result/2026/09/02/L1_HP12_20260902100000000_OK.jpg").is_file()
+    assert (out / "result/2026/09/02/L1_HP12_20260902190000000_1_OK.jpg").is_file()
     assert any(k["reason"] == "결과 파일 없음" for k in s.skipped)
 
     kpi = json.loads((out / "kpi/kpi_2026-09.json").read_text(encoding="utf-8"))
@@ -261,7 +277,7 @@ def test_export_raw_include_capture_and_calib(db, tmp_dataset, tmp_path):
     assert {r["source"] for r in recs} == {"capture", "calib"}
     cap = next(r for r in recs if r["file_name"] == "HP12_SIDE_OK_20260610-141000_001.jpg")
     assert cap["file_path"] == "capture/OK/HP12_SIDE_OK_20260610-141000_001.jpg"
-    assert cap["capture_class"] == "OK" and cap["item_code"] == "HP12" and cap["captured_at"] == "2026-06-10T14:10:00"
+    assert cap["capture_class"] == "OK" and cap["item_code"] == "HP12" and cap["captured_at"] == "2026-06-10T14:10:00+09:00"
     assert (out / "calib/gauge_100mm.jpg").is_file()
     assert any("파일명 규칙 불일치" in k["reason"] for k in s.skipped)
 
@@ -376,7 +392,7 @@ def test_cli_run_no_upload_advances_watermark(db, tmp_path, capsys):
     capsys.readouterr()
     idx2 = out / "runs/run2/raw/index/raw_images_run2.jsonl"
     recs = [json.loads(line) for line in idx2.read_text(encoding="utf-8").splitlines()]
-    assert len(recs) == 1 and recs[0]["captured_at"].startswith("2026-09-03T05:00")
+    assert len(recs) == 1 and recs[0]["captured_at"].startswith("2026-09-03T14:00")
     ai2 = list((out / "runs/run2/ai-analysis/inspections/2026/09").glob("*.jsonl"))
     assert len(ai2) == 1 and ai2[0].name == "inspections_20260903_run2.jsonl"
 
@@ -455,3 +471,87 @@ def test_cli_export_and_upload_commands(db, tmp_path, monkeypatch, capsys):
 
     rc = _run(["schema"])
     assert rc == 0 and "ai-analysis" in json.loads(capsys.readouterr().out)
+
+
+# ---------------------------------------------------------------------------
+# 데이터 정의서 규격 고정 (3-2 / 5-2 파일명, KST 표기)
+#
+# 아래 값들은 전남TP 에 제출한 정의서에 박혀 있는 규격이다. 코드가 바뀌어
+# 제출본과 어긋나면 데이터셋 전체를 다시 만들어야 하므로 여기서 고정한다.
+# ---------------------------------------------------------------------------
+
+def test_dataset_raw_name_has_no_verdict():
+    """원본 파일명에 판정을 넣지 않는다 (정의서 3-2).
+
+    학습 입력이 될 원본 이름에 정답이 박혀 있으면, 파일명으로 정렬하거나 분할하는
+    순간 라벨이 새어 들어가 정확도가 부풀려진다.
+    """
+    ts = datetime(2026, 9, 2, 1, 5, 0, 123000, tzinfo=timezone.utc)  # KST 10:05:00.123
+    name = dataset_raw_name("LOT20260902", "HP12", "CUT_LENGTH", ts, 12345)
+
+    assert name == "LOT20260902_HP12_CUT_20260902100500123_12345.jpg"
+    assert "_OK" not in name and "_NG" not in name
+
+
+def test_dataset_result_name_keeps_verdict():
+    """판정 오버레이에는 OK/NG 를 붙인다 (정의서 5-2)."""
+    ts = datetime(2026, 9, 2, 1, 5, 0, 123000, tzinfo=timezone.utc)
+    assert (
+        dataset_result_name("LOT20260902", "HP12", ts, 12345, "NG")
+        == "LOT20260902_HP12_20260902100500123_12345_NG.jpg"
+    )
+    # 알 수 없는 판정은 NG 로 안전화(애매 = 불량).
+    assert dataset_result_name("L", "I", ts, 1, None).endswith("_NG.jpg")
+
+
+def test_dataset_names_use_kst_not_utc():
+    """파일명 시각은 현장 기준시(KST). UTC 로 찍으면 9시간 어긋난다."""
+    ts = datetime(2026, 9, 2, 15, 30, 0, tzinfo=timezone.utc)   # KST 익일 00:30
+    name = dataset_raw_name("L1", "HP12", "CUT_LENGTH", ts, 7)
+    assert name.startswith("L1_HP12_CUT_20260903003000")
+
+
+def test_stage_token_mapping():
+    """운영 파일명은 축약 토큰을 쓴다 — 전체 이름의 밑줄이 필드 경계를 무너뜨린다."""
+    assert stage_token("CUT_LENGTH") == "CUT"
+    assert stage_token("POST_WASH_SURFACE") == "WASH"
+    assert stage_token(None) == "NA"       # 단계 구분이 없던 시절 수집분
+
+
+def test_partition_uses_kst_date(db, tmp_path):
+    """KST 자정 직후 검사분이 UTC 기준 전날 폴더로 새지 않는다."""
+    images = _images_dir(tmp_path)
+    # 2026-09-02 16:00 UTC = 2026-09-03 01:00 KST → 9/3 폴더여야 한다.
+    _add(db, datetime(2026, 9, 2, 16, 0),
+         raw_image_path="raw/L1_HP12_20260902100000000_OK.jpg",
+         inspection_stage="POST_WASH_SURFACE")
+    out = tmp_path / "out" / "raw"
+    export_raw(db, out, ExportOptions(images_dir=str(images), run_id="r9"))
+
+    assert list((out / "inspection/2026/09/03").glob("*.jpg"))
+    assert not (out / "inspection/2026/09/02").exists()
+
+
+def test_inspection_stage_flows_into_every_record(db, tmp_path):
+    """검사 단계가 원시 인덱스와 AI분석 레코드 양쪽에 실린다 (정의서 3-3 / 5-3)."""
+    images = _images_dir(tmp_path)
+    _seed(db)
+    raw_out = tmp_path / "out" / "raw"
+    ai_out = tmp_path / "out" / "ai"
+    export_raw(db, raw_out, ExportOptions(images_dir=str(images), until=UNTIL, run_id="r1"))
+    export_ai_analysis(db, ai_out, ExportOptions(images_dir=str(images), until=UNTIL, run_id="r1"))
+
+    idx = [
+        json.loads(x)
+        for x in (raw_out / "index/raw_images_r1.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert {r["inspection_stage"] for r in idx} == {"CUT_LENGTH"}
+
+    ai_files = list((ai_out / "inspections").rglob("*.jsonl"))
+    recs = [json.loads(x) for f in ai_files for x in f.read_text(encoding="utf-8").splitlines()]
+    assert recs
+    staged = {r["inspection_id"]: r.get("inspection_stage") for r in recs}
+    assert staged[1] == staged[2] == staged[3] == "CUT_LENGTH"
+    # 단계 구분이 없던 시절의 행(r4)은 비워 둔다. 어느 한쪽으로 단정하면
+    # 단계별 정확도·분포가 조용히 오염된다.
+    assert staged.get(4) is None

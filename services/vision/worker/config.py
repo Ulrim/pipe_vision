@@ -5,9 +5,32 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date
+
+from aivis_types import InspectionStage
+
+
+def _inspection_stage() -> str:
+    """검사 단계 설정값 검증(AIVIS_INSPECTION_STAGE).
+
+    오타를 조용히 통과시키면 그 스테이션의 데이터 전체가 잘못된 단계로 적재되고,
+    나중에 단계별 정확도를 집계할 때야 드러난다. 그때는 이미 되돌릴 수 없으므로
+    알 수 없는 값이면 경고하고 기본값으로 떨어뜨린다.
+    """
+    raw = (_env("AIVIS_INSPECTION_STAGE", "CUT_LENGTH") or "CUT_LENGTH").upper()
+    valid = {s.value for s in InspectionStage}
+    if raw not in valid:
+        logging.getLogger("aivis.vision.worker").warning(
+            "AIVIS_INSPECTION_STAGE 값이 올바르지 않습니다(%s). %s 중 하나여야 하며 "
+            "CUT_LENGTH 로 진행합니다.",
+            raw,
+            "|".join(sorted(valid)),
+        )
+        return InspectionStage.CUT_LENGTH.value
+    return raw
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -48,6 +71,9 @@ class WorkerConfig:
     service_token: str | None = None
     item_code: str = "HP12"
     cam_id: str = "CAM1"
+    #: 검사 단계(CUT_LENGTH|POST_WASH_SURFACE). 스테이션마다 고정한다.
+    #: 데이터 정의서가 이미지·라벨·판정 레코드 전부에 필수로 요구하는 값이다.
+    inspection_stage: str = "CUT_LENGTH"
     lot: str = ""
     shift: str | None = None
     operator: str | None = None
@@ -117,6 +143,7 @@ class WorkerConfig:
             service_token=_env("AIVIS_SERVICE_TOKEN"),
             item_code=_env("AIVIS_ITEM_CODE", "HP12") or "HP12",
             cam_id=_env("AIVIS_CAM_ID", "CAM1") or "CAM1",
+            inspection_stage=_inspection_stage(),
             lot=lot,
             shift=_env("AIVIS_SHIFT"),
             operator=_env("AIVIS_OPERATOR"),

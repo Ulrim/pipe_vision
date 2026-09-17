@@ -11,10 +11,102 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, fields
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
+
+# 정의서는 시각·날짜 파티션을 **현장 기준시(KST)** 로 쓴다(captured_at 예시가
+# +09:00, 원본 폴더 설명이 "검사일자(KST) 파티션"). DB 는 UTC 로 저장하므로
+# 제출본을 만들 때 변환한다. 이걸 UTC 로 내면 자정 근처 검사분이 하루 어긋난
+# 폴더에 들어가 수집기간 대조가 맞지 않는다.
+KST = timezone(timedelta(hours=9))
+
+
+def to_kst(dt: datetime) -> datetime:
+    """tz 없는 값은 UTC 로 간주하고 KST 로 변환."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(KST)
+
+
+def iso_kst(dt: datetime | None) -> str | None:
+    return None if dt is None else to_kst(dt).isoformat()
+
+
+# 파일명 토큰 안전화(경로 문자/공백 제거). vision/imaging/save.py 와 같은 규칙.
+_UNSAFE = re.compile(r"[^A-Za-z0-9.-]+")
+
+
+def _token(value: Any, fallback: str = "NA") -> str:
+    token = _UNSAFE.sub("-", str(value if value is not None else "").strip())
+    token = token.strip("._-")
+    return token or fallback
+
+
+def _stamp(dt: datetime) -> str:
+    """{YYYYMMDDHHmmssSSS} (KST, ms 3자리)."""
+    k = to_kst(dt)
+    return f"{k:%Y%m%d%H%M%S}{k.microsecond // 1000:03d}"
+
+
+# 운영 파일명의 검사단계 토큰. 정의서 예시가 운영 원본에서는 축약형을 쓴다
+# (`..._HP12_CUT_2026...`). 전체 이름(CUT_LENGTH / POST_WASH_SURFACE)에는 밑줄이
+# 들어가는데 운영 파일명은 밑줄로 필드를 나누므로, 전체 이름을 그대로 넣으면
+# 필드 경계가 무너진다. 학습 촬영본 파일명은 구도 토큰(END|SIDE)이 앵커 역할을
+# 해서 전체 이름을 쓸 수 있고, 정의서 예시도 그렇게 돼 있다.
+STAGE_TOKEN = {
+    "CUT_LENGTH": "CUT",
+    "POST_WASH_SURFACE": "WASH",
+}
+
+
+def stage_token(stage: Any) -> str:
+    """검사단계 → 운영 파일명 토큰. 미지정/미상은 NA."""
+    if not stage:
+        return "NA"
+    key = str(getattr(stage, "value", stage)).strip().upper()
+    return STAGE_TOKEN.get(key, _token(key, "NA"))
+
+
+def dataset_raw_name(
+    lot: Any, item_code: Any, stage: Any, ts: datetime, inspection_id: int
+) -> str:
+    """원시 데이터셋 내 운영 원본 파일명 (정의서 3-2).
+
+        {LOT}_{품목}_{STAGE}_{YYYYMMDDHHmmssSSS}_{inspection_id}.jpg
+
+    **판정(OK/NG)을 넣지 않는다.** 정의서가 명시한 규칙이고 이유도 분명하다 —
+    학습 입력이 될 원본의 이름에 정답이 박혀 있으면, 파일명으로 정렬하거나
+    분할하는 순간 라벨이 새어 들어간다. 연계는 끝의 inspection_id 로 한다.
+
+    운영 디스크의 파일명은 이것과 다르다(저장 시점엔 inspection_id 가 아직
+    없다 — DB 가 채번하기 전이다). 그래서 제출본을 만들 때 이름을 붙인다.
+    """
+    return (
+        f"{_token(lot)}_{_token(item_code)}_{stage_token(stage)}"
+        f"_{_stamp(ts)}_{int(inspection_id)}.jpg"
+    )
+
+
+def dataset_result_name(
+    lot: Any, item_code: Any, ts: datetime, inspection_id: int, verdict: Any
+) -> str:
+    """AI분석 데이터셋 내 판정 오버레이 파일명 (정의서 5-2).
+
+        {LOT}_{품목}_{YYYYMMDDHHmmssSSS}_{inspection_id}_{OK|NG}.jpg
+
+    여기엔 판정이 들어간다. 판정 결과물이라 정답 누설 문제가 없고, 사람이
+    폴더를 열었을 때 불량만 골라 보는 일이 잦기 때문이다.
+    """
+    v = str(getattr(verdict, "value", verdict) or "").strip().upper()
+    v = "OK" if v == "OK" else "NG"
+    return (
+        f"{_token(lot)}_{_token(item_code)}_{_stamp(ts)}"
+        f"_{int(inspection_id)}_{v}.jpg"
+    )
 
 # ----- 데이터셋 식별자 (포털 업로드 코드 3종과 1:1) -----
 DATASET_RAW = "raw"                 # 원시: 검사 원본 이미지 + 촬영 메타 인덱스
@@ -80,6 +172,9 @@ class RawImageRecord:
     cam_id: str | None                   # 카메라 ID
     item_code: str | None                # 품목 코드
     view: str | None                     # 촬영 구도 END | SIDE
+    #: CUT_LENGTH | POST_WASH_SURFACE (정의서 3-3 필수). 단계 구분이 없던 시절의
+    #: 수집분은 None — 사후 추정하면 단계별 분포가 조용히 오염된다.
+    inspection_stage: str | None = None
     width: int | None = None             # 이미지 가로(px)
     height: int | None = None            # 이미지 세로(px)
     lot: str | None = None               # LOT 번호(운영 검사)
@@ -99,7 +194,8 @@ class LabelRecord:
 
     image_path: str                      # 원시 데이터셋 내 이미지 경로(capture/{CLASS}/{file})
     item_code: str | None
-    view: str | None                     # END | SIDE
+    inspection_stage: str | None = None  # CUT_LENGTH | POST_WASH_SURFACE (정의서 4-3 필수)
+    view: str | None = None              # END | SIDE
     labels: list[str] = field(default_factory=list)   # 불량 코드 배열 {LEN,OIL,DIS,SCR,MULTI}, 정상=[]
     border: bool = False                 # 경계 샘플 여부(부록 A.2)
     length_mm_gt: float | None = None    # 길이 정답값(mm, 측면 구도)
@@ -148,6 +244,7 @@ class InspectionRecord:
     work_order: str | None
     item_code: str | None
     cam_id: str
+    inspection_stage: str | None         # CUT_LENGTH | POST_WASH_SURFACE (정의서 5-3 필수)
     inspected_at: str                    # 판정 처리 시각 ISO-8601 (= predicted_at)
     tube_index: int                      # 배치 내 튜브 순번(0=단일)
     shift: str | None
