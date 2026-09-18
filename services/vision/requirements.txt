@@ -10,3 +10,4 @@ httpx>=0.27,<1               # 검사 워커(worker)가 backend(POST /inspection
 
 # 개발/테스트
 pytest>=8.0
+onnx>=1.15                    # 테스트/모델검증용(미니 ONNX 생성). 런타임 불필요.

@@ -16,6 +16,8 @@ function reset() {
     lastAlarm: null,
     consecutiveAlarmActive: false,
     soundEnabled: true,
+    status: null,
+    statusAt: null,
   });
 }
 
@@ -75,6 +77,29 @@ describe("liveStore", () => {
     useLiveStore.getState().applyReview(updated);
     expect(useLiveStore.getState().feed[0].review_flag).toBe(false);
     expect(useLiveStore.getState().latest?.manual_verdict).toBe("NG");
+  });
+
+  it("pushStatus 가 워커 하트비트(status)와 수신시각(statusAt)을 갱신한다", () => {
+    expect(useLiveStore.getState().status).toBeNull();
+    expect(useLiveStore.getState().statusAt).toBeNull();
+    const before = Date.now();
+    useLiveStore.getState().pushStatus({
+      cam_id: "CAM-1",
+      item_code: "HP12",
+      expected: 4,
+      detected: 0,
+      ng: 0,
+      mismatch: true,
+      proc_time_ms: 120,
+      ts: "2026-07-20T10:00:00+09:00",
+      error: null,
+    });
+    const st = useLiveStore.getState();
+    expect(st.status?.cam_id).toBe("CAM-1");
+    expect(st.status?.detected).toBe(0);
+    expect(st.status?.expected).toBe(4);
+    expect(st.statusAt).not.toBeNull();
+    expect(st.statusAt!).toBeGreaterThanOrEqual(before);
   });
 
   it("setConn open 시 재연결 시도 횟수가 0으로 리셋된다", () => {

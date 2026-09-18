@@ -15,7 +15,8 @@ describe("InspectionCard (M10 색+아이콘 이중표기)", () => {
     expect(card).toHaveAttribute("data-verdict", "OK");
     // 색약 고려: 체크 아이콘 + OK 텍스트.
     expect(screen.getByText("✓")).toBeInTheDocument();
-    expect(screen.getByText(/250.10 mm/)).toBeInTheDocument();
+    // 재설계: 값과 단위를 별도 span 으로 나눴다(좁은 화면에서 "mm" 잘림 방지).
+    expect(screen.getByText("250.10")).toBeInTheDocument();
   });
 
   it("NG 결과에 X 아이콘 + 불량유형 뱃지 + 재확인 버튼을 보여준다", () => {

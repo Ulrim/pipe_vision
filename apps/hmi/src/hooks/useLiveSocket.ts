@@ -10,7 +10,12 @@
  */
 import { useEffect, useRef } from "react";
 import { WS_URL, withWsToken } from "@/lib/config";
-import { parseLiveEvent, isInspectionEvent, isAlarmEvent } from "@/types/ws";
+import {
+  parseLiveEvent,
+  isInspectionEvent,
+  isAlarmEvent,
+  isStatusEvent,
+} from "@/types/ws";
 import { useLiveStore } from "@/store/liveStore";
 import { useAuthStore } from "@/store/authStore";
 
@@ -126,6 +131,7 @@ export function useLiveSocket(opts: UseLiveSocketOptions = {}): void {
         const s = useLiveStore.getState();
         if (isInspectionEvent(evt)) s.pushInspection(evt.data);
         else if (isAlarmEvent(evt)) s.pushAlarm(evt.data);
+        else if (isStatusEvent(evt)) s.pushStatus(evt.data);
       };
 
       ws.onerror = () => {

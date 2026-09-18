@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { NavMenu } from "./NavMenu";
+import { NAV, NavMenu } from "./NavMenu";
 
 /** NavMenu 는 라우팅 컨텍스트만 필요 — App 전체보다 가벼운 단독 렌더로 검증. */
 function renderNavMenu(route = "/kpi") {
@@ -13,6 +13,8 @@ function renderNavMenu(route = "/kpi") {
       <Routes>
         <Route path="/kpi" element={<div>KPI 화면</div>} />
         <Route path="/inspections" element={<div>검사이력 화면</div>} />
+        <Route path="/monitor" element={<div>모니터링 화면</div>} />
+        <Route path="/update" element={<div>업데이트 화면</div>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -26,18 +28,36 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("메뉴 버튼 클릭 시 5개 항목이 나타난다", async () => {
+  it("메뉴 버튼 클릭 시 7개 항목이 나타난다", async () => {
     const user = userEvent.setup();
     renderNavMenu();
     await user.click(screen.getByTestId("nav-menu-button"));
     expect(screen.getByTestId("nav-menu")).toBeInTheDocument();
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getAllByRole("menuitem")).toHaveLength(5);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(NAV.length);
     expect(screen.getByRole("menuitem", { name: "KPI" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "검사이력" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "불량통계" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "월간리포트" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "기준정보" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "시스템 모니터링" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "프로그램 업데이트" })).toBeInTheDocument();
+  });
+
+  it("시스템 모니터링 항목 클릭 시 /monitor 로 이동한다", async () => {
+    const user = userEvent.setup();
+    renderNavMenu("/kpi");
+    await user.click(screen.getByTestId("nav-menu-button"));
+    await user.click(screen.getByRole("menuitem", { name: "시스템 모니터링" }));
+    expect(await screen.findByText("모니터링 화면")).toBeInTheDocument();
+  });
+
+  it("프로그램 업데이트 항목 클릭 시 /update 로 이동한다", async () => {
+    const user = userEvent.setup();
+    renderNavMenu("/kpi");
+    await user.click(screen.getByTestId("nav-menu-button"));
+    await user.click(screen.getByRole("menuitem", { name: "프로그램 업데이트" }));
+    expect(await screen.findByText("업데이트 화면")).toBeInTheDocument();
   });
 
   it("현재 활성 페이지 항목은 강조 스타일(bg-brand)이 적용된다", async () => {

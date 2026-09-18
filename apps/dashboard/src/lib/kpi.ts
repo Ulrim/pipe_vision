@@ -1,9 +1,14 @@
 /**
  * KPI 게이지 계산 로직 (CLAUDE.md §1.1 목표 대비 현재값).
  * 산출식 자체는 백엔드(GET /kpi/summary)가 수행하며, 여기서는 목표 대비
- * 달성도(게이지 0~1)와 통과 여부를 계산한다. 임의 변형 금지 — §1.1 목표값 그대로.
+ * 달성도(게이지 0~1)와 통과 여부를 계산한다.
+ *
+ * **목표값은 여기서 정하지 않는다.** 예전에는 이 파일이 600ppm/30% 를 상수로
+ * 들고 있어서, 리포트(PDF)와 화면이 서로 다른 목표로 합격을 찍을 수 있었다.
+ * 이제 GET /kpi/targets 가 단일 출처이고 이 모듈은 그것을 받아 쓴다.
  */
 import type { KpiSummary } from "@aivis/shared-types";
+import type { KpiTarget } from "@/api/endpoints";
 
 export type KpiStatus = "pass" | "warn" | "fail";
 
@@ -83,24 +88,57 @@ function spec(
 }
 
 /**
- * KpiSummary -> 게이지 4종 (§1.1/§1.2 인수 합격 핵심).
- * 목표값:
- * - 공정불량률 ≤ 600 ppm (lower)
- * - 검사불량률 ≤ 30 % (lower)
- * - 자동검사율 = 100 % (higher)
- * - 저장&MES 연계율 = 100 % (higher)
+ * KpiSummary + 서버 목표치 -> 게이지 목록 (§1.1/§1.2 인수 합격 핵심).
+ *
+ * 실적을 산출할 수 없는 지표(출하유출불량률: 출하수량 수기 입력이 없을 때)는
+ * 게이지를 만들지 않는다. 값 없음을 0 으로 그리면 "불량 0 = 합격"으로 읽힌다.
  */
-export function buildKpiGauges(s: KpiSummary): KpiGaugeSpec[] {
-  return [
-    spec("process_defect_ppm", "공정불량률", "ppm", s.process_defect_ppm, 600, "lower"),
-    spec("inspection_defect_rate_pct", "검사불량률", "%", s.inspection_defect_rate_pct, 30, "lower"),
-    spec("auto_inspection_rate_pct", "자동검사율", "%", s.auto_inspection_rate_pct, 100, "higher"),
-    spec("storage_mes_rate_pct", "저장·MES 연계율", "%", s.storage_mes_rate_pct, 100, "higher"),
-  ];
+export function buildKpiGauges(
+  s: KpiSummary | undefined,
+  targets: KpiTarget[] | undefined,
+): KpiGaugeSpec[] {
+  // 둘 중 하나라도 아직 안 왔으면 게이지를 그리지 않는다(로딩 중).
+  if (!s || !targets) return [];
+  const actual: Record<string, number | null | undefined> = {
+    process_defect_ppm: s.process_defect_ppm,
+    shipment_leak_ppm: s.shipment_leak_ppm,
+    inspection_defect_rate_pct: s.inspection_defect_rate_pct,
+    auto_inspection_rate_pct: s.auto_inspection_rate_pct,
+    storage_mes_rate_pct: s.storage_mes_rate_pct,
+  };
+  const unit: Record<string, string> = {
+    process_defect_ppm: "ppm",
+    shipment_leak_ppm: "ppm",
+    inspection_defect_rate_pct: "%",
+    auto_inspection_rate_pct: "%",
+    storage_mes_rate_pct: "%",
+  };
+  const out: KpiGaugeSpec[] = [];
+  for (const t of targets) {
+    const v = actual[t.key];
+    if (v === null || v === undefined) continue; // 처리속도 p95 등은 별도 게이지
+    out.push(
+      spec(t.key, t.label.replace(/\s*\(.*\)$/, ""), unit[t.key] ?? "", v, t.target_value, t.direction),
+    );
+  }
+  return out;
 }
 
-/** 처리속도 보조 KPI (목표 ≤ 300ms/ea, §1.2). null 안전. */
-export function procTimeSpec(s: KpiSummary): KpiGaugeSpec | null {
-  if (s.avg_proc_time_ms === null || s.avg_proc_time_ms === undefined) return null;
-  return spec("avg_proc_time_ms", "평균 처리속도", "ms", s.avg_proc_time_ms, 300, "lower");
+/** 처리속도 보조 KPI (목표는 서버 targets 의 p95_proc_time_ms). null 안전. */
+export function procTimeSpec(
+  s: KpiSummary | undefined,
+  targets: KpiTarget[] | undefined,
+): KpiGaugeSpec | null {
+  if (!s || s.avg_proc_time_ms === null || s.avg_proc_time_ms === undefined) {
+    return null;
+  }
+  const t = targets?.find((x) => x.key === "p95_proc_time_ms");
+  return spec(
+    "avg_proc_time_ms",
+    "평균 처리속도",
+    "ms",
+    s.avg_proc_time_ms,
+    t?.target_value ?? 300,
+    "lower",
+  );
 }

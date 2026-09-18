@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "9.000ms",
+      "measured": "6.000ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -139,11 +139,11 @@
   },
   "metric3_latency": {
     "count": 1000,
-    "p50_ms": 8.0,
-    "p95_ms": 9.0,
-    "p99_ms": 10.0,
-    "max_ms": 13.0,
-    "mean_ms": 8.326,
+    "p50_ms": 5.0,
+    "p95_ms": 6.0,
+    "p99_ms": 7.0,
+    "max_ms": 8.0,
+    "mean_ms": 5.472,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -163,21 +163,24 @@
     "kpi_status": 200,
     "kpi": {
       "period": "2026-06",
-      "total_inspected": 721,
-      "defect_count": 601,
-      "process_defect_ppm": 833564.494,
-      "auto_inspected": 721,
-      "auto_inspection_rate_pct": 100.0,
+      "total_inspected": 0,
+      "defect_count": 0,
+      "process_defect_ppm": 0.0,
+      "auto_inspected": 0,
+      "auto_inspection_rate_pct": 0.0,
       "misjudge_count": 0,
       "miss_count": 0,
       "inspection_defect_rate_pct": 0.0,
-      "stored_count": 721,
-      "mes_synced_count": 721,
-      "storage_mes_rate_pct": 100.0,
-      "avg_proc_time_ms": 8.84,
+      "stored_count": 0,
+      "mes_synced_count": 0,
+      "storage_mes_rate_pct": 0.0,
+      "avg_proc_time_ms": null,
       "claim_count": null,
       "workload_index": null,
-      "lead_time_days": null
+      "lead_time_days": null,
+      "shipped_qty": null,
+      "leak_defect_qty": null,
+      "shipment_leak_ppm": null
     }
   },
   "lot_mix": [
@@ -195,5 +198,5 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-06-05T15:29:48.816985+00:00"
+  "generated_at": "2026-09-17T08:24:58.157753+00:00"
 }

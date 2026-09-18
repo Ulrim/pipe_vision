@@ -21,11 +21,27 @@ from .classical import (
     score_oil,
     score_scratch,
 )
+from .anomaly import (
+    FEATURE_DIM,
+    FEATURE_NAMES,
+    AnomalyReport,
+    AnomalySurfaceModel,
+    extract_descriptor,
+    mahalanobis_distance,
+    resolve_anomaly_model_path,
+    resolve_surface_model,
+)
 from .model import (
     ClassicalSurfaceModel,
     OnnxSurfaceModel,
     SurfaceModel,
     resolve_model_path,
+)
+from .onnx_meta import (
+    OnnxMeta,
+    OnnxMetaError,
+    load_onnx_meta,
+    sidecar_path,
 )
 
 __all__ = [
@@ -39,4 +55,18 @@ __all__ = [
     "ClassicalSurfaceModel",
     "OnnxSurfaceModel",
     "resolve_model_path",
+    # ONNX 사이드카 계약(GitHub 공개 모델 적용 경로)
+    "OnnxMeta",
+    "OnnxMetaError",
+    "load_onnx_meta",
+    "sidecar_path",
+    # 이상탐지(비지도, §6.3)
+    "AnomalySurfaceModel",
+    "AnomalyReport",
+    "extract_descriptor",
+    "mahalanobis_distance",
+    "resolve_anomaly_model_path",
+    "resolve_surface_model",
+    "FEATURE_DIM",
+    "FEATURE_NAMES",
 ]

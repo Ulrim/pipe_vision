@@ -51,6 +51,40 @@ from .spool import SpoolQueue
 log = logging.getLogger("aivis.vision.worker")
 
 
+# 핫리로드 변경 감지 키(하나라도 바뀌면 self.item 을 교체). capture_recipe 는
+# dict 비교, 나머지는 스칼라 비교. version 은 백엔드가 변경 시 자동 증가하므로
+# 값 자체가 동일해도 version 만 오르면 갱신으로 본다(감사/추적 일관).
+_RELOAD_KEYS = (
+    "version",
+    "px_to_mm_scale",
+    "tol_plus_mm",
+    "tol_minus_mm",
+    "oil_threshold",
+    "discolor_threshold",
+    "scratch_threshold",
+    "expected_count",
+    "capture_recipe",
+)
+
+
+def _item_changed(old: ItemMaster, new: ItemMaster) -> bool:
+    """기준정보 변경 여부(리로드 키 중 하나라도 다르면 True)."""
+    for key in _RELOAD_KEYS:
+        if getattr(old, key, None) != getattr(new, key, None):
+            return True
+    return False
+
+
+def _ng_flag(final_verdict) -> int:
+    """final_verdict → 하트비트 ng(0/1). Verdict enum/문자열 양쪽 안전.
+
+    final_verdict 는 Verdict enum 이라 str(Verdict.NG)=="Verdict.NG" 이다.
+    반드시 .value("NG")로 비교해야 한다(하트비트 ng 카운트 누락 방지).
+    """
+    val = getattr(final_verdict, "value", final_verdict)
+    return 1 if val == "NG" else 0
+
+
 class Worker:
     """검사 워커. 의존성(client/pipeline/camera)을 주입 가능 → 테스트 용이."""
 
@@ -84,6 +118,14 @@ class Worker:
         self._image_uploader = image_uploader
         self._uploader_built = image_uploader is not None
         self.item: Optional[ItemMaster] = None
+        # 마지막 기준정보 리로드 시각(UTC). startup 성공 시 now 로 세팅되어 이후
+        # item_reload_s 주기로 재조회한다(핫리로드 — 재시작 없이 캘리브레이션 반영).
+        self._last_item_reload: Optional[datetime] = None
+        # 발주 기반 현재 오더(웹 PUT /master/active). None 이면 env 기본값 사용.
+        # 오더 해제(null) 시에도 마지막 값을 유지한다 — 일시 장애의 null 과
+        # 구분할 수 없으므로 전환은 항상 "새 오더 설정"으로만 일어난다(안전).
+        self._active_lot: Optional[str] = None
+        self._active_work_order: Optional[str] = None
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -156,9 +198,163 @@ class Worker:
         if self.item is None:
             log.error("ItemMaster 미확보(%s) — 워커 기동 중단", self.cfg.item_code)
             return False
+        # 기동 fetch 를 '마지막 리로드'로 기록 → 이후 item_reload_s 경과 시 재조회.
+        self._last_item_reload = datetime.now(timezone.utc)
         if not self._setup_camera():
             return False
         return True
+
+    # --- 기준정보 핫리로드 ---
+    def _maybe_reload_item(self, now: datetime) -> None:
+        """주기적으로 item_master 를 재조회해 캘리브레이션/공차/임계값/expected_count/
+        촬영 레시피 변경을 **워커 재시작 없이** 반영한다(사용자 피드백①).
+
+        정책:
+          - item_reload_s <= 0 이면 비활성(기동 시 1회 fetch 후 고정).
+          - 마지막 리로드 이후 item_reload_s 미경과면 아무 것도 안 한다.
+          - 재조회는 client.refetch_item(단발, 비블로킹). 실패/None 이면 기존
+            self.item 을 그대로 유지한다(라이브 검사 방해 금지).
+          - 변경 감지(_item_changed) 시에만 self.item 을 교체하고 변경 요약을
+            로깅한다. capture_recipe 가 바뀌면 camera.configure 재적용,
+            expected_count 가 바뀌면 단일↔배치 전환을 로그로 알린다(run_once 가
+            매 호출 self.item.expected_count 를 읽으므로 다음 사이클부터 자동 반영).
+        어떤 예외도 루프로 새어나가지 않게 통째로 감싼다.
+        """
+        try:
+            if self.cfg.item_reload_s <= 0 or self.item is None:
+                return
+            if self._last_item_reload is not None:
+                elapsed = (now - self._last_item_reload).total_seconds()
+                if elapsed < self.cfg.item_reload_s:
+                    return
+            # 재조회 시도 시각을 먼저 기록(성공/실패와 무관하게 주기 유지).
+            self._last_item_reload = now
+            # 1) 발주 기반 오더 확인(베스트에포트) — 품목/LOT/작업지시 전환.
+            self._maybe_switch_order()
+            # 2) 현재 품목의 기준정보 변경 반영(오더 전환 후의 품목 기준).
+            fresh = self.client.refetch_item(self._cur_item_code())
+            if fresh is None:
+                log.debug("기준정보 재조회 실패/무응답 — 기존 기준정보 유지")
+                return
+            if not _item_changed(self.item, fresh):
+                return
+            old = self.item
+            self.item = fresh
+            self._log_item_change(old, fresh)
+            self._reapply_recipe_if_changed(old, fresh)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("기준정보 재조회 예외(무시 — 기존 기준정보 유지): %s", exc)
+
+    def _maybe_switch_order(self) -> None:
+        """현재 검사 오더(GET /master/active)를 확인해 품목/LOT/작업지시 전환.
+
+        발주마다 품목(모양/외경/개수)·절단 길이가 달라진다(사용자 요구).
+        웹에서 오더를 설정하면 여기서 감지해 **재시작 없이** 전환한다:
+          - item_code 가 현재 품목과 다르면 해당 기준정보를 단발 재조회해 교체
+            (+촬영 레시피 적용). 조회 실패 시 전환 보류(다음 주기 재시도).
+          - lot/work_order 는 이후 검사 결과에 즉시 반영.
+          - 미설정(null)/요청 실패는 "정보 없음" — 아무 것도 바꾸지 않는다.
+        """
+        active = self.client.get_active_order()
+        if not active:
+            return
+        target = str(active.get("item_code") or "")
+        if not target:
+            return
+        if self.item is not None and target == self.item.item_code:
+            # 같은 품목의 새 LOT/작업지시(연속 발주) — 라벨만 갱신.
+            self._apply_active_meta(active)
+            return
+        fresh = self.client.refetch_item(target)
+        if fresh is None:
+            # 전환은 원자적(품목+LOT 동시): 품목 조회에 실패하면 LOT 도 바꾸지
+            # 않는다 — 옛 품목에 새 LOT 이 찍히는 라벨 오염 방지. 다음 주기 재시도.
+            log.warning(
+                "오더 전환 보류: 품목 %s 기준정보 조회 실패 — 다음 주기 재시도",
+                target,
+            )
+            return
+        # 호출 경로상 self.item 은 항상 존재(startup 성공 후에만 루프 진입).
+        old = self.item
+        self.item = fresh
+        self._apply_active_meta(active)
+        log.info(
+            "오더 전환: %s→%s (lot=%s, 작업지시=%s)",
+            old.item_code, fresh.item_code,
+            self._active_lot, self._active_work_order,
+        )
+        self._log_item_change(old, fresh)
+        self._reapply_recipe_if_changed(old, fresh)
+
+    def _apply_active_meta(self, active: dict) -> None:
+        """활성 오더의 LOT/작업지시를 결과 라벨에 반영(변경 시에만 로그)."""
+        new_lot = active.get("lot") or None
+        new_wo = active.get("work_order") or None
+        if new_lot != self._active_lot or new_wo != self._active_work_order:
+            log.info(
+                "오더 라벨 갱신: lot %s→%s, 작업지시 %s→%s",
+                self._active_lot, new_lot, self._active_work_order, new_wo,
+            )
+            self._active_lot = new_lot
+            self._active_work_order = new_wo
+
+    # --- 현재 오더 기준 식별자(발주 전환 반영) ---
+    def _cur_item_code(self) -> str:
+        """검사 결과에 쓸 품목코드 — 전환된 self.item 이 항상 우선."""
+        return self.item.item_code if self.item is not None else self.cfg.item_code
+
+    def _cur_lot(self) -> str:
+        """검사 결과에 쓸 LOT — 활성 오더의 lot, 없으면 env/기본값."""
+        return self._active_lot or self.cfg.lot
+
+    def _cur_work_order(self) -> Optional[str]:
+        return self._active_work_order
+
+    def _orientation(self) -> str:
+        """품목별 배치 방향(모양 대응): capture_recipe.orientation.
+
+        "horizontal"(기본, 튜브가 가로로 누움) | "vertical". 그 외 값은 경고 후
+        horizontal. 기준정보에서 관리(하드코딩 금지) — 품목 전환 시 함께 바뀐다.
+        """
+        recipe = getattr(self.item, "capture_recipe", None) or {}
+        val = str(recipe.get("orientation", "horizontal")).lower()
+        if val not in ("horizontal", "vertical"):
+            log.warning("orientation 값 무효(%r) — horizontal 로 대체", val)
+            return "horizontal"
+        return val
+
+    def _log_item_change(self, old: ItemMaster, new: ItemMaster) -> None:
+        """기준정보 갱신 요약 로그(무엇이 어떻게 바뀌었는지 한눈에)."""
+        old_exp = int(getattr(old, "expected_count", 1) or 1)
+        new_exp = int(getattr(new, "expected_count", 1) or 1)
+        log.info(
+            "기준정보 갱신: version %s→%s, scale %s→%s, tol +%s/-%s→+%s/-%s, "
+            "oil %s→%s, dis %s→%s, scr %s→%s, expected %s→%s",
+            getattr(old, "version", None), getattr(new, "version", None),
+            old.px_to_mm_scale, new.px_to_mm_scale,
+            old.tol_plus_mm, old.tol_minus_mm, new.tol_plus_mm, new.tol_minus_mm,
+            old.oil_threshold, new.oil_threshold,
+            old.discolor_threshold, new.discolor_threshold,
+            old.scratch_threshold, new.scratch_threshold,
+            old_exp, new_exp,
+        )
+        if old_exp != new_exp:
+            log.info(
+                "expected_count 변경 %d→%d — 다음 사이클부터 %s 모드로 전환",
+                old_exp, new_exp, "배치(다중 튜브)" if new_exp > 1 else "단일",
+            )
+
+    def _reapply_recipe_if_changed(self, old: ItemMaster, new: ItemMaster) -> None:
+        """capture_recipe 가 바뀌었으면 카메라에 재적용(예외는 로깅 후 계속)."""
+        if getattr(new, "capture_recipe", None) == getattr(old, "capture_recipe", None):
+            return
+        if self.camera is None:
+            return
+        try:
+            self.camera.configure(new.capture_recipe or {})
+            log.info("촬영 레시피 갱신 → 카메라 재설정 적용: %s", new.capture_recipe)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("촬영 레시피 재적용 실패(계속 진행): %s", exc)
 
     # --- 스풀 재전송 지원 ---
     def _spool_uploader(self):
@@ -193,6 +389,42 @@ class Worker:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("스풀 flush 예외(계속): %s", exc)
+
+    # --- 라이브니스 하트비트 ---
+    def _send_status(
+        self,
+        *,
+        expected: int,
+        detected: int,
+        ng: int,
+        mismatch: bool,
+        proc_time_ms: int,
+        ts: str,
+        error: Optional[str],
+    ) -> None:
+        """검사 사이클 상태 하트비트 1건을 API 에 베스트에포트로 보낸다.
+
+        성공/0검출/취득실패 모든 사이클에서 호출되어 HMI 가 워커 생존을 인지하게
+        한다(순수 라이브니스 — 멱등/스풀과 무관). client.post_status 가 이미 예외를
+        삼키지만, payload 구성 중 예외도 라이브 루프에 새지 않도록 이중으로 감싼다.
+        self.success/failure/return 값에는 절대 영향을 주지 않는다.
+        """
+        try:
+            self.client.post_status(
+                {
+                    "cam_id": self.cfg.cam_id,
+                    "item_code": self._cur_item_code(),
+                    "expected": int(expected),
+                    "detected": int(detected),
+                    "ng": int(ng),
+                    "mismatch": bool(mismatch),
+                    "proc_time_ms": int(proc_time_ms),
+                    "ts": ts,
+                    "error": error,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("status 하트비트 구성/전송 예외(무시): %s", exc)
 
     # --- 검사 사이클 디스패치(단일 / 배치) ---
     def run_once(self) -> bool:
@@ -229,34 +461,63 @@ class Worker:
             if not grab.ok:
                 log.warning("프레임 취득 실패: %s", grab.error)
                 self.failure += 1
+                # 취득 실패(카메라 프리즈)도 하트비트로 알린다 — HMI 가 죽은
+                # 듯 보이지 않도록. detected=0, error 로 원인 전달.
+                self._send_status(
+                    expected=1,
+                    detected=0,
+                    ng=0,
+                    mismatch=True,
+                    proc_time_ms=0,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    error=grab.error,
+                )
                 return False
             inspected_at = datetime.now(timezone.utc)
             # proc_time_ms KPI(<300ms) 에 이미지 I/O 가 포함되지 않도록
             # 판정(pipeline.run) 을 먼저 끝낸 뒤 raw/result 를 저장한다.
-            verdict = self.pipeline.run(grab.frame, self.item)
+            # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를
+            # 그린다(계측 이후 데이터라 처리속도 KPI 영향 없음 — 사용자 피드백②).
+            verdict, length_span = self.pipeline.run_with_geometry(
+                grab.frame, self.item
+            )
             saved = save_inspection_images(
                 grab.frame,
                 verdict,
                 images_dir=self.cfg.images_dir,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 item=self.item,
                 pending_sink=self.spool.save_image,
+                length_span=length_span,
             )
             if saved.error:
                 # 디스크 쓰기 실패는 검사결과 적재를 막지 않는다(경로 None 로 진행).
                 log.warning("이미지 저장 실패(계속 진행): %s", saved.error)
             result = to_inspection_result(
                 verdict,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
+                inspection_stage=self.cfg.inspection_stage,
                 inspected_at=inspected_at,
+                work_order=self._cur_work_order(),
                 shift=self.cfg.shift,
                 operator=self.cfg.operator,
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,
+            )
+            # 라이브니스 하트비트: 검출 1건 성공 사이클(적재 성공/실패와 무관).
+            # 판정(NG)은 최종 result.final_verdict 로 판단한다.
+            self._send_status(
+                expected=1,
+                detected=1,
+                ng=_ng_flag(result.final_verdict),
+                mismatch=False,
+                proc_time_ms=int(result.proc_time_ms or 0),
+                ts=inspected_at.isoformat(),
+                error=None,
             )
             pending_images = list(getattr(saved, "pending_images", ()) or ())
             if pending_images:
@@ -344,19 +605,30 @@ class Worker:
             if not grab.ok:
                 log.warning("프레임 취득 실패(배치): %s", grab.error)
                 self.failure += 1
+                # 취득 실패도 하트비트로 알린다(detected=0, error). HMI 라이브니스.
+                self._send_status(
+                    expected=int(getattr(self.item, "expected_count", 1) or 1),
+                    detected=0,
+                    ng=0,
+                    mismatch=True,
+                    proc_time_ms=0,
+                    ts=datetime.now(timezone.utc).isoformat(),
+                    error=grab.error,
+                )
                 return False
             inspected_at = datetime.now(timezone.utc)
             expected = int(getattr(self.item, "expected_count", 1) or 1)
             # 판정(proc_time KPI)을 먼저 끝낸 뒤 이미지 저장(§4).
             batch = inspect_batch(
-                grab.frame, self.item, expected_count=expected
+                grab.frame, self.item, expected_count=expected,
+                axis=self._orientation(),
             )
             saved = save_batch_images(
                 grab.frame,
                 batch,
                 images_dir=self.cfg.images_dir,
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
             )
@@ -364,12 +636,13 @@ class Worker:
                 log.warning("배치 이미지 저장 실패(계속 진행): %s", saved.error)
 
             meta = BatchMeta(
-                lot=self.cfg.lot,
-                item_code=self.cfg.item_code,
+                lot=self._cur_lot(),
+                item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
+                inspection_stage=self.cfg.inspection_stage,
                 inspected_at=inspected_at,
                 ref_length_mm=float(self.item.ref_length_mm),
-                work_order=None,
+                work_order=self._cur_work_order(),
                 shift=self.cfg.shift,
                 operator=self.cfg.operator,
                 raw_image_path=saved.raw_image_path,
@@ -406,6 +679,22 @@ class Worker:
             for result in results:
                 if not self._post_or_classify(result):
                     all_ok = False
+            # 라이브니스 하트비트: 0검출(빈 배치) 사이클에서도 반드시 보낸다 —
+            # detected=0 이면 POST 가 0건이라 HMI 가 죽은 듯 보이는 문제를 막는다.
+            # proc_time 은 튜브들 proc_time_ms 중 최댓값(없으면 0)으로 근사한다.
+            proc = max(
+                (int(getattr(t, "proc_time_ms", 0) or 0) for t in batch.tubes),
+                default=0,
+            )
+            self._send_status(
+                expected=expected,
+                detected=batch.count_detected,
+                ng=batch.ng_count,
+                mismatch=bool(batch.count_mismatch),
+                proc_time_ms=proc,
+                ts=inspected_at.isoformat(),
+                error=None,
+            )
             return all_ok and len(results) > 0
         except Exception as exc:  # noqa: BLE001
             log.exception("배치 검사 사이클 예외: %s", exc)
@@ -450,6 +739,9 @@ class Worker:
                 log.warning("트리거 대기 예외(%s) — 계속", exc)
             if self._stop:
                 break
+            # 기준정보 핫리로드(주기 경과 시에만 실제 재조회) — 검사 직전에 반영해
+            # 이번 사이클부터 최신 캘리브레이션/공차/임계값/expected_count 를 쓴다.
+            self._maybe_reload_item(datetime.now(timezone.utc))
             self.run_once()
             # 매 루프 소량(flush_batch 상한) 재전송 — 라이브 검사를 굶기지 않는다.
             self.flush_spool()

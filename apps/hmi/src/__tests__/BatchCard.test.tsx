@@ -34,10 +34,10 @@ describe("BatchCard (다중 튜브 배치 카드)", () => {
 
     // 튜브 셀 4개.
     expect(screen.getAllByTestId("batch-tube")).toHaveLength(4);
-    // NG 요약 배너(색+아이콘+텍스트).
-    expect(screen.getByTestId("batch-ng-summary")).toHaveTextContent(
-      "총 4개 중 2개 NG",
-    );
+    // 재설계: 별도 NG 요약 배너 대신 **초대형 판정**에 NG 개수를 싣고,
+    // 총계는 그 아래 한 줄로 둔다(480px 화면에서 배너까지 넣을 자리가 없다).
+    expect(screen.getByTestId("batch-verdict-text")).toHaveTextContent("NG 2");
+    expect(screen.getByTestId("batch-card")).toHaveTextContent("총 4개 검사");
   });
 
   it("전체 OK 배치는 NG 요약 배너를 표시하지 않는다", () => {
@@ -47,7 +47,10 @@ describe("BatchCard (다중 튜브 배치 카드)", () => {
       "data-verdict",
       "OK",
     );
-    expect(screen.queryByTestId("batch-ng-summary")).not.toBeInTheDocument();
+    // 전량 양품이면 NG 개수가 아니라 '전량 양품' 으로 표기.
+    expect(screen.getByTestId("batch-verdict-text")).toHaveTextContent(
+      "전량 양품",
+    );
   });
 
   it("NG 튜브 클릭 시 해당 튜브로 재확인을 요청한다", () => {

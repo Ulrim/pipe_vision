@@ -269,7 +269,16 @@ class GenICamCamera(CameraAdapter):
 - 데이터 부족 초기에는 **고전 CV 폴백 + 휴리스틱**으로 동작 보장 후, 데이터 축적되면 모델 교체(전략: "동작하는 폴백 → 점진 고도화").
 
 ### 6.4 파일명/이미지 저장 규칙 (사업계획서 데이터 품질관리 반영)
-- 파일명: `{LOT}_{Item}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg`
+- **운영 디스크 파일명**: `{LOT}_{Item}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg`
+  - 저장 시점에는 `inspection_id` 가 아직 없다(워커가 이미지를 저장한 뒤 POST 하고,
+    그때 DB 가 채번한다). 그래서 운영본은 판정을 이름에 넣어 사람이 폴더에서
+    바로 구분할 수 있게 한다.
+- **제출 데이터셋 파일명**(전남TP 데이터 정의서 3-2/5-2, `services/data-ops/portal`):
+  - 원본 `{LOT}_{품목}_{STAGE}_{YYYYMMDDHHmmssSSS}_{inspection_id}.jpg` — **판정 미포함**.
+    학습 입력이 될 원본 이름에 정답이 박히면 파일명으로 정렬·분할하는 순간 라벨이 샌다.
+  - 결과 `{LOT}_{품목}_{YYYYMMDDHHmmssSSS}_{inspection_id}_{OK|NG}.jpg` — 판정 포함.
+  - 날짜 파티션·시각 표기는 **KST**. 이름은 내보내기 시점에 붙인다(그때는 행과 파일이
+    모두 손에 있어 `inspection_id` 를 정확히 넣을 수 있다).
 - 저장 분리: `raw/`(원본), `result/`(판정 오버레이), 메타데이터는 DB.
 - 오검·미검: 별도 버킷 `review/` + DB 태그 `review_flag`.
 

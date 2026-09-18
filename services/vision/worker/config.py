@@ -5,9 +5,32 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from datetime import date
+
+from aivis_types import InspectionStage
+
+
+def _inspection_stage() -> str:
+    """검사 단계 설정값 검증(AIVIS_INSPECTION_STAGE).
+
+    오타를 조용히 통과시키면 그 스테이션의 데이터 전체가 잘못된 단계로 적재되고,
+    나중에 단계별 정확도를 집계할 때야 드러난다. 그때는 이미 되돌릴 수 없으므로
+    알 수 없는 값이면 경고하고 기본값으로 떨어뜨린다.
+    """
+    raw = (_env("AIVIS_INSPECTION_STAGE", "CUT_LENGTH") or "CUT_LENGTH").upper()
+    valid = {s.value for s in InspectionStage}
+    if raw not in valid:
+        logging.getLogger("aivis.vision.worker").warning(
+            "AIVIS_INSPECTION_STAGE 값이 올바르지 않습니다(%s). %s 중 하나여야 하며 "
+            "CUT_LENGTH 로 진행합니다.",
+            raw,
+            "|".join(sorted(valid)),
+        )
+        return InspectionStage.CUT_LENGTH.value
+    return raw
 
 
 def _env(name: str, default: str | None = None) -> str | None:
@@ -48,6 +71,9 @@ class WorkerConfig:
     service_token: str | None = None
     item_code: str = "HP12"
     cam_id: str = "CAM1"
+    #: 검사 단계(CUT_LENGTH|POST_WASH_SURFACE). 스테이션마다 고정한다.
+    #: 데이터 정의서가 이미지·라벨·판정 레코드 전부에 필수로 요구하는 값이다.
+    inspection_stage: str = "CUT_LENGTH"
     lot: str = ""
     shift: str | None = None
     operator: str | None = None
@@ -66,6 +92,14 @@ class WorkerConfig:
     api_wait_timeout_s: int = 120
     # item_master 조회 재시도 한계.
     item_wait_timeout_s: int = 120
+    # 기준정보(item_master) 핫리로드 주기(초). 이 주기마다 워커가 GET
+    # /master/items 를 재조회해 캘리브레이션(px_to_mm_scale)/공차/표면 임계값/
+    # expected_count/촬영 레시피 변경을 **재시작 없이** 반영한다(사용자 피드백①).
+    # 0 이하면 비활성(기동 시 1회 fetch 후 고정, 과거 동작). 재조회는 단발
+    # 베스트에포트라 실패/None 이면 기존 기준정보를 유지하고 라이브 검사를
+    # 방해하지 않는다. 기본 15.0s: 현장에서 웹으로 값을 고친 뒤 늦어도 15초 안에
+    # 반영되도록(체감 즉시) 하되, 정상 상황에서 재조회는 GET 1회로 저렴하다.
+    item_reload_s: float = 15.0
     # POST 타임아웃.
     http_timeout_s: float = 5.0
     # GET /master 인증 폴백용 시드 계정.
@@ -109,6 +143,7 @@ class WorkerConfig:
             service_token=_env("AIVIS_SERVICE_TOKEN"),
             item_code=_env("AIVIS_ITEM_CODE", "HP12") or "HP12",
             cam_id=_env("AIVIS_CAM_ID", "CAM1") or "CAM1",
+            inspection_stage=_inspection_stage(),
             lot=lot,
             shift=_env("AIVIS_SHIFT"),
             operator=_env("AIVIS_OPERATOR"),
@@ -116,6 +151,7 @@ class WorkerConfig:
             grab_timeout_s=_env_float("AIVIS_CAMERA_GRAB_TIMEOUT_S", 5.0),
             api_wait_timeout_s=_env_int("AIVIS_API_WAIT_TIMEOUT_S", 120),
             item_wait_timeout_s=_env_int("AIVIS_ITEM_WAIT_TIMEOUT_S", 120),
+            item_reload_s=_env_float("AIVIS_ITEM_RELOAD_S", 15.0),
             http_timeout_s=float(_env_int("AIVIS_HTTP_TIMEOUT_MS", 5000)) / 1000.0,
             seed_admin_user=_env("AIVIS_SEED_ADMIN_USER", "admin") or "admin",
             seed_admin_password=_env("AIVIS_SEED_ADMIN_PASSWORD", "admin1234")

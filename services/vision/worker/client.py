@@ -40,6 +40,7 @@ class ApiClient:
         self.service_token = service_token
         self.seed_user = seed_user
         self.seed_password = seed_password
+        self._timeout_s = timeout_s
         self._bearer: Optional[str] = None
         # base_url 이 비어있으면(transport 직결 테스트) httpx 가 요구하는
         # 절대 URL 을 위해 http://worker-test 더미를 쓴다.
@@ -174,6 +175,65 @@ class ApiClient:
         log.error("ItemMaster 확보 타임아웃: %s", item_code)
         return None
 
+    def _get_active_once(self) -> tuple[Optional[dict], int]:
+        """GET /master/active 1회. (dict|None, status_code).
+
+        200 + JSON null(미설정)도 (None, 200) — 호출자는 "정보 없음"으로
+        동일 취급한다(전환 안 함 = 안전).
+        """
+        headers: dict[str, str] = {}
+        if self._bearer:
+            headers["Authorization"] = f"Bearer {self._bearer}"
+        elif self.service_token:
+            headers["Authorization"] = f"Bearer {self.service_token}"
+            headers["X-Service-Token"] = self.service_token
+        try:
+            resp = self._http.get("/master/active", headers=headers)
+        except httpx.HTTPError as exc:
+            log.debug("active GET 실패: %s", exc)
+            return None, 0
+        if resp.status_code == 200:
+            try:
+                body = resp.json()
+            except Exception:  # noqa: BLE001
+                return None, 200
+            return (body if isinstance(body, dict) else None), 200
+        return None, resp.status_code
+
+    def get_active_order(self) -> Optional[dict]:
+        """현재 검사 오더 **단발** 조회(핫리로드 주기용, 재시도/슬립 없음).
+
+        발주 기반 오더 전환: 웹에서 PUT /master/active 로 설정한
+        {item_code, lot, work_order} 를 반환한다. 미설정(null)/요청 실패/
+        인증 불가는 모두 None — 워커는 전환하지 않고 현행을 유지한다
+        (베스트에포트, 라이브 검사 루프 절대 방해 금지).
+        """
+        active, code = self._get_active_once()
+        if active is not None:
+            return active
+        if code in (401, 403) and self.login():
+            active, _ = self._get_active_once()
+            return active
+        return None
+
+    def refetch_item(self, item_code: str) -> Optional[ItemMaster]:
+        """기준정보 핫리로드용 **단발** 재조회(재시도/슬립 없음).
+
+        fetch_item 은 무한/장기 대기를 피하는 재시도 루프(time.sleep)를 돌지만,
+        핫리로드는 라이브 검사 루프 안에서 매 주기 호출되므로 절대 블로킹하면
+        안 된다(§워커 요구: 라이브 검사 방해 금지). 따라서 여기서는 GET 을 1회만
+        시도하고, 인증 가드(operator+)로 401/403 이면 이미 확보한 Bearer 로
+        _get_item_once 가 통과한다 — 만약 Bearer 가 없거나 만료면 시드 로그인 1회
+        후 딱 한 번 더 시도한다(대기 없음). 성공 시 ItemMaster, 그 외 None.
+        """
+        item, code = self._get_item_once(item_code)
+        if item is not None:
+            return item
+        if code in (401, 403) and self.login():
+            item, _ = self._get_item_once(item_code)
+            return item
+        return None
+
     # --- 결과 적재 ---
     def post_inspection_json(self, payload: dict) -> tuple[int, str]:
         """POST /inspection (payload dict). (status_code, detail). raise 금지.
@@ -208,6 +268,28 @@ class ApiClient:
         """
         status, detail = self.post_inspection_json(result.model_dump(mode="json"))
         return status in (200, 201), detail
+
+    # --- 라이브니스 하트비트 ---
+    def post_status(self, payload: dict) -> None:
+        """POST /inspection/status (검사 사이클 상태 하트비트). 베스트에포트.
+
+        HMI 가 "연결됨"인데 0검출/취득실패로 죽은 듯 보이는 문제를 막기 위해, 매
+        검사 사이클(성공/0검출/취득실패)마다 순수 라이브니스 신호를 보낸다.
+        멱등/스풀과 무관하며, 라이브 검사 루프를 굶기거나 죽이지 않도록:
+          - 짧은 타임아웃(http_timeout 또는 2초 중 작은 값)을 쓰고,
+          - 모든 예외를 삼켜 절대 raise 하지 않는다(실패는 log.debug 만).
+        인증 헤더는 post_inspection_json 과 동일한 서비스토큰 정책을 재사용한다.
+        """
+        timeout = min(self._timeout_s, 2.0)
+        try:
+            self._http.post(
+                "/inspection/status",
+                json=payload,
+                headers=self._service_headers(),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("status 하트비트 전송 실패(무시): %s", exc)
 
     def close(self) -> None:
         try:

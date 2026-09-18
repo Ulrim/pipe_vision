@@ -10,7 +10,7 @@
 import { create } from "zustand";
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
-import type { AlarmEvent } from "@/types/ws";
+import type { AlarmEvent, StatusData } from "@/types/ws";
 
 /** WS 연결 상태(인디케이터). */
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
@@ -42,11 +42,17 @@ export interface LiveState {
   consecutiveAlarmActive: boolean;
   /** 알람 소리 사용 토글. */
   soundEnabled: boolean;
+  /** 워커 라이브니스 하트비트(검사 0건이어도 수신). null=아직 미수신. */
+  status: StatusData | null;
+  /** status 마지막 수신 시각(Date.now()). 신선도(무신호) 판정용. */
+  statusAt: number | null;
 
   /** WS inspection 이벤트 수신. */
   pushInspection: (r: InspectionResult) => void;
   /** WS alarm 이벤트 수신(서버 NG 단건). */
   pushAlarm: (a: AlarmEvent["data"]) => void;
+  /** WS status 이벤트 수신(워커 하트비트). status/statusAt 갱신. */
+  pushStatus: (data: StatusData) => void;
   /** 연결 상태 갱신. */
   setConn: (conn: ConnState, attempts?: number) => void;
   /** 단건 알람 배너 닫기(작업자 확인). */
@@ -70,6 +76,8 @@ export const useLiveStore = create<LiveState>((set) => ({
   lastAlarm: null,
   consecutiveAlarmActive: false,
   soundEnabled: true,
+  status: null,
+  statusAt: null,
 
   pushInspection: (r) =>
     set((s) => {
@@ -86,6 +94,8 @@ export const useLiveStore = create<LiveState>((set) => ({
     }),
 
   pushAlarm: (a) => set({ lastAlarm: a }),
+
+  pushStatus: (data) => set({ status: data, statusAt: Date.now() }),
 
   setConn: (conn, attempts) =>
     set((s) => ({

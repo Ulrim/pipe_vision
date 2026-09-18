@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -21,6 +22,7 @@ _SERVICES_DIR = Path(__file__).resolve().parents[2]
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
+from vision.acquisition import GrabResult  # noqa: E402
 from vision.worker.client import ApiClient  # noqa: E402
 from vision.worker.config import WorkerConfig  # noqa: E402
 from vision.worker.dataset import ensure_dataset  # noqa: E402
@@ -49,6 +51,7 @@ class FakeBackend:
         self.healthy_after = healthy_after  # 이 횟수만큼 health 를 'down'으로.
         self.health_calls = 0
         self.posted: list[dict] = []
+        self.statuses: list[dict] = []  # POST /inspection/status 하트비트 수집.
         self.login_calls = 0
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -95,6 +98,16 @@ class FakeBackend:
                 },
             )
 
+        if path == "/inspection/status" and request.method == "POST":
+            if self.require_service_token is not None:
+                tok = request.headers.get("X-Service-Token") or request.headers.get(
+                    "Authorization", ""
+                ).removeprefix("Bearer ")
+                if tok != self.require_service_token:
+                    return httpx.Response(401, json={"detail": "service token 필요"})
+            self.statuses.append(json.loads(request.content))
+            return httpx.Response(200, json={"status": "ok"})
+
         if path == "/inspection" and request.method == "POST":
             if self.require_service_token is not None:
                 tok = request.headers.get("X-Service-Token") or request.headers.get(
@@ -109,6 +122,53 @@ class FakeBackend:
             )
 
         return httpx.Response(404, json={"detail": f"no route {path}"})
+
+
+class ReloadBackend(FakeBackend):
+    """master GET 이 재조회될수록 scale/expected_count/version 이 바뀌는 stub.
+
+    - 첫 GET(기동 fetch): scale=0.25, expected_count=1, version=1.
+    - 2번째부터(핫리로드): scale=0.50, expected_count=3, version=2.
+    - fail_master=True 로 두면 이후 master GET 이 503(리로드 실패 모사).
+    인증 가드(operator+)는 부모와 동일(Bearer JWT-OP-TOKEN 필요).
+    """
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.master_calls = 0
+        self.fail_master = False
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == f"/master/items/{self.item_code}":
+            auth = request.headers.get("Authorization", "")
+            if self.master_requires_auth and auth != "Bearer JWT-OP-TOKEN":
+                return httpx.Response(401, json={"detail": "인증 토큰 없음"})
+            if self.fail_master:
+                return httpx.Response(503, json={"detail": "db down"})
+            self.master_calls += 1
+            if self.master_calls <= 1:
+                scale, expected, version = 0.25, 1, 1
+            else:
+                scale, expected, version = 0.50, 3, 2
+            return httpx.Response(
+                200,
+                json={
+                    "item_code": self.item_code,
+                    "item_name": "Header Pipe 12",
+                    "ref_length_mm": 125.0,
+                    "tol_plus_mm": 3.0,
+                    "tol_minus_mm": 3.0,
+                    "px_to_mm_scale": scale,
+                    "oil_threshold": 0.30,
+                    "discolor_threshold": 0.20,
+                    "scratch_threshold": 0.15,
+                    "capture_recipe": None,
+                    "expected_count": expected,
+                    "version": version,
+                },
+            )
+        return super().handler(request)
 
 
 def _client(backend: FakeBackend, **kw) -> ApiClient:
@@ -377,3 +437,207 @@ def test_worker_setup_camera_wires_grab_timeout_into_acquisition_service(tmp_pat
     assert worker.acq is not None
     assert worker.acq.grab_timeout_s == 0.75
     worker.shutdown()
+
+
+# --- 라이브니스 하트비트(POST /inspection/status) ---
+class _FailAcq:
+    """AcquisitionService 대체 — 취득 실패(카메라 프리즈)를 흉내낸다."""
+
+    def __init__(self, error: str = "camera frozen") -> None:
+        self._error = error
+
+    def grab_with_retry(self) -> GrabResult:
+        return GrabResult(frame=None, attempts=3, proc_time_ms=0, error=self._error)
+
+
+def test_worker_single_sends_status_heartbeat(tmp_path):
+    """단일 정상 사이클 → detected=1 상태 하트비트가 전송된다."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    worker.run_once()
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == 1
+    assert st["detected"] == 1
+    assert st["mismatch"] is False
+    assert st["error"] is None
+    assert st["cam_id"] == "CAM1" and st["item_code"] == "HP12"
+    assert st["ng"] in (0, 1)
+    assert isinstance(st["proc_time_ms"], int) and st["proc_time_ms"] >= 0
+    assert st["ts"]  # ISO8601 문자열
+    worker.shutdown()
+
+
+def test_worker_single_acq_failure_sends_status(tmp_path):
+    """취득 실패(카메라 프리즈) → detected=0 + error 세팅 상태가 전송되고
+    run_once 는 False 를 반환한다(적재는 0건)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    worker.acq = _FailAcq(error="grab timeout")
+    ok = worker.run_once()
+    assert ok is False
+    assert len(backend.posted) == 0  # 취득 실패이므로 검사결과 적재 없음.
+    assert len(backend.statuses) == 1
+    st = backend.statuses[0]
+    assert st["expected"] == 1
+    assert st["detected"] == 0
+    assert st["error"] == "grab timeout"
+    assert st["mismatch"] is True
+    worker.shutdown()
+
+
+def test_ng_flag_maps_verdict_enum_and_string():
+    """하트비트 ng 매핑은 Verdict enum/문자열 양쪽에서 정확해야 한다.
+
+    회귀: str(Verdict.NG)=="Verdict.NG" 이므로 str() 비교는 항상 0 을 냈다
+    (NG 사이클인데도 하트비트 ng=0). .value 비교로 고정.
+    """
+    from aivis_types import Verdict
+
+    from vision.worker.runner import _ng_flag
+
+    assert _ng_flag(Verdict.NG) == 1
+    assert _ng_flag(Verdict.OK) == 0
+    assert _ng_flag("NG") == 1
+    assert _ng_flag("OK") == 0
+
+
+# --- 기준정보 핫리로드(재시작 없이 캘리브레이션 반영) ---
+def test_worker_hot_reloads_item_master(tmp_path):
+    """주기 경과 후 _maybe_reload_item 이 self.item 을 갱신한다(scale/expected 변경).
+
+    단일→배치 전환(expected_count 1→3)까지 함께 검증. run_once 가 매 호출
+    self.item.expected_count 를 읽으므로 갱신 즉시 배치 모드가 된다.
+    """
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=1.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    assert int(worker.item.expected_count) == 1
+
+    # 리로드 창을 강제로 연다(마지막 리로드를 과거로).
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+
+    assert float(worker.item.px_to_mm_scale) == 0.50  # 캘리브레이션 즉시 반영.
+    assert int(worker.item.expected_count) == 3        # 단일→배치 전환.
+    assert int(worker.item.version) == 2
+    worker.shutdown()
+
+
+def test_worker_reload_failure_keeps_existing_item(tmp_path):
+    """리로드 재조회가 실패(None)하면 기존 기준정보를 유지한다(라이브 검사 보호)."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=1.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    old = worker.item
+    assert float(old.px_to_mm_scale) == 0.25
+
+    backend.fail_master = True  # 이후 master GET 은 503 → refetch_item None.
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+
+    assert worker.item is old  # 교체되지 않고 기존 유지.
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    worker.shutdown()
+
+
+def test_worker_reload_disabled_when_interval_zero(tmp_path):
+    """item_reload_s<=0 이면 리로드 비활성(재조회하지 않는다)."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=0.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    calls_after_startup = backend.master_calls
+    worker._last_item_reload = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+    assert backend.master_calls == calls_after_startup  # 추가 GET 없음.
+    assert float(worker.item.px_to_mm_scale) == 0.25
+    worker.shutdown()
+
+
+def test_worker_reload_skipped_before_interval(tmp_path):
+    """마지막 리로드 이후 item_reload_s 미경과면 재조회하지 않는다."""
+    backend = ReloadBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, item_reload_s=999.0)
+    worker = Worker(cfg, client=client)
+    assert worker.startup() is True
+    before = backend.master_calls
+    # startup 직후(방금 리로드) → 주기 미경과.
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+    assert backend.master_calls == before
+    worker.shutdown()
+
+
+def test_worker_loop_invokes_item_reload_each_cycle(tmp_path):
+    """메인 루프가 매 사이클 _maybe_reload_item 을 호출한다(주기 판단은 내부)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+    cfg = _cfg(tmp_path, max_iterations=3)
+    worker = Worker(cfg, client=client)
+    calls: list = []
+    orig = worker._maybe_reload_item
+
+    def spy(now):
+        calls.append(now)
+        return orig(now)
+
+    worker._maybe_reload_item = spy  # type: ignore[method-assign]
+    rc = worker.run()
+    assert rc == 0
+    assert len(calls) == 3  # 루프 3회 각각 호출.
+
+
+def test_worker_run_once_survives_post_status_exception(tmp_path):
+    """client.post_status 가 예외를 던져도 run_once 는 정상 반환한다(루프 견고성)."""
+    backend = FakeBackend(master_requires_auth=True)
+    client = _client(backend)
+
+    def boom(_payload):
+        raise RuntimeError("status endpoint down")
+
+    client.post_status = boom  # 하트비트 전송이 폭발해도 라이브 루프는 살아야 한다.
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=client)
+    assert worker.startup() is True
+    ok = worker.run_once()
+    assert ok is True  # 검사결과 적재는 정상.
+    assert len(backend.posted) == 1
+    worker.shutdown()
+
+
+# --- 검사 단계 설정 (데이터 정의서 필수 항목) --------------------------------
+
+
+def test_worker_config_inspection_stage_default(monkeypatch):
+    """기본값은 절단 후 길이 검사(현행 단일 스테이션 위치)."""
+    monkeypatch.delenv("AIVIS_INSPECTION_STAGE", raising=False)
+    assert WorkerConfig.from_env().inspection_stage == "CUT_LENGTH"
+
+
+def test_worker_config_inspection_stage_from_env(monkeypatch):
+    """스테이션마다 설정으로 고정한다(소문자 입력도 허용)."""
+    monkeypatch.setenv("AIVIS_INSPECTION_STAGE", "post_wash_surface")
+    assert WorkerConfig.from_env().inspection_stage == "POST_WASH_SURFACE"
+
+
+def test_worker_config_invalid_stage_falls_back(monkeypatch, caplog):
+    """오타는 경고하고 기본값으로 떨어진다.
+
+    조용히 통과시키면 그 스테이션의 데이터 전체가 잘못된 단계로 적재되고,
+    단계별 정확도를 집계할 때야 드러난다 — 그때는 되돌릴 수 없다.
+    """
+    monkeypatch.setenv("AIVIS_INSPECTION_STAGE", "SURFACE")
+    with caplog.at_level("WARNING"):
+        cfg = WorkerConfig.from_env()
+    assert cfg.inspection_stage == "CUT_LENGTH"
+    assert any("AIVIS_INSPECTION_STAGE" in r.message for r in caplog.records)

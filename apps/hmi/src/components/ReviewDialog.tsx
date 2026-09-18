@@ -76,13 +76,13 @@ export function ReviewDialog({ result, onClose }: ReviewDialogProps) {
       aria-label="NG 제품 재확인"
       data-testid="review-dialog"
     >
-      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl">
-        <h2 className="text-hmi-lg font-black">재확인 입력</h2>
-        <p className="mt-1 text-hmi text-gray-600">
+      <div className="w-full max-w-xl rounded-2xl bg-white p-4 shadow-2xl">
+        <h2 className="text-hmi-num font-black">재확인 입력</h2>
+        <p className="mt-0.5 text-hmi-cap text-gray-500">
           {result.item_code} · LOT {result.lot}
         </p>
 
-        <fieldset className="mt-5 grid grid-cols-2 gap-4">
+        <fieldset className="mt-3 grid grid-cols-2 gap-3">
           <legend className="sr-only">작업자 판정</legend>
           <ChoiceButton
             label="실제 양품 (OK)"
@@ -100,6 +100,15 @@ export function ReviewDialog({ result, onClose }: ReviewDialogProps) {
           />
         </fieldset>
 
+        {!choice && (
+          <p
+            className="mt-3 text-hmi-cap font-bold text-gray-500"
+            data-testid="review-hint"
+          >
+            위에서 실제 판정을 고른 뒤 [저장]을 누르세요.
+          </p>
+        )}
+
         {mutation.isError &&
           !(
             mutation.error instanceof ApiError &&
@@ -111,11 +120,11 @@ export function ReviewDialog({ result, onClose }: ReviewDialogProps) {
             </p>
           )}
 
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="mt-4 flex justify-end gap-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-xl border-2 border-gray-300 px-6 py-3 text-hmi font-bold text-gray-700 active:scale-95"
+            className="min-h-touch rounded-xl border-2 border-gray-300 px-8 text-hmi-body font-bold text-gray-700 active:scale-95"
             data-testid="review-cancel"
           >
             취소
@@ -124,7 +133,7 @@ export function ReviewDialog({ result, onClose }: ReviewDialogProps) {
             type="button"
             onClick={submit}
             disabled={!choice || mutation.isPending}
-            className="rounded-xl bg-blue-600 px-8 py-3 text-hmi font-bold text-white disabled:opacity-40 active:scale-95"
+            className="min-h-touch rounded-xl bg-blue-600 px-10 text-hmi-num font-black text-white disabled:opacity-40 active:scale-95"
             data-testid="review-submit"
           >
             {mutation.isPending ? "저장 중…" : "저장"}

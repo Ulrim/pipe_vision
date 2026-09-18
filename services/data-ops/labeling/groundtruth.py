@@ -18,16 +18,21 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
 # aivis_types 의 enum 으로 코드 화이트리스트 검증(단일 진실원).
-from aivis_types.enums import CameraView, DefectCode
+from aivis_types.enums import CameraView, DefectCode, InspectionStage
 
 _VALID_CODES = {c.value for c in DefectCode}
 _OK_CODE = "OK"  # 정상은 defect 코드가 아니라 라벨 부재로 표현.
 _VALID_VIEWS = {v.value for v in CameraView}
+_VALID_STAGES = {s.value for s in InspectionStage}
 
 # {품목}_{구도}_{클래스}_{YYYYMMDD-HHmmss}_{seq}
+# {품목}_{STAGE}_{구도}_{클래스}_{YYYYMMDD-HHmmss}_{일련}
+# STAGE 값 자체에 밑줄이 들어간다(POST_WASH_SURFACE). 밑줄로 자를 수 없으므로
+# 고정 토큰인 구도(END|SIDE)를 앵커로 삼아 그 앞을 통째로 STAGE 로 본다.
+# STAGE 가 없는 예전 파일명도 계속 읽히도록 선택 그룹으로 둔다(기존 수집분 보존).
 _FILENAME_RE = re.compile(
-    r"^(?P<item>[^_]+)_(?P<view>END|SIDE)_(?P<cls>[A-Z]+)_"
-    r"(?P<ts>\d{8}-\d{6})_(?P<seq>\d+)$"
+    r"^(?P<item>[^_]+)_(?:(?P<stage>[A-Z][A-Z_]*?)_)?(?P<view>END|SIDE)_"
+    r"(?P<cls>[A-Z]+)_(?P<ts>\d{8}-\d{6})_(?P<seq>\d+)$"
 )
 
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -39,7 +44,8 @@ class GroundTruthItem:
 
     path: str                       # 이미지 절대/상대 경로
     item_code: str | None           # 품목 코드
-    view: str | None                # END | SIDE
+    inspection_stage: str | None = None  # CUT_LENGTH | POST_WASH_SURFACE
+    view: str | None = None         # END | SIDE
     labels: list[str] = field(default_factory=list)  # 불량 코드 배열(정상=[])
     border: bool = False            # 경계 샘플(부록 A.2)
     length_mm_gt: float | None = None
@@ -62,7 +68,8 @@ class LabelParseError(Exception):
 def parse_filename(name: str) -> dict[str, str]:
     """파일명(확장자 제외 가능)을 부록 A.4 규칙으로 파싱.
 
-    반환: {item, view, cls, ts, seq}. 규칙 불일치 시 LabelParseError.
+    반환: {item, stage, view, cls, ts, seq}. 규칙 불일치 시 LabelParseError.
+    stage 는 예전 규칙(단계 없음)으로 찍힌 파일이면 None 이다.
     """
     stem = os.path.splitext(os.path.basename(name))[0]
     m = _FILENAME_RE.match(stem)
@@ -71,6 +78,8 @@ def parse_filename(name: str) -> dict[str, str]:
     d = m.groupdict()
     if d["view"] not in _VALID_VIEWS:
         raise LabelParseError(f"알 수 없는 구도: {d['view']}")
+    if d["stage"] is not None and d["stage"] not in _VALID_STAGES:
+        raise LabelParseError(f"알 수 없는 검사 단계: {d['stage']}")
     return d
 
 
@@ -107,6 +116,7 @@ def load_item(image_path: str) -> GroundTruthItem:
         return GroundTruthItem(
             path=image_path,
             item_code=data.get("item_code"),
+            inspection_stage=data.get("inspection_stage"),
             view=data.get("view"),
             labels=labels,
             border=bool(data.get("border", False)),
@@ -127,6 +137,7 @@ def load_item(image_path: str) -> GroundTruthItem:
     return GroundTruthItem(
         path=image_path,
         item_code=parsed["item"],
+        inspection_stage=parsed.get("stage"),
         view=parsed["view"],
         labels=labels,
         source="filename",

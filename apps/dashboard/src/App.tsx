@@ -5,7 +5,10 @@ import { InspectionsPage } from "@/pages/InspectionsPage";
 import { StatisticsPage } from "@/pages/StatisticsPage";
 import { KpiPage } from "@/pages/KpiPage";
 import { ReportPage } from "@/pages/ReportPage";
+import { LabelingPage } from "@/pages/LabelingPage";
 import { MasterPage } from "@/pages/MasterPage";
+import { MonitorPage } from "@/pages/MonitorPage";
+import { UpdatePage } from "@/pages/UpdatePage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NavMenu, useCurrentNavLabel } from "@/components/NavMenu";
 
@@ -97,10 +100,34 @@ export default function App(): JSX.Element {
             }
           />
           <Route
+            path="/labeling"
+            element={
+              <ProtectedRoute>
+                <LabelingPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/master"
             element={
               <ProtectedRoute>
                 <MasterPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/monitor"
+            element={
+              <ProtectedRoute>
+                <MonitorPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/update"
+            element={
+              <ProtectedRoute>
+                <UpdatePage />
               </ProtectedRoute>
             }
           />

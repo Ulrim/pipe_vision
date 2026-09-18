@@ -26,6 +26,8 @@ from typing import List, Optional, Sequence
 import cv2
 import numpy as np
 
+from ..length.measure import LengthSpan
+from .draw import draw_length_span
 from .storage import (
     StorageBackend,
     StorageSettings,
@@ -128,15 +130,52 @@ def _score_line(label: str, score: Optional[float], threshold: Optional[float]) 
     return f"{label}: {s}{t}"
 
 
-def render_overlay(frame: np.ndarray, result, *, item=None) -> np.ndarray:
+def _length_span_label(length) -> str:
+    """측정선 라벨 'L=<meas>mm dev=<dev>mm <OK|NG>' (측정 근거 요약)."""
+    meas = getattr(length, "meas_length_mm", None)
+    dev = getattr(length, "deviation_mm", None)
+    lv = str(getattr(length, "length_verdict", "NG")).upper()
+    lv = "OK" if lv == "OK" else "NG"
+    meas_s = "--" if meas is None else f"{meas:.2f}"
+    dev_s = "--" if dev is None else f"{dev:+.2f}"
+    return f"L={meas_s}mm dev={dev_s}mm {lv}"
+
+
+def _draw_length_span_on(canvas: np.ndarray, length, length_span) -> None:
+    """길이 측정 근거(끝단 2점 + 측정선 + 라벨)를 오버레이에 그린다(공용).
+
+    색은 길이 판정(OK=초록/NG=빨강, 색약 고려 라벨의 OK/NG 문자 병기). span 이
+    없거나(끝단 미검출) length 가 없으면 아무 것도 그리지 않는다.
+    """
+    if length_span is None or length is None:
+        return
+    lv = str(getattr(length, "length_verdict", "NG")).upper()
+    color = _GREEN if lv == "OK" else _RED
+    w = canvas.shape[1]
+    txt_scale = max(0.45, w / 1600.0)
+    draw_length_span(
+        canvas,
+        length_span,
+        color=color,
+        label=_length_span_label(length),
+        txt_scale=txt_scale,
+    )
+
+
+def render_overlay(
+    frame: np.ndarray, result, *, item=None, length_span: Optional[LengthSpan] = None
+) -> np.ndarray:
     """원본 위에 판정 결과를 시각화한 BGR 이미지를 반환한다(결정적).
 
     result: VerdictResult (length/surface/final_verdict/defect_codes/confidence).
     item:   ItemMaster(optional) — 임계값을 함께 표기해 현장 판독 보조.
+    length_span: 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 주어지면 양
+      끝단 마커 + 측정선 + 'L=..mm dev=..mm OK/NG' 를 그려 측정 근거를 시각화한다
+      (사용자 피드백② 대응). None 이면 기존 오버레이와 동일.
 
     표기:
       - 최종 OK/NG: 색(초록/빨강) + 텍스트 기호([OK]/[NG], 색약 고려).
-      - 길이: 측정/기준/편차(mm).
+      - 길이: 측정/기준/편차(mm) + (span 있으면) 끝단·측정선.
       - 표면 점수: OIL/DIS/SCR (임계값 동반 가능).
       - 불량코드: LEN/OIL/DIS/SCR/MULTI 배열.
       - review 대상이면 REVIEW 배지.
@@ -262,6 +301,10 @@ def render_overlay(frame: np.ndarray, result, *, item=None) -> np.ndarray:
             lineType=cv2.LINE_AA,
         )
 
+    # 5) 길이 측정 근거(끝단 2점 + 측정선 + 라벨). 판정 계측 이후 데이터라
+    #    처리속도 KPI 에 영향 없음. span 없으면(끝단 미검출) 생략.
+    _draw_length_span_on(canvas, length, length_span)
+
     return canvas
 
 
@@ -357,6 +400,24 @@ def render_batch_overlay(frame: np.ndarray, batch_result) -> np.ndarray:
             canvas, label, (lx, ly), _FONT, txt_scale, color,
             thickness=1, lineType=cv2.LINE_AA,
         )
+
+        # 튜브별 길이 측정 근거(끝단 2점 + 측정선). 배치는 프레임 좌표로 변환된
+        # length_span 을 튜브에 실어 나른다(없으면 생략 — 끝단 미검출/세로축 등).
+        span = getattr(t, "length_span", None)
+        if span is not None:
+            length_mm = getattr(t, "length_mm", None)
+            dev = getattr(t, "deviation_mm", None)
+            lv = str(getattr(t, "length_verdict", "NG")).upper()
+            lv = "OK" if lv == "OK" else "NG"
+            meas_s = "--" if length_mm is None else f"{length_mm:.1f}"
+            dev_s = "--" if dev is None else f"{dev:+.1f}"
+            draw_length_span(
+                canvas,
+                span,
+                color=color,
+                label=f"L={meas_s}mm dev={dev_s}mm {lv}",
+                txt_scale=txt_scale,
+            )
 
     return canvas
 
@@ -503,9 +564,10 @@ def _save_via_backend(
     review: bool,
     item,
     pending_sink=None,
+    length_span: Optional[LengthSpan] = None,
 ) -> ImageSaveResult:
     """단일 검사 결과를 렌더(render_overlay) 후 백엔드에 업로드(호환 래퍼)."""
-    overlay = render_overlay(frame, result, item=item)
+    overlay = render_overlay(frame, result, item=item, length_span=length_span)
     return _save_pair_via_backend(
         backend,
         frame,
@@ -530,6 +592,7 @@ def save_inspection_images(
     item=None,
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
+    length_span: Optional[LengthSpan] = None,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
 
@@ -570,10 +633,11 @@ def save_inspection_images(
                 review=review,
                 item=item,
                 pending_sink=pending_sink,
+                length_span=length_span,
             )
         # local 디스크 경로(기존 동작 그대로).
         raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict)
-        overlay = render_overlay(frame, result, item=item)
+        overlay = render_overlay(frame, result, item=item, length_span=length_span)
         result_path = save_result(
             overlay,
             target_dir,

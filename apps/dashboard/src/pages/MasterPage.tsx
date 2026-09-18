@@ -1,7 +1,14 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ItemMaster, ItemMasterUpdate } from "@aivis/shared-types";
-import { fetchItems, updateItem, calibrateItem } from "@/api/endpoints";
+import {
+  calibrateItem,
+  clearActiveOrder,
+  fetchActiveOrder,
+  fetchItems,
+  putActiveOrder,
+  updateItem,
+} from "@/api/endpoints";
 import { useAuthStore, canEdit } from "@/store/auth";
 import { fmtNum } from "@/lib/format";
 import { ApiError } from "@/api/client";
@@ -40,6 +47,8 @@ export function MasterPage(): JSX.Element {
         )}
         {isFetching && <span className="text-sm text-slate-400">로딩…</span>}
       </div>
+
+      <ActiveOrderCard items={items} editable={editable} />
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
@@ -93,6 +102,147 @@ export function MasterPage(): JSX.Element {
             qc.invalidateQueries({ queryKey: ["master-items"] });
           }}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * 현재 검사 오더 카드 (발주 기반 전환).
+ *
+ * 발주마다 품목(모양/외경/개수)·절단 길이가 달라진다. 품질관리자가 여기서
+ * 품목+LOT(+작업지시)을 설정하면 라즈베리파이 워커가 폴링(15초 주기)해
+ * **재시작 없이** 검사 품목을 전환한다. 미설정이면 워커는 기동 시 환경설정
+ * 품목으로 검사한다(기존 동작).
+ */
+function ActiveOrderCard({
+  items, editable,
+}: {
+  items: ItemMaster[];
+  editable: boolean;
+}): JSX.Element {
+  const qc = useQueryClient();
+  const [itemCode, setItemCode] = useState("");
+  const [lot, setLot] = useState("");
+  const [workOrder, setWorkOrder] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const { data: active, isLoading } = useQuery({
+    queryKey: ["active-order"],
+    queryFn: fetchActiveOrder,
+  });
+
+  // 활성 오더 로드 시 폼 초기값 동기화(편집 시작점).
+  useEffect(() => {
+    if (active) {
+      setItemCode(active.item_code);
+      setLot(active.lot ?? "");
+      setWorkOrder(active.work_order ?? "");
+    }
+  }, [active]);
+
+  const put = useMutation({
+    mutationFn: () =>
+      putActiveOrder({
+        item_code: itemCode,
+        lot: lot.trim() || null,
+        work_order: workOrder.trim() || null,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["active-order"] });
+      setMsg("적용됨 — 워커가 15초 내 자동 전환합니다.");
+    },
+    onError: (e) => {
+      const err = e as ApiError | Error;
+      const detail =
+        err instanceof ApiError && err.status === 403
+          ? "품질관리자 이상 권한이 필요합니다."
+          : err.message;
+      setMsg(`적용 실패: ${detail}`);
+    },
+  });
+
+  const clear = useMutation({
+    mutationFn: clearActiveOrder,
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["active-order"] });
+      setMsg("오더 해제됨 — 워커는 마지막 품목으로 계속 검사합니다.");
+    },
+    onError: (e) => setMsg(`해제 실패: ${(e as Error).message}`),
+  });
+
+  return (
+    <div className="card p-4" data-testid="active-order-card">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-bold">현재 검사 오더</h2>
+        {isLoading ? (
+          <span className="text-sm text-slate-400">로딩…</span>
+        ) : active ? (
+          <span
+            className="rounded bg-ok-bg px-2 py-0.5 text-sm font-semibold text-ok-fg"
+            data-testid="active-order-badge"
+          >
+            검사 중: {active.item_code}
+            {active.lot ? ` · LOT ${active.lot}` : ""}
+            {active.work_order ? ` · 지시 ${active.work_order}` : ""}
+            {active.updated_by ? ` (설정: ${active.updated_by})` : ""}
+          </span>
+        ) : (
+          <span className="text-sm text-slate-500" data-testid="active-order-empty">
+            오더 미설정 — 워커는 기본(환경설정) 품목으로 검사 중
+          </span>
+        )}
+      </div>
+
+      <p className="mb-3 text-xs text-slate-500">
+        발주가 바뀌면 여기서 품목과 LOT을 지정하세요. 워커가 15초 내 자동
+        전환합니다(재시작 불필요). 길이·공차·개수·배치방향은 품목 기준정보를
+        따릅니다.
+      </p>
+
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <span className="label">품목</span>
+          <select className="input" value={itemCode}
+            onChange={(e) => setItemCode(e.target.value)}
+            data-testid="order-item">
+            <option value="">선택…</option>
+            {items.map((it) => (
+              <option key={it.item_code} value={it.item_code}>
+                {it.item_code} — {it.item_name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <span className="label">LOT</span>
+          <input className="input" value={lot} placeholder="예: LOT20260821-01"
+            onChange={(e) => setLot(e.target.value)} data-testid="order-lot" />
+        </div>
+        <div>
+          <span className="label">작업지시(선택)</span>
+          <input className="input" value={workOrder} placeholder="예: WO-1042"
+            onChange={(e) => setWorkOrder(e.target.value)}
+            data-testid="order-wo" />
+        </div>
+        <button type="button" className="btn-primary"
+          disabled={!editable || !itemCode || put.isPending}
+          onClick={() => put.mutate()} data-testid="order-apply">
+          {put.isPending ? "적용 중…" : "오더 적용"}
+        </button>
+        {active && (
+          <button type="button" className="btn-ghost"
+            disabled={!editable || clear.isPending}
+            onClick={() => clear.mutate()} data-testid="order-clear">
+            해제
+          </button>
+        )}
+      </div>
+
+      {msg && (
+        <div className="mt-2 text-sm text-slate-600" data-testid="order-msg">
+          {msg}
+        </div>
       )}
     </div>
   );

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .enums import DefectCode, Verdict
+from .enums import DefectCode, InspectionStage, Verdict
 
 
 class ItemMaster(BaseModel):
@@ -107,6 +107,13 @@ class InspectionResult(BaseModel):
     work_order: Optional[str] = Field(None, description="작업지시 번호")
     item_code: str = Field(..., description="품목 코드(item_master FK)")
     cam_id: str = Field(..., description="카메라 ID")
+    inspection_stage: Optional[InspectionStage] = Field(
+        None,
+        description=(
+            "검사 단계(CUT_LENGTH=절단 후 길이 / POST_WASH_SURFACE=세척 후 표면). "
+            "데이터 정의서 5-3 필수 항목 — 워커 설정으로 스테이션마다 고정한다."
+        ),
+    )
     inspected_at: datetime = Field(..., description="검사 시각")
     tube_index: int = Field(
         0,

@@ -83,6 +83,10 @@ def _ensure_vision_importable() -> None:
 _ensure_vision_importable()
 
 from aivis_types import ItemMaster, LengthResult  # noqa: E402
+from vision.imaging.draw import (  # noqa: E402  (드로잉 헬퍼 단일 진실원)
+    dashed_hline as _dashed_hline,
+    dashed_vline as _dashed_vline,
+)
 from vision.imaging.save import (  # noqa: E402
     _BLACK,
     _FONT,
@@ -372,30 +376,8 @@ def build_diagnostics(
 
 
 # ---------------- 시각화(오버레이) ----------------
-
-def _dashed_vline(
-    canvas: np.ndarray, x: float, y0: int, y1: int, color, *, dash=6, gap=5, thickness=1
-) -> None:
-    xi = int(round(x))
-    y = int(y0)
-    end = int(y1)
-    while y < end:
-        y2 = min(y + dash, end)
-        cv2.line(canvas, (xi, y), (xi, y2), color, thickness, cv2.LINE_AA)
-        y = y2 + gap
-
-
-def _dashed_hline(
-    canvas: np.ndarray, y: float, x0: int, x1: int, color, *, dash=8, gap=6, thickness=1
-) -> None:
-    yi = int(round(y))
-    x = int(x0)
-    end = int(x1)
-    while x < end:
-        x2 = min(x + dash, end)
-        cv2.line(canvas, (x, yi), (x2, yi), color, thickness, cv2.LINE_AA)
-        x = x2 + gap
-
+# 점선 헬퍼(_dashed_vline/_dashed_hline)는 vision.imaging.draw 의 공용 함수를
+# 재사용한다(위 import) — 결과 오버레이(save.py)와 단일 진실원을 공유한다.
 
 def _fmt(value: Optional[float]) -> str:
     return "--" if value is None else f"{value:.3f}"

@@ -13,15 +13,38 @@ export interface ImageViewProps {
   inspectionId?: number | null;
   /** raw(원본) | result(판정 오버레이). 기본 result. */
   kind?: ImageKind;
+  /**
+   * 고정화면(파이 7") 모드: 고정 종횡비(aspect-video) 대신 **남는 높이를
+   * 그대로 채운다**. 480px 화면에서는 종횡비를 강제하면 이미지가 넘쳐
+   * 스크롤이 생기거나 반대로 빈 공간이 남는다. 캡션도 생략(자리 절약 —
+   * 무슨 이미지인지는 화면 맥락으로 자명하다).
+   */
+  fill?: boolean;
 }
 
-export function ImageView({ label, inspectionId, kind = "result" }: ImageViewProps) {
+export function ImageView({
+  label,
+  inspectionId,
+  kind = "result",
+  fill = false,
+}: ImageViewProps) {
   const { url, status } = useAuthedImage(inspectionId, kind);
 
   return (
-    <figure className="flex flex-col items-center" data-testid="image-view">
+    <figure
+      className={
+        fill
+          ? "flex min-h-0 flex-1 flex-col"
+          : "flex flex-col items-center"
+      }
+      data-testid="image-view"
+    >
       <div
-        className="flex aspect-video w-full items-center justify-center overflow-hidden rounded-lg border-2 border-dashed border-gray-300 bg-gray-50"
+        className={`flex items-center justify-center overflow-hidden bg-gray-50 ${
+          fill
+            ? "min-h-0 w-full flex-1"
+            : "aspect-video w-full rounded-lg border-2 border-dashed border-gray-300"
+        }`}
         data-status={status}
       >
         {status === "ready" && url ? (
@@ -44,9 +67,11 @@ export function ImageView({ label, inspectionId, kind = "result" }: ImageViewPro
           </span>
         )}
       </div>
-      <figcaption className="mt-1 text-sm font-medium text-gray-500">
-        {label}
-      </figcaption>
+      {!fill && (
+        <figcaption className="mt-1 text-sm font-medium text-gray-500">
+          {label}
+        </figcaption>
+      )}
     </figure>
   );
 }

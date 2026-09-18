@@ -64,6 +64,18 @@ export function login(body: LoginRequest): Promise<TokenResponse> {
   });
 }
 
+/**
+ * 파이 자체 화면 자동 로그인(작업자 권한). POST /auth/kiosk.
+ *
+ * 서버가 **루프백 요청일 때만** 토큰을 준다. 즉 파이에 붙은 7인치 화면에서는
+ * 통과하고, 사무실 PC 에서 파이 IP 로 접속하면 403 → 일반 로그인 화면으로
+ * 넘어간다. 현장 작업자가 교대마다 장갑 낀 손으로 터치 키보드에 아이디·
+ * 비밀번호를 치던 문제를 없애기 위한 경로다.
+ */
+export function kioskLogin(): Promise<TokenResponse> {
+  return request<TokenResponse>("/auth/kiosk", { method: "POST" });
+}
+
 export interface InspectionQuery {
   lot?: string;
   item?: string;

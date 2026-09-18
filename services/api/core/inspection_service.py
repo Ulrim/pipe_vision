@@ -100,6 +100,7 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
         work_order=result.work_order,
         item_code=result.item_code,
         cam_id=result.cam_id,
+        inspection_stage=_verdict_value(result.inspection_stage),
         inspected_at=result.inspected_at,
         tube_index=result.tube_index,
         shift=result.shift,
