@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "6.000ms",
+      "measured": "9.000ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -139,11 +139,11 @@
   },
   "metric3_latency": {
     "count": 1000,
-    "p50_ms": 5.0,
-    "p95_ms": 6.0,
-    "p99_ms": 7.0,
-    "max_ms": 8.0,
-    "mean_ms": 5.472,
+    "p50_ms": 8.0,
+    "p95_ms": 9.0,
+    "p99_ms": 9.0,
+    "max_ms": 10.0,
+    "mean_ms": 8.024,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -198,5 +198,5 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-09-17T08:24:58.157753+00:00"
+  "generated_at": "2026-09-18T04:55:23.160701+00:00"
 }

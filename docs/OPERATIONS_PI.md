@@ -40,21 +40,18 @@
 
 ```bash
 sudo apt update && sudo apt install -y git
-git clone -b claude/eloquent-gauss-O6wDP \
-  https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
+git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
 cd ~/pipe_vision
 bash scripts/aivis-install.sh
 ```
 
-> **`-b claude/eloquent-gauss-O6wDP` 를 빼먹지 마세요.** 이 부분이 없으면
-> 옛 버전(설치 스크립트가 없는)을 받게 되어
-> `scripts/aivis-install.sh: No such file or directory` 오류가 납니다.
->
-> **이미 받아둔 폴더가 있다면** 새로 받지 말고 최신으로 맞추세요:
+> **이미 받아둔 폴더가 있다면** 새로 받지 말고 최신으로 맞추세요. 예전에는 개발
+> 브랜치(`claude/...`)를 직접 받아야 했지만 지금은 기본 브랜치에 모두 반영돼
+> 있습니다.
 > ```bash
 > cd ~/pipe_vision
-> git fetch origin claude/eloquent-gauss-O6wDP
-> git checkout -B claude/eloquent-gauss-O6wDP origin/claude/eloquent-gauss-O6wDP
+> git fetch origin main
+> git checkout -B main origin/main
 > bash scripts/aivis-install.sh
 > ```
 >

@@ -22,7 +22,7 @@
 #   -h, --help         도움말
 #
 # 환경변수:
-#   AIVIS_BRANCH=claude/eloquent-gauss-O6wDP   대상 브랜치
+#   AIVIS_BRANCH=main                           대상 브랜치
 #   AIVIS_HOME=/var/lib/aivis                  데이터 루트(롤백 기록 저장 위치)
 #
 # 안전 원칙:
@@ -37,7 +37,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-AIVIS_BRANCH="${AIVIS_BRANCH:-claude/eloquent-gauss-O6wDP}"
+AIVIS_BRANCH="${AIVIS_BRANCH:-main}"
 AIVIS_HOME="${AIVIS_HOME:-/var/lib/aivis}"
 SERVICE_NAME="${AIVIS_SERVICE_NAME:-aivis-standalone.service}"
 
