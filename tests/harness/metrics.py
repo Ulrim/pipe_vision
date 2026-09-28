@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 import math
-from typing import Dict, List, Sequence
+from typing import Dict, Sequence
 
 from aivis_types import ItemMaster
 
@@ -25,6 +27,9 @@ def make_item_master(item_code: str = "HP12") -> ItemMaster:
 
     services/vision/tests/conftest.py 의 픽스처와 동일 값(단일 진실원 정합):
     ref 125mm, 공차 ±3mm, scale 0.25, oil 0.30 / dis 0.20 / scr 0.15.
+
+    **이 값은 합성 캔버스 전용이다.** 실사진에 쓰면 안 된다 —
+    item_master_for_real_dataset() 을 쓴다.
     """
     return ItemMaster(
         item_code=item_code,
@@ -36,6 +41,61 @@ def make_item_master(item_code: str = "HP12") -> ItemMaster:
         oil_threshold=0.30,
         discolor_threshold=0.20,
         scratch_threshold=0.15,
+    )
+
+
+class CalibrationMissing(RuntimeError):
+    """실데이터를 돌리려는데 현장 캘리브레이션 값이 없다."""
+
+
+def item_master_for_real_dataset(item_code: str = "HP12") -> ItemMaster:
+    """실사진용 기준정보. 현장 캘리브레이션 값을 **환경변수로 반드시 받는다**.
+
+    왜 기본값을 두지 않는가: 합성 기준정보(125mm, 0.25mm/px)는 800x300 도형
+    캔버스에 맞춰진 숫자다. 이걸로 실사진을 재면 측정 길이가 전혀 다른 값이 나와
+    길이 판정(LEN)이 통째로 무의미해진다. 그런데 리포트에는 "real dataset" 으로
+    찍히므로, 합성으로 돌린 것보다 **더 위험하다** — 검증된 것처럼 보이기 때문이다.
+    그래서 값이 없으면 조용히 기본값으로 떨어지지 않고 멈춘다.
+
+    px_to_mm_scale 은 스케일 기준자를 함께 찍은 캘리브레이션 촬영(부록 A.3)에서
+    산출한다. 추정값을 넣으면 안 된다.
+    """
+    missing = [
+        name
+        for name in ("AIVIS_ITEM_REF_LENGTH_MM", "AIVIS_ITEM_PX_TO_MM_SCALE")
+        if not os.getenv(name)
+    ]
+    if missing:
+        raise CalibrationMissing(
+            "실데이터로 검증하려면 현장 캘리브레이션 값이 필요합니다. "
+            f"누락: {', '.join(missing)}\n"
+            "  AIVIS_ITEM_REF_LENGTH_MM=250.0      # 품목 기준 길이(mm)\n"
+            "  AIVIS_ITEM_PX_TO_MM_SCALE=0.130208  # 캘리브레이션으로 산출한 px→mm\n"
+            "  (선택) AIVIS_ITEM_TOL_PLUS_MM / _TOL_MINUS_MM / "
+            "AIVIS_ITEM_OIL_TH / _DIS_TH / _SCR_TH\n"
+            "합성 기준값(125mm, 0.25mm/px)은 도형 캔버스 전용이라 실사진에 쓰면 "
+            "길이 판정이 무의미해집니다."
+        )
+
+    def _f(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return default
+        try:
+            return float(raw)
+        except ValueError as exc:
+            raise CalibrationMissing(f"{name} 값이 숫자가 아닙니다: {raw!r}") from exc
+
+    return ItemMaster(
+        item_code=os.getenv("AIVIS_ITEM_CODE", item_code),
+        item_name=os.getenv("AIVIS_ITEM_NAME", "Header Pipe"),
+        ref_length_mm=_f("AIVIS_ITEM_REF_LENGTH_MM", 0.0),
+        tol_plus_mm=_f("AIVIS_ITEM_TOL_PLUS_MM", 0.5),
+        tol_minus_mm=_f("AIVIS_ITEM_TOL_MINUS_MM", 0.5),
+        px_to_mm_scale=_f("AIVIS_ITEM_PX_TO_MM_SCALE", 0.0),
+        oil_threshold=_f("AIVIS_ITEM_OIL_TH", 0.5),
+        discolor_threshold=_f("AIVIS_ITEM_DIS_TH", 0.5),
+        scratch_threshold=_f("AIVIS_ITEM_SCR_TH", 0.5),
     )
 
 

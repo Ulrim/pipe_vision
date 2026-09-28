@@ -28,17 +28,28 @@ _REPORT_DIR = Path(__file__).resolve().parent / "report"
 
 @pytest.fixture(scope="module")
 def sat_env(tmp_path_factory):
-    item = mt.make_item_master()
-
     # 실데이터 우선(부록 A.6 AIVIS_DATASET_DIR), 없으면 합성 모사.
+    #
+    # 기준정보를 데이터 종류에 맞춰 바꾸는 것이 핵심이다. 합성 기준정보
+    # (125mm, 0.25mm/px)는 800x300 도형 캔버스 전용 숫자라, 실사진에 그대로
+    # 쓰면 길이 판정이 통째로 틀리면서 리포트에는 "real dataset" 으로 찍힌다.
+    # 합성으로 돌린 것보다 더 위험하므로 캘리브레이션이 없으면 멈춘다.
     real_dir = os.getenv("AIVIS_DATASET_DIR")
     if real_dir and Path(real_dir).exists():
         data_dir = Path(real_dir)
-        source = f"real dataset (AIVIS_DATASET_DIR={real_dir})"
+        item = mt.item_master_for_real_dataset()
+        source = (
+            f"real dataset (AIVIS_DATASET_DIR={real_dir}, "
+            f"ref={item.ref_length_mm}mm, scale={item.px_to_mm_scale}mm/px)"
+        )
     else:
+        item = mt.make_item_master()
         data_dir = tmp_path_factory.mktemp("sat_dataset")
         ds.write_groundtruth_dataset(data_dir, per_class=_PER_CLASS, item_code=item.item_code)
-        source = f"synthetic 실생산 모사 (per_class={_PER_CLASS}, 혼합 LOT/교대)"
+        source = (
+            f"synthetic 실생산 모사 (per_class={_PER_CLASS}, 혼합 LOT/교대) "
+            "— 합성 도형 기준이며 실제 성능이 아님"
+        )
 
     gt = runner.load_groundtruth(data_dir, view="SIDE")
     assert gt, f"정답셋 비었음: {data_dir}"

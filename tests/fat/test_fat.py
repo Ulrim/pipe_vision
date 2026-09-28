@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -25,9 +26,24 @@ _REPORT_DIR = Path(__file__).resolve().parent / "report"
 @pytest.fixture(scope="module")
 def fat_env(tmp_path_factory):
     """정답셋 생성 + 파이프라인 전건 실행(지표1/2/3 입력) + backend 적재(지표4)."""
-    item = mt.make_item_master()
-    data_dir = tmp_path_factory.mktemp("fat_dataset")
-    ds.write_groundtruth_dataset(data_dir, per_class=_PER_CLASS, item_code=item.item_code)
+    # SAT 와 같은 규칙: 실데이터가 지정돼 있으면 그것으로, 없으면 합성으로.
+    # 실데이터를 쓸 때는 현장 캘리브레이션을 반드시 받는다(metrics 참조).
+    real_dir = os.getenv("AIVIS_DATASET_DIR")
+    if real_dir and Path(real_dir).exists():
+        data_dir = Path(real_dir)
+        item = mt.item_master_for_real_dataset()
+        source = (
+            f"real dataset (AIVIS_DATASET_DIR={real_dir}, "
+            f"ref={item.ref_length_mm}mm, scale={item.px_to_mm_scale}mm/px)"
+        )
+    else:
+        item = mt.make_item_master()
+        data_dir = tmp_path_factory.mktemp("fat_dataset")
+        ds.write_groundtruth_dataset(data_dir, per_class=_PER_CLASS, item_code=item.item_code)
+        source = (
+            "synthetic (gen_synthetic + 사이드카 정답셋, AIVIS_CAMERA=sim) "
+            "— 합성 도형 기준이며 실제 성능이 아님"
+        )
 
     gt = runner.load_groundtruth(data_dir, view="SIDE")
     assert gt, "정답셋이 비었습니다 — 데이터 생성 실패"
@@ -42,6 +58,7 @@ def fat_env(tmp_path_factory):
         "core": core,
         "latency": latency,
         "storage": storage,
+        "source": source,
     }
 
 
@@ -83,7 +100,7 @@ def fat_payload(fat_env):
 
     payload = {
         "title": "AIVIS FAT 결과서 (§1.2 인수 합격기준 자동검증)",
-        "dataset_source": "synthetic (gen_synthetic + 사이드카 정답셋, AIVIS_CAMERA=sim)",
+        "dataset_source": fat_env["source"],
         "sample_count": core.sample_count,
         "overall_passed": overall,
         "kpi_table": kpi_table,

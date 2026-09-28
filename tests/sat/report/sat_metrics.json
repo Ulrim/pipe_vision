@@ -1,6 +1,6 @@
 {
   "title": "AIVIS SAT 결과서 (실생산 모사, §1.2 + 사용성)",
-  "dataset_source": "synthetic 실생산 모사 (per_class=80, 혼합 LOT/교대)",
+  "dataset_source": "synthetic 실생산 모사 (per_class=80, 혼합 LOT/교대) — 합성 도형 기준이며 실제 성능이 아님",
   "sample_count": 480,
   "overall_passed": true,
   "kpi_table": [
@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "9.000ms",
+      "measured": "14.000ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -139,11 +139,11 @@
   },
   "metric3_latency": {
     "count": 1000,
-    "p50_ms": 8.0,
-    "p95_ms": 9.0,
-    "p99_ms": 9.0,
-    "max_ms": 10.0,
-    "mean_ms": 8.024,
+    "p50_ms": 10.0,
+    "p95_ms": 14.0,
+    "p99_ms": 15.0,
+    "max_ms": 21.0,
+    "mean_ms": 10.222,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -198,5 +198,5 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-09-18T04:55:23.160701+00:00"
+  "generated_at": "2026-09-28T07:31:11.773356+00:00"
 }

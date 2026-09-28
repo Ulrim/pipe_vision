@@ -10,7 +10,6 @@ services/* 는 읽기 전용. data-ops groundtruth.build_groundtruth 로 정답�
 """
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,12 +19,11 @@ import cv2
 
 from aivis_types import ItemMaster
 
-from vision.pipeline import InspectionPipeline, to_inspection_result
+from vision.pipeline import InspectionPipeline
 
 # data-ops 정답셋 빌더(부록 A.4/A.5) 재사용.
 from labeling.groundtruth import GroundTruthItem, build_groundtruth
 
-from . import dataset as ds
 from . import metrics as mt
 
 
@@ -250,7 +248,7 @@ def verify_storage_and_mes(
     from main import app
     from core.config import get_settings
     from db.base import SessionLocal, init_db
-    from mes.watchdog import get_linkage_status, run_watchdog_once
+    from mes.watchdog import run_watchdog_once
 
     init_db()
     seed_item_master(item)  # FK(inspection.item_code → item_master) 충족.
@@ -311,7 +309,6 @@ def verify_storage_and_mes(
     # DB 조회: 주입 LOT 건수 합산(저장율).
     db = SessionLocal()
     try:
-        from sqlalchemy import select
         from db.models import Inspection
 
         stored = db.execute(
@@ -329,7 +326,6 @@ def verify_storage_and_mes(
         synced = db.execute(
             select_count_synced_for_lots(Inspection, injected_lots)
         ).scalar_one()
-        status = get_linkage_status(db)  # 전체 스냅샷(진단용)
     finally:
         db.close()
 

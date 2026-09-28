@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List
 
 import cv2
 
