@@ -34,7 +34,7 @@ if str(_SERVICES_DIR) not in sys.path:
 
 from vision.multi.segment import segment_tubes  # noqa: E402
 from vision.preprocess import preprocess  # noqa: E402
-from vision.surface.anomaly import FEATURE_DIM, extract_descriptor  # noqa: E402
+from vision.surface.anomaly import FEATURE_DIM, patch_descriptors  # noqa: E402
 
 _IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
@@ -51,8 +51,14 @@ def _region_and_mask(img_bgr: np.ndarray):
     return region, rmask
 
 
-def _descriptor_for(img_bgr: np.ndarray, *, segment: bool) -> List[np.ndarray]:
-    """이미지 1장 → 기술자 리스트(segment 면 튜브별 여러 개)."""
+def _descriptor_for(
+    img_bgr: np.ndarray, *, segment: bool, grid: int = 1
+) -> List[np.ndarray]:
+    """이미지 1장 → 기술자 리스트(segment 면 튜브별, grid>1 이면 패치별).
+
+    grid 는 추론과 반드시 같아야 한다. 학습은 전체 한 벡터로 하고 추론만 패치로
+    하면 비교 대상이 달라져 거리가 전부 커진다(정상품 대량 오검).
+    """
     vecs: List[np.ndarray] = []
     if segment:
         tubes = segment_tubes(img_bgr)
@@ -63,9 +69,9 @@ def _descriptor_for(img_bgr: np.ndarray, *, segment: bool) -> List[np.ndarray]:
         if crop is None or crop.size == 0 or crop.ndim != 3:
             continue
         region, rmask = _region_and_mask(crop)
-        vec = extract_descriptor(region, rmask)
-        if np.any(vec):  # 전경 없음(0 벡터)은 학습에서 제외.
-            vecs.append(vec)
+        for vec in patch_descriptors(region, rmask, grid=grid):
+            if np.any(vec):  # 전경 없음(0 벡터)은 학습에서 제외.
+                vecs.append(vec)
     return vecs
 
 
@@ -81,7 +87,7 @@ def list_ok_images(ok_dir: str | Path) -> List[Path]:
 
 
 def collect_descriptors(
-    image_paths: Sequence[Path], *, segment: bool = False
+    image_paths: Sequence[Path], *, segment: bool = False, grid: int = 1
 ) -> np.ndarray:
     """이미지 경로들 → 기술자 행렬(N x FEATURE_DIM). 결정적."""
     rows: List[np.ndarray] = []
@@ -89,7 +95,7 @@ def collect_descriptors(
         img = cv2.imread(str(p), cv2.IMREAD_COLOR)
         if img is None:
             continue
-        rows.extend(_descriptor_for(img, segment=segment))
+        rows.extend(_descriptor_for(img, segment=segment, grid=grid))
     if not rows:
         return np.empty((0, FEATURE_DIM), dtype=np.float64)
     return np.vstack(rows).astype(np.float64)
@@ -224,6 +230,8 @@ def save_model(model: dict, out_path: str | Path, *, item_code: str) -> Path:
         threshold=np.float64(model["threshold"]),
         feature_dim=np.int64(model["feature_dim"]),
         n_train=np.int64(model["n_train"]),
+        # 추론이 같은 격자로 채점하도록 모델에 싣는다(불일치 시 전부 오검).
+        patch_grid=np.int64(model.get("patch_grid", 1)),
         item_code=np.array(str(item_code)),
         version=np.int64(1),
     )
@@ -244,12 +252,18 @@ def train_anomaly(
     reg: float = 0.1,
     margin: float = 1.0,
     folds: int = 5,
+    grid: int = 1,
 ) -> dict:
-    """정상 이미지 디렉터리 → 이상탐지 모델 학습·저장. 요약 dict 반환."""
+    """정상 이미지 디렉터리 → 이상탐지 모델 학습·저장. 요약 dict 반환.
+
+    grid>1 이면 표면을 격자로 나눠 패치별로 학습한다. 작은 국소 결함
+    (스크래치 등)은 영역 전체 통계에 묻히기 때문이다 — DAGM 벤치마크에서
+    전체 한 벡터 대비 분리도가 크게 올랐다(vision.tools.dagm_benchmark 참조).
+    """
     paths = list_ok_images(ok_dir)
     if not paths:
         raise FileNotFoundError(f"정상(OK) 이미지가 없다: {ok_dir}")
-    X = collect_descriptors(paths, segment=segment)
+    X = collect_descriptors(paths, segment=segment, grid=grid)
     if X.shape[0] < 1:
         raise ValueError(
             "학습 기술자를 하나도 얻지 못했다(전처리에서 전경 미검출)."
@@ -257,6 +271,7 @@ def train_anomaly(
     model = fit_model(
         X, percentile=percentile, k=k, reg=reg, margin=margin, folds=folds
     )
+    model["patch_grid"] = int(max(1, grid))
     saved = save_model(model, out_path, item_code=item_code)
     n_samples, dim = int(X.shape[0]), int(model["feature_dim"])
     summary = {
@@ -268,6 +283,7 @@ def train_anomaly(
         "threshold_basis": model["threshold_basis"],
         "out_path": str(saved),
         "segment": segment,
+        "patch_grid": int(max(1, grid)),
         "warnings": _sample_warnings(n_samples, dim, model["threshold_basis"]),
     }
     return summary
@@ -299,6 +315,12 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         description="AIVIS 비지도 이상탐지 학습(정상 이미지만) — §6.3"
     )
     ap.add_argument("--ok-dir", required=True, help="정상(OK) 이미지 폴더")
+    ap.add_argument(
+        "--grid",
+        type=int,
+        default=1,
+        help="표면을 grid x grid 패치로 나눠 학습(작은 국소 결함 탐지력 향상). 기본 1",
+    )
     ap.add_argument("--item", required=True, help="품목 코드(예: HP12)")
     ap.add_argument("--out", help="출력 npz(기본: models/anomaly_<item>.npz)")
     ap.add_argument(
@@ -339,6 +361,7 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         reg=args.reg,
         margin=args.margin,
         folds=args.folds,
+        grid=args.grid,
     )
     basis_ko = (
         "교차검증(표본외)"

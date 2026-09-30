@@ -37,6 +37,20 @@ from aivis_types import ItemMaster, SurfaceResult
 from .classical import analyze_surface
 from .model import ClassicalSurfaceModel, SurfaceModel
 
+#: 패치 한 변의 최소 화소. 이보다 작으면 분위수·표준편차가 불안정해진다.
+_MIN_PATCH_PX = 32
+
+#: 통계를 낼 때 쓰는 최대 화소 표본 수. 이보다 많으면 일정 간격으로 솎아 쓴다.
+#:
+#: **이미지를 줄이지 않고 표본만 줄인다.** 처음에는 영역 자체를 축소했는데 가는
+#: 결함이 뭉개져 DAGM 8x8 AUROC 가 1.000 에서 0.708 로 떨어졌다. 파생 맵
+#: (그래디언트·라플라시안·Canny)은 원본 해상도에서 계산해야 가는 스크래치가
+#: 살아남는다. 반면 그 맵들의 **통계**(평균·표준편차·분위수)는 화소를 전부 볼
+#: 필요가 없다 — 5만 표본이면 64만 표본과 사실상 같은 값이 나온다.
+#:
+#: 비용 구조 실측(1600x400): 맵 계산 13ms, 통계 78ms. 비싼 쪽은 통계였다.
+_MAX_STAT_PX = int(os.getenv("AIVIS_ANOMALY_MAX_STAT_PX", "50000") or 50000)
+
 # 고정 차원 기술자(결정적). 순서를 바꾸면 기존 npz 와 호환 불가 → version 관리.
 FEATURE_NAMES = (
     "L_mean",
@@ -96,24 +110,40 @@ def _foreground_mask(
     return m > 0
 
 
-def extract_descriptor(
-    region_bgr: np.ndarray, mask: Optional[np.ndarray] = None
-) -> np.ndarray:
-    """표면 ROI → 고정 차원(FEATURE_DIM) 기술자 벡터(결정적, float64).
+@dataclass
+class _Maps:
+    """영역 전체에서 **한 번만** 계산한 파생 맵들.
 
-    전경(fg) 내부에서만 통계를 낸다(배경 배제). 텍스처/에지 통계는 전경을 살짝
-    침식(erode)해 ROI 경계 에지(파이프 vs 배경) 오염을 줄인다. 전경이 비면 0 벡터
-    (미판정 0 안전장치).
+    기술자 19개는 전부 이 맵들의 통계다. 패치마다 cvtColor/Sobel/Laplacian/
+    top-hat/Canny 를 다시 돌리면 8x8 격자에서 같은 연산을 64번 반복하게 된다
+    (실측: 1600x400 영역에서 141ms — 라즈베리파이4 로는 300ms 예산을 넘긴다).
+    맵을 한 번 만들고 패치는 **잘라서 통계만** 낸다.
+
+    덤으로 정확도에도 유리하다. 패치별로 Sobel/Canny 를 돌리면 패치 경계마다
+    인위적인 에지가 생겨 없는 결함을 만들어낸다. 전체에서 계산하면 그 경계가 없다.
     """
-    if region_bgr is None or region_bgr.ndim != 3:
-        return np.zeros(FEATURE_DIM, dtype=np.float64)
-    h, w = region_bgr.shape[:2]
-    if h < 3 or w < 3:
-        return np.zeros(FEATURE_DIM, dtype=np.float64)
 
+    gray: np.ndarray
+    L: np.ndarray
+    A: np.ndarray
+    B: np.ndarray
+    gmag: np.ndarray
+    lap: np.ndarray
+    tophat: np.ndarray
+    edges: np.ndarray
+    rg: np.ndarray
+    yb: np.ndarray
+    fg: np.ndarray
+    fg_er: np.ndarray
+
+
+def _compute_maps(
+    region_bgr: np.ndarray, mask: Optional[np.ndarray] = None
+) -> Optional[_Maps]:
+    """파생 맵 일괄 계산. 전경이 없으면 None(호출자가 0 벡터 처리)."""
     fg = _foreground_mask(region_bgr, mask)
     if int(fg.sum()) == 0:
-        return np.zeros(FEATURE_DIM, dtype=np.float64)
+        return None
 
     # 텍스처/에지용: 경계 에지 배제를 위해 전경 침식.
     fg_u8 = (fg.astype(np.uint8)) * 255
@@ -126,49 +156,92 @@ def extract_descriptor(
 
     gray = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2GRAY)
     lab = cv2.cvtColor(region_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
-    L, A, B = lab[:, :, 0], lab[:, :, 1], lab[:, :, 2]
-    Lf, Af, Bf = L[fg], A[fg], B[fg]
 
-    # 그래디언트 크기(텍스처).
     gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
     gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
     gmag = np.sqrt(gx * gx + gy * gy)
-    gmag_f = gmag[fg_er]
 
-    # 국소 대비(라플라시안 분산).
     lap = cv2.Laplacian(gray, cv2.CV_32F, ksize=3)
-    lap_f = lap[fg_er]
 
-    # 하이라이트(유분/반사): 포화 비율 + top-hat 얼룩 비율.
-    sat_ratio = float(np.mean(gray[fg] >= 245))
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
     tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, kernel)
-    tophat_ratio = float(np.mean(tophat[fg] >= 40))
 
-    # 에지 밀도(스크래치/구조).
     g0 = gray.copy()
     g0[~fg] = 0
     edges = cv2.Canny(g0, 60, 160)
-    edge_density = float(np.mean(edges[fg_er] > 0))
 
-    # colorfulness(Hasler-Susstrunk) — 변색 민감.
     Bc = region_bgr[:, :, 0].astype(np.float32)
     Gc = region_bgr[:, :, 1].astype(np.float32)
     Rc = region_bgr[:, :, 2].astype(np.float32)
-    rg = (Rc - Gc)[fg]
-    yb = (0.5 * (Rc + Gc) - Bc)[fg]
+
+    return _Maps(
+        gray=gray,
+        L=lab[:, :, 0],
+        A=lab[:, :, 1],
+        B=lab[:, :, 2],
+        gmag=gmag,
+        lap=lap,
+        tophat=tophat,
+        edges=edges,
+        rg=Rc - Gc,
+        yb=0.5 * (Rc + Gc) - Bc,
+        fg=fg,
+        fg_er=fg_er,
+    )
+
+
+def _stats_from_maps(m: _Maps, box: Optional[tuple] = None) -> np.ndarray:
+    """맵의 한 구간(box=(y0,y1,x0,x1), None=전체)에서 기술자 19개를 낸다."""
+    if box is None:
+        sl = (slice(None), slice(None))
+    else:
+        y0, y1, x0, x1 = box
+        sl = (slice(y0, y1), slice(x0, x1))
+
+    fg = m.fg[sl]
+    n_fg = int(fg.sum())
+    if n_fg == 0:
+        return np.zeros(FEATURE_DIM, dtype=np.float64)
+    fg_er = m.fg_er[sl]
+    if int(fg_er.sum()) < 10:
+        fg_er = fg  # 패치가 작아 침식분이 비면 전경 사용.
+
+    # 표본이 너무 많으면 **배열 뷰를 간격으로 잘라** 솎는다. 인덱스 배열을 만드는
+    # 방식(flatnonzero)보다 훨씬 싸다 — 뷰는 복사가 없다. 간격 추출이라 결정적이다
+    # (무작위 표본은 실행마다 값이 바뀐다).
+    step = 1
+    if _MAX_STAT_PX > 0 and n_fg > _MAX_STAT_PX:
+        step = int(math.ceil(math.sqrt(n_fg / float(_MAX_STAT_PX))))
+    if step > 1:
+        ss = (slice(sl[0].start, sl[0].stop, step), slice(sl[1].start, sl[1].stop, step))
+        fg = fg[::step, ::step]
+        fg_er = fg_er[::step, ::step]
+    else:
+        ss = sl
+
+    def _sel(arr: np.ndarray, m_: np.ndarray) -> np.ndarray:
+        return arr[ss][m_]
+
+    Lf, Af, Bf = _sel(m.L, fg), _sel(m.A, fg), _sel(m.B, fg)
+    gmag_f = _sel(m.gmag, fg_er)
+    lap_f = _sel(m.lap, fg_er)
+    gray_f_u8 = _sel(m.gray, fg)
+
+    sat_ratio = float(np.mean(gray_f_u8 >= 245))
+    tophat_ratio = float(np.mean(_sel(m.tophat, fg) >= 40))
+    edge_density = float(np.mean(_sel(m.edges, fg_er) > 0))
+
+    rg = _sel(m.rg, fg)
+    yb = _sel(m.yb, fg)
     colorfulness = float(
         math.sqrt(float(rg.std()) ** 2 + float(yb.std()) ** 2)
         + 0.3 * math.sqrt(float(rg.mean()) ** 2 + float(yb.mean()) ** 2)
     )
 
-    # 변색: a/b 중앙값 대비 색이탈 거리 통계.
     a_med, b_med = float(np.median(Af)), float(np.median(Bf))
     ab_dist = np.sqrt((Af - a_med) ** 2 + (Bf - b_med) ** 2)
-    ab_dist_mean = float(ab_dist.mean())
-    ab_dist_p95 = float(np.percentile(ab_dist, 95))
 
-    gray_f = gray[fg].astype(np.float32)
+    gray_f = gray_f_u8.astype(np.float32)
     gp10, gp50, gp90 = (float(np.percentile(gray_f, q)) for q in (10, 50, 90))
 
     vec = np.array(
@@ -187,16 +260,84 @@ def extract_descriptor(
             tophat_ratio,
             edge_density,
             colorfulness,
-            ab_dist_mean,
-            ab_dist_p95,
+            float(ab_dist.mean()),
+            float(np.percentile(ab_dist, 95)),
             gp10,
             gp50,
             gp90,
         ],
         dtype=np.float64,
     )
-    # 수치 안정: 비정상값 방어.
     return np.nan_to_num(vec, nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def extract_descriptor(
+    region_bgr: np.ndarray, mask: Optional[np.ndarray] = None
+) -> np.ndarray:
+    """표면 ROI → 고정 차원(FEATURE_DIM) 기술자 벡터(결정적, float64).
+
+    전경(fg) 내부에서만 통계를 낸다(배경 배제). 텍스처/에지 통계는 전경을 살짝
+    침식(erode)해 ROI 경계 에지(파이프 vs 배경) 오염을 줄인다. 전경이 비면 0 벡터
+    (미판정 0 안전장치).
+    """
+    if region_bgr is None or region_bgr.ndim != 3:
+        return np.zeros(FEATURE_DIM, dtype=np.float64)
+    h, w = region_bgr.shape[:2]
+    if h < 3 or w < 3:
+        return np.zeros(FEATURE_DIM, dtype=np.float64)
+    maps = _compute_maps(region_bgr, mask)
+    if maps is None:
+        return np.zeros(FEATURE_DIM, dtype=np.float64)
+    return _stats_from_maps(maps, None)
+
+
+def patch_descriptors(
+    region_bgr: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+    *,
+    grid: int = 1,
+) -> np.ndarray:
+    """표면 영역을 grid x grid 로 나눠 패치별 기술자 행렬(P x FEATURE_DIM)을 만든다.
+
+    **왜 나누는가**: 기술자는 영역 전체의 평균·표준편차·분위수다. 영역이 넓으면
+    작은 국소 결함(스크래치가 대표적)이 통계에 거의 영향을 주지 않아 정상과
+    구분되지 않는다. DAGM 2007 벤치마크에서 실측했다 — 같은 기술자·같은 모델로
+    전체를 한 벡터로 보면 AUROC 0.885, 8x8 패치로 나눠 최악 패치로 채점하면
+    1.000 이었다(표본 20장 기준이라 절대치는 과신 금물이지만 방향은 분명하다).
+
+    파생 맵은 **전체에서 한 번만** 계산하고 패치는 잘라서 통계만 낸다
+    (_Maps 주석 참조 — 라즈베리파이4 예산 때문).
+
+    grid=1 이면 기존 동작과 동일한 1행을 돌려준다(하위호환).
+    패치가 너무 작으면 통계가 불안정하므로 최소 변 길이를 보장하고, 그보다
+    작아지면 grid 를 자동으로 낮춘다.
+    """
+    g = max(1, int(grid))
+    if region_bgr is None or region_bgr.ndim != 3 or region_bgr.size == 0:
+        return np.zeros((1, FEATURE_DIM), dtype=np.float64)
+    if region_bgr.shape[0] < 3 or region_bgr.shape[1] < 3:
+        return np.zeros((1, FEATURE_DIM), dtype=np.float64)
+
+    maps = _compute_maps(region_bgr, mask)
+    if maps is None:
+        return np.zeros((1, FEATURE_DIM), dtype=np.float64)
+    # 격자·패치 크기는 **축소된** 맵 기준으로 잡는다.
+    h, w = maps.gray.shape[:2]
+    if g > 1:
+        g = min(g, max(1, h // _MIN_PATCH_PX), max(1, w // _MIN_PATCH_PX))
+    if g <= 1:
+        return _stats_from_maps(maps, None).reshape(1, FEATURE_DIM)
+
+    ph, pw = h // g, w // g
+    rows: list[np.ndarray] = []
+    for r in range(g):
+        for c in range(g):
+            y0, x0 = r * ph, c * pw
+            # 마지막 행/열은 나머지 화소까지 포함(잘라 버리면 가장자리 결함을 놓친다).
+            y1 = h if r == g - 1 else y0 + ph
+            x1 = w if c == g - 1 else x0 + pw
+            rows.append(_stats_from_maps(maps, (y0, y1, x0, x1)))
+    return np.vstack(rows).astype(np.float64)
 
 
 def mahalanobis_distance(
@@ -249,6 +390,8 @@ class AnomalySurfaceModel(SurfaceModel):
         self._cov_inv: Optional[np.ndarray] = None
         self._threshold: Optional[float] = None
         self._feature_dim: Optional[int] = None
+        #: 학습 시 사용한 패치 격자. npz 에 없으면 1(구 모델 = 전체 한 벡터).
+        self._grid: int = 1
         self._load_error: Optional[str] = None
         self.last_report: Optional[AnomalyReport] = None
         if self.model_path:
@@ -262,6 +405,8 @@ class AnomalySurfaceModel(SurfaceModel):
             cov_inv = np.asarray(data["cov_inv"], dtype=np.float64)
             thr = float(data["threshold"])
             fdim = int(data["feature_dim"])
+            # 구 모델에는 없는 키다. 없으면 1 로 둬 기존 동작을 그대로 유지한다.
+            grid = int(data["patch_grid"]) if "patch_grid" in data.files else 1
         except Exception as exc:  # noqa: BLE001 - 로드 실패 시 폴백
             self._load_error = f"이상탐지 모델 로드 실패({path}): {exc}"
             return
@@ -287,6 +432,7 @@ class AnomalySurfaceModel(SurfaceModel):
         self._cov_inv = cov_inv
         self._threshold = thr
         self._feature_dim = fdim
+        self._grid = max(1, grid)
 
     @property
     def loaded(self) -> bool:
@@ -312,9 +458,14 @@ class AnomalySurfaceModel(SurfaceModel):
             return base
 
         try:
-            vec = extract_descriptor(surface_region_bgr, mask)
-            dist = mahalanobis_distance(
-                vec, self._mean, self._cov_inv  # type: ignore[arg-type]
+            feats = patch_descriptors(surface_region_bgr, mask, grid=self._grid)
+            # 최악 패치로 이미지를 대표한다. 평균을 쓰면 정상 패치가 결함을 희석해
+            # 패치로 나눈 의미가 사라진다.
+            dist = max(
+                mahalanobis_distance(
+                    v, self._mean, self._cov_inv  # type: ignore[arg-type]
+                )
+                for v in feats
             )
             thr = float(self._threshold)  # type: ignore[arg-type]
             ratio = dist / thr if thr > 0.0 else 0.0
