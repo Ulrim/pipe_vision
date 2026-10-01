@@ -2,21 +2,21 @@
   {
     "class_name": "Class1",
     "patch_grid": 8,
-    "n_train_normal": 20,
-    "n_test_normal": 8,
-    "n_test_defect": 12,
-    "threshold": 6.308452538972454,
+    "n_train_normal": 49,
+    "n_test_normal": 24,
+    "n_test_defect": 27,
+    "threshold": 6.589842244588792,
     "threshold_basis": "out_of_fold",
-    "auroc": 1.0,
-    "accuracy_pct": 95.0,
-    "precision_pct": 92.31,
-    "recall_pct": 100.0,
-    "tp": 12,
-    "fp": 1,
-    "tn": 7,
-    "fn": 0,
+    "auroc": 0.8888888888888888,
+    "accuracy_pct": 80.39,
+    "precision_pct": 74.29,
+    "recall_pct": 96.3,
+    "tp": 26,
+    "fp": 9,
+    "tn": 15,
+    "fn": 1,
     "notes": [
-      "정상 학습 표본이 적다(20장). 공분산 추정이 불안정해 수치를 과신하면 안 된다."
+      "정상 학습 표본이 적다(49장). 공분산 추정이 불안정해 수치를 과신하면 안 된다."
     ]
   }
 ]
