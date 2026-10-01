@@ -20,6 +20,7 @@ import { useState } from "react";
 import type { InspectionResult } from "@aivis/shared-types";
 import { useLiveSocket } from "@/hooks/useLiveSocket";
 import { useLiveStore } from "@/store/liveStore";
+import { useItemMaster } from "@/hooks/useItemMaster";
 import { useBatches } from "@/hooks/useBatches";
 import { useAuthStore } from "@/store/authStore";
 import { HmiHeader } from "@/components/HmiHeader";
@@ -29,6 +30,7 @@ import { BatchCard } from "@/components/BatchCard";
 import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { LoginScreen } from "@/components/LoginScreen";
+import { ImageZoom } from "@/components/ImageZoom";
 
 export default function App() {
   // 전체 로그인 게이트: 세션(토큰)이 없으면 본문 대신 로그인 화면만 렌더.
@@ -46,6 +48,9 @@ function AppShell() {
   const batches = useBatches();
   const latestBatch = batches[0] ?? null;
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
+  const [zoomed, setZoomed] = useState<InspectionResult | null>(null);
+  // 공차 밴드를 그리려면 기준정보가 필요하다(검사결과에는 공차가 없다).
+  const item = useItemMaster(latest?.item_code);
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-gray-100">
@@ -56,7 +61,13 @@ function AppShell() {
         {latestBatch?.isBatch ? (
           <BatchCard batch={latestBatch} onReview={setReviewing} />
         ) : (
-          <InspectionCard result={latest} onReview={setReviewing} />
+          <InspectionCard
+            result={latest}
+            onReview={setReviewing}
+            onZoomImage={setZoomed}
+            tolPlusMm={item?.tol_plus_mm}
+            tolMinusMm={item?.tol_minus_mm}
+          />
         )}
       </main>
 
@@ -73,6 +84,8 @@ function AppShell() {
       {reviewing && (
         <ReviewDialog result={reviewing} onClose={() => setReviewing(null)} />
       )}
+
+      {zoomed && <ImageZoom result={zoomed} onClose={() => setZoomed(null)} />}
     </div>
   );
 }

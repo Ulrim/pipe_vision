@@ -11,13 +11,43 @@
  *   눌러서 재확인할 수 있고 터치 타겟은 44px 이상.
  * - **색 규칙(고성능 HMI)**: 양품 타일은 무채색, NG 타일만 빨강. 그래야
  *   조용한 회색 줄에서 빨강이 튀어 불량이 몰리는 구간이 한눈에 보인다.
+ *
+ * **타일에 시각을 찍지 않는다.** 전에는 모든 타일이 `✕ 오전 12:40` 처럼 같은
+ * 분을 반복해서, 12칸이 사실상 같은 글자였다 — 480px 화면의 귀한 한 줄을
+ * 쓰면서 아무것도 알려주지 않았다. 작업자가 이 줄에서 읽어야 하는 것은
+ * "불량이 몰리는가, 어떤 불량이 반복되는가" 다. 그래서 NG 타일에는 **불량유형**
+ * (LEN/OIL/DIS/SCR)을 찍고 양품 타일은 기호만 남겨 좁힌다. 그러면
+ * `✓ ✓ ✓ ✕LEN ✕LEN ✕LEN ✓` 처럼 **길이 쪽으로 쏠리기 시작했다**는 신호가
+ * 한눈에 보인다. 정확한 시각은 읽을 수 있게 aria-label 에만 남긴다.
  */
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
 import type { BatchGroup } from "@/lib/batching";
 
-/** 화면 폭에 들어가는 만큼만(넘치면 가로 스크롤 대신 잘라낸다). */
-const MAX_TILES = 12;
+/** 화면 폭에 들어가는 만큼만(넘치면 가로 스크롤 대신 잘라낸다).
+ *  타일에서 시각을 빼 좁아진 만큼 더 많은 이력을 보여준다 — 패턴을 읽으려면
+ *  최근 몇 개가 아니라 흐름이 보여야 한다. */
+const MAX_TILES = 18;
+
+/** NG 배치의 대표 불량유형. 여러 개면 가장 많이 나온 코드(반복되는 문제). */
+export function dominantDefect(batch: BatchGroup): string | null {
+  const counts = new Map<string, number>();
+  for (const t of batch.tubes) {
+    for (const c of t.defect_codes ?? []) {
+      if (c === "MULTI") continue; // 복합 표식은 유형이 아니다
+      counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [code, n] of counts) {
+    if (n > bestN) {
+      best = code;
+      bestN = n;
+    }
+  }
+  return best;
+}
 
 export interface RecentFeedProps {
   batches: BatchGroup[];
@@ -89,7 +119,9 @@ function BatchTile({
   const time = new Date(batch.inspected_at).toLocaleTimeString("ko-KR", {
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
   });
+  const defect = isNg ? dominantDefect(batch) : null;
 
   return (
     <li className="flex-none">
@@ -99,8 +131,11 @@ function BatchTile({
         onClick={() => clickable && onSelect?.(target)}
         data-testid={batch.isBatch ? "batch-feed-row" : "feed-row"}
         data-verdict={batch.verdict}
-        aria-label={`${time} ${isNg ? `불량 ${batch.ngCount}개` : "양품"}`}
-        className={`flex h-11 items-center gap-1 rounded-lg border-2 px-2 ${
+        aria-label={`${time} ${
+          isNg ? `불량 ${batch.ngCount}개${defect ? ` ${defect}` : ""}` : "양품"
+        }`}
+        title={time}
+        className={`flex h-11 items-center gap-1 rounded-lg border-2 px-1.5 ${
           isNg
             ? "border-ng bg-ng text-white"
             : "border-gray-300 bg-white text-gray-500"
@@ -114,9 +149,12 @@ function BatchTile({
             {isNg ? batch.ngCount : batch.total}
           </span>
         )}
-        <span className="text-hmi-cap font-semibold tabular-nums opacity-80">
-          {time}
-        </span>
+        {/* 불량유형만 적는다 — 반복되는 유형이 보여야 공정 쏠림을 읽는다. */}
+        {defect && (
+          <span className="text-hmi-cap font-bold" data-testid="feed-defect">
+            {defect}
+          </span>
+        )}
       </button>
     </li>
   );

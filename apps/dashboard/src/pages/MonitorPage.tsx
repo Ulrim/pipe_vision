@@ -16,17 +16,48 @@ export const CPU_TEMP_DANGER_C = 80;
 /** 표시 심각도. 색 단독 사용 금지 — 항상 기호+한국어와 함께 쓴다(적녹색약 고려). */
 export type Severity = "ok" | "warn" | "danger" | "unknown";
 
+/**
+ * 심각도별 표시 (High-Performance HMI / ISA-101).
+ *
+ * **정상에는 색을 쓰지 않는다.** 예전에는 정상이 초록이었는데, 그러면 아무
+ * 문제 없는 평상시에 화면이 색으로 가득 찬다. 그 상태에서 진짜 고장이 빨강으로
+ * 떠도 이미 포화된 화면에 묻혀 눈에 띄지 않는다. 색은 "여기를 보라"는 신호이지
+ * 장식이 아니다.
+ *
+ * 더 나빴던 것은 순서가 뒤집혀 있던 점이다. 정상 셋이 초록으로 빛나는 동안
+ * 정작 조치가 필요한 "측정 불가"가 흐린 회색이라, **화면에서 가장 조용한 것이
+ * 가장 급한 것**이었다.
+ *
+ * unknown(측정 불가/미설정)은 정상이 아니다. 상태를 모른다는 뜻이므로 눈에
+ * 들어와야 한다 — 평상시 무채색보다 분명하게, 경고보다는 약하게.
+ */
 const SEV_BADGE: Record<Severity, string> = {
-  ok: "bg-ok-bg text-ok-fg",
+  ok: "text-slate-700",
   warn: "bg-amber-100 text-amber-900",
   danger: "bg-ng-bg text-ng-fg",
-  unknown: "bg-slate-100 text-slate-600",
+  unknown: "border border-slate-400 bg-white text-slate-700",
 };
 
+/** 카드 전체 배경(지표 카드). 정상은 테두리만 — 색으로 채우지 않는다. */
+const SEV_CARD: Record<Severity, string> = {
+  ok: "border border-slate-200 bg-white text-slate-800",
+  warn: "bg-amber-100 text-amber-900",
+  danger: "bg-ng-bg text-ng-fg",
+  unknown: "border border-slate-400 bg-white text-slate-700",
+};
+
+/**
+ * 색을 못 구분해도 상태를 읽을 수 있게 하는 기호.
+ *
+ * 예전에는 ASCII 를 대괄호로 감싸 `[O] 정상` 처럼 찍었는데, 미완성 디버그
+ * 출력처럼 보였다. 의도(색약 대비)는 맞으니 기호는 남기되 제대로 된 문자로
+ * 바꾼다. 정상은 기호 자체를 쓰지 않는다 — 평상시 화면에 표식이 없는 것이
+ * "이상 없음"의 가장 분명한 표현이다.
+ */
 const SEV_SYMBOL: Record<Severity, string> = {
-  ok: "O",
-  warn: "△",
-  danger: "X",
+  ok: "",
+  warn: "⚠",
+  danger: "✕",
   unknown: "?",
 };
 
@@ -287,8 +318,8 @@ function MonitorBody({ status }: { status: SystemStatus }): JSX.Element {
             v={`${fmtNum(insp.mes_pending, 0)}건`}
             note={
               insp.mes_pending > 0
-                ? "△ 미전송 대기 — 연계 상태 확인 필요"
-                : "O 전량 연계 완료"
+                ? "⚠ 미전송 대기 — 연계 상태 확인 필요"
+                : "전량 연계 완료"
             }
             alert={insp.mes_pending > 0}
           />
@@ -330,8 +361,8 @@ function isProcOver(v: number | null): boolean {
 function procNote(v: number | null): string {
   if (v === null || !Number.isFinite(v)) return "측정값 없음";
   return isProcOver(v)
-    ? `△ ${PROC_TIME_TARGET_MS}ms 목표 초과`
-    : `O ${PROC_TIME_TARGET_MS}ms 목표 이내`;
+    ? `⚠ ${PROC_TIME_TARGET_MS}ms 목표 초과`
+    : `${PROC_TIME_TARGET_MS}ms 목표 이내`;
 }
 
 function StatusCard({
@@ -348,7 +379,7 @@ function StatusCard({
       <div
         className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-base font-bold ${SEV_BADGE[label.sev]}`}
       >
-        <span aria-hidden="true">[{label.symbol}]</span>
+        {label.symbol && <span aria-hidden="true">{label.symbol}</span>}
         <span>{label.text}</span>
       </div>
       <div className="mt-1 text-xs tabular-nums text-slate-500">{sub}</div>
@@ -366,9 +397,11 @@ function MetricCard({
   note: string;
 }): JSX.Element {
   return (
-    <div className={`rounded-md p-3 ${SEV_BADGE[sev]}`} data-testid={testid}>
+    <div className={`rounded-md p-3 ${SEV_CARD[sev]}`} data-testid={testid}>
       <div className="text-xs font-medium opacity-80">
-        <span aria-hidden="true">[{SEV_SYMBOL[sev]}] </span>
+        {SEV_SYMBOL[sev] && (
+          <span aria-hidden="true">{SEV_SYMBOL[sev]} </span>
+        )}
         {title}
       </div>
       <div className="text-2xl font-bold tabular-nums">{value}</div>

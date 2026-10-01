@@ -117,8 +117,8 @@ describe("ReportPage 미리보기 상세 (M12)", () => {
     renderApp(<ReportPage />);
     const table = await screen.findByTestId("target-table");
     // 달성/미달/판정보류 세 상태 모두 문자로 읽을 수 있어야 한다.
-    expect(table).toHaveTextContent("O 달성");
-    expect(table).toHaveTextContent("X 미달");
+    expect(table).toHaveTextContent("✓ 달성");
+    expect(table).toHaveTextContent("✕ 미달");
     expect(table).toHaveTextContent("- 판정보류");
   });
 

@@ -55,11 +55,14 @@ describe("MonitorPage — 정상 응답", () => {
 
     const worker = await screen.findByTestId("svc-worker");
     expect(worker).toHaveTextContent("정상");
-    expect(worker).toHaveTextContent("[O]"); // 색 단독 아님 — 기호 병기
+    // 정상에는 기호도 색도 쓰지 않는다(ISA-101) — 평상시 표식 없음이 곧 "이상 없음".
+    expect(worker).toHaveTextContent("정상");
+    expect(worker.textContent).not.toContain("⚠");
+    expect(worker.textContent).not.toContain("✕");
     expect(worker).toHaveTextContent("마지막 응답 3초 전");
 
     const db = screen.getByTestId("svc-db");
-    expect(db).toHaveTextContent("[O]");
+    expect(db).toHaveTextContent("정상");
     expect(db).toHaveTextContent("정상");
 
     const order = screen.getByTestId("svc-order");
@@ -100,7 +103,7 @@ describe("MonitorPage — 워커/DB 상태 표기(기호+문자, 색 단독 금�
     renderApp(<MonitorPage />);
     const worker = await screen.findByTestId("svc-worker");
     expect(worker).toHaveTextContent("응답 지연");
-    expect(worker).toHaveTextContent("[△]");
+    expect(worker).toHaveTextContent("⚠");  // 색약 대비 기호 병기
     expect(worker).toHaveTextContent("마지막 응답 47초 전");
   });
 
@@ -111,12 +114,12 @@ describe("MonitorPage — 워커/DB 상태 표기(기호+문자, 색 단독 금�
     renderApp(<MonitorPage />);
     const worker = await screen.findByTestId("svc-worker");
     expect(worker).toHaveTextContent("정지");
-    expect(worker).toHaveTextContent("[X]");
+    expect(worker).toHaveTextContent("✕");
     expect(worker).toHaveTextContent("마지막 응답 기록 없음");
 
     const db = screen.getByTestId("svc-db");
     expect(db).toHaveTextContent("정지");
-    expect(db).toHaveTextContent("[X]");
+    expect(db).toHaveTextContent("✕");
   });
 
   it("활성 오더가 없으면 '오더 미설정'", async () => {
@@ -175,7 +178,7 @@ describe("MonitorPage — 경고 표기", () => {
     const temp = await screen.findByTestId("res-cpu-temp");
     expect(temp).toHaveTextContent("75℃");
     expect(temp).toHaveTextContent("경고");
-    expect(temp).toHaveTextContent("[△]");
+    expect(temp).toHaveTextContent("⚠");
   });
 
   it("CPU 85℃ 는 위험 문구를 표시한다", async () => {
@@ -185,7 +188,7 @@ describe("MonitorPage — 경고 표기", () => {
     renderApp(<MonitorPage />);
     const temp = await screen.findByTestId("res-cpu-temp");
     expect(temp).toHaveTextContent("위험");
-    expect(temp).toHaveTextContent("[X]");
+    expect(temp).toHaveTextContent("✕");
   });
 
   it("throttled=true 면 전원 부족/스로틀 배너를 표시한다", async () => {

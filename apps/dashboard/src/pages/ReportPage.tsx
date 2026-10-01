@@ -30,7 +30,7 @@ function AchievedCell({ achieved }: { achieved: boolean | null }): JSX.Element {
       style={{ color: achieved ? STATUS_GOOD : STATUS_CRITICAL }}
       className="font-semibold"
     >
-      {achieved ? "O 달성" : "X 미달"}
+      {achieved ? "✓ 달성" : "✕ 미달"}
     </span>
   );
 }

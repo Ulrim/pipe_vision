@@ -4,6 +4,7 @@
  */
 import type {
   InspectionResult,
+  ItemMaster,
   LoginRequest,
   ReviewUpdate,
   TokenResponse,
@@ -96,6 +97,21 @@ export function fetchInspections(
   });
   const qs = params.toString();
   return request<InspectionResult[]>(`/inspection${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * GET /master/items/{code} — 품목 기준정보(공차 등).
+ *
+ * 화면에 **공차 밴드**를 그리려면 허용 범위를 알아야 하는데, 검사결과에는
+ * 기준길이·편차만 있고 공차는 기준정보에만 있다. 품목이 바뀔 때까지 변하지
+ * 않는 값이라 한 번 받아 캐시한다.
+ */
+export function fetchItem(itemCode: string): Promise<ItemMaster> {
+  return request<ItemMaster>(
+    `/master/items/${encodeURIComponent(itemCode)}`,
+    undefined,
+    { auth: true },
+  );
 }
 
 /**

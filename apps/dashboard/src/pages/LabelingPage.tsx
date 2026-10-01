@@ -152,10 +152,16 @@ export function LabelingPage(): JSX.Element {
         </div>
       )}
 
+      {/* 이미지에 폭을 더 준다(3:2 → 5:3). 라벨링 도구에서 이미지 크기는 곧
+          판정 정확도이자 속도인데, 가로로 긴 제품 사진이라 세로로 늘려도 여백만
+          늘 뿐 커지지 않는다. 폭을 늘리는 것이 실제로 이미지를 키운다.
+          items-start: 높이를 억지로 맞추지 않는다. 전에는 입력 패널 높이에
+          맞춰 늘어난 카드 안에서 이미지가 위쪽에만 박혀 3분의 2가 빈 흰색이었다.
+          조작은 숫자키로 하므로 두 열의 높이가 같을 이유가 없다. */}
       {current && (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-[3fr_2fr]">
+        <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[5fr_3fr]">
           {/* 이미지 */}
-          <div className="card p-3" data-testid="label-image">
+          <div className="card flex flex-col p-3" data-testid="label-image">
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="font-semibold">
                 검사 #{current.inspection_id} · LOT {current.lot}
@@ -169,16 +175,20 @@ export function LabelingPage(): JSX.Element {
                 {fmtDateTime(current.inspected_at)}
               </span>
             </div>
-            {img.loading && <div className="py-20 text-center text-sm">이미지 로딩…</div>}
+            {img.loading && (
+              <div className="flex flex-1 items-center justify-center text-sm text-slate-400">
+                이미지 로딩…
+              </div>
+            )}
             {img.url && (
               <img
                 src={img.url}
                 alt={`검사 ${current.inspection_id} 판정 이미지`}
-                className="max-h-[55vh] w-full rounded object-contain"
+                className="w-full rounded object-contain"
               />
             )}
             {img.error && (
-              <div className="py-20 text-center text-sm text-slate-400">
+              <div className="flex flex-1 items-center justify-center text-center text-sm text-slate-400">
                 이미지를 불러오지 못했습니다(보관기간 경과 가능).
               </div>
             )}
@@ -324,15 +334,17 @@ function ProgressBar({
           const pct = v.target > 0 ? Math.min(100, (v.count / v.target) * 100) : 0;
           return (
             <div key={code}>
-              <div className="flex justify-between text-xs">
-                <span className="font-medium">{code}</span>
-                <span className="tabular-nums text-slate-400">
+              {/* "무엇이 부족한지" 알려주는 장치인데 2px 막대에 깨알 숫자라
+                  읽히지 않았다. 검수자가 다음에 무엇을 모을지 정하는 근거다. */}
+              <div className="flex justify-between text-sm">
+                <span className="font-semibold">{code}</span>
+                <span className="tabular-nums text-slate-500">
                   {v.count}/{v.target}
                 </span>
               </div>
-              <div className="mt-1 h-2 rounded bg-slate-200">
+              <div className="mt-1 h-3 rounded bg-slate-200">
                 <div
-                  className={`h-2 rounded ${pct >= 100 ? "bg-ok" : "bg-brand"}`}
+                  className={`h-3 rounded ${pct >= 100 ? "bg-ok" : "bg-brand"}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>

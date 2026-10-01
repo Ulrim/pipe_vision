@@ -46,7 +46,9 @@ export function KpiPage(): JSX.Element {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/* 4열 고정이면 지표 5개 중 마지막 하나가 다음 줄에 외톨이로 남는다.
+          넓은 화면에서는 5개를 한 줄에 놓고, 좁아지면 3→2→1 로 접는다. */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {gauges.map((g) => (
           <KpiGauge key={g.key} spec={g} />
         ))}
@@ -56,27 +58,54 @@ export function KpiPage(): JSX.Element {
       {data && (
         <div className="card p-4">
           <h2 className="mb-3 font-semibold">상세 집계 ({data.period})</h2>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-4">
+          {/* 12개를 한 줄로 늘어놓으면 눈이 어디서 끊어야 할지 모른다. 성격이
+              다른 묶음(물량 / 판정품질 / 연계·속도 / 수기)으로 나눈다. */}
+          <StatGroup title="검사 물량">
             <Stat k="총 검사수" v={fmtNum(data.total_inspected, 0)} />
             <Stat k="불량수" v={fmtNum(data.defect_count, 0)} />
             <Stat k="자동검사 완료" v={fmtNum(data.auto_inspected, 0)} />
+          </StatGroup>
+          <StatGroup title="판정 품질">
             <Stat k="오검수" v={fmtNum(data.misjudge_count, 0)} />
             <Stat k="미검수" v={fmtNum(data.miss_count, 0)} />
+          </StatGroup>
+          <StatGroup title="저장·연계·속도">
             <Stat k="저장건수" v={fmtNum(data.stored_count, 0)} />
             <Stat k="MES 연계" v={fmtNum(data.mes_synced_count, 0)} />
             <Stat k="평균 처리(ms)" v={fmtNum(data.avg_proc_time_ms, 1)} />
+          </StatGroup>
+          <StatGroup title="수기 입력 항목">
             <Stat k="Claim" v={fmtNum(data.claim_count, 0)} />
             <Stat k="작업공수지수" v={fmtNum(data.workload_index, 2)} />
             <Stat k="리드타임(일)" v={fmtNum(data.lead_time_days, 1)} />
             <Stat k="총 출하수량" v={fmtNum(data.shipped_qty, 0)} />
             <Stat k="출하유출 부적합" v={fmtNum(data.leak_defect_qty, 0)} />
             <Stat k="출하유출불량률(ppm)" v={fmtNum(data.shipment_leak_ppm, 1)} />
-          </dl>
+          </StatGroup>
         </div>
       )}
 
       <KpiManualForm period={period} summary={data} />
     </div>
+  );
+}
+
+function StatGroup({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}): JSX.Element {
+  return (
+    <section className="mb-3 last:mb-0">
+      <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
+        {title}
+      </h3>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm md:grid-cols-4">
+        {children}
+      </dl>
+    </section>
   );
 }
 

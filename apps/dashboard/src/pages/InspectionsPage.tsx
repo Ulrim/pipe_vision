@@ -6,7 +6,7 @@ import { fetchInspections, type InspectionQuery } from "@/api/endpoints";
 import { Pagination } from "@/components/Pagination";
 import { VerdictBadge } from "@/components/VerdictBadge";
 import { InspectionDetail } from "@/components/InspectionDetail";
-import { fmtNum, fmtDateTime } from "@/lib/format";
+import { fmtNum, fmtTimeShort } from "@/lib/format";
 import { rowsToCsv, triggerBlobDownload } from "@/lib/download";
 
 const PAGE_SIZE = 25;
@@ -137,30 +137,40 @@ export function InspectionsPage(): JSX.Element {
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-left text-slate-500">
             <tr>
-              <Th>ID</Th><Th>LOT</Th><Th>품목</Th><Th>검사시각</Th>
-              <Th>측정길이(mm)</Th><Th>편차(mm)</Th><Th>판정</Th>
-              <Th>불량유형</Th><Th>처리(ms)</Th>
+              {/* 판정을 맨 앞에 둔다. NG 를 찾으려고 표를 가로지르게 하면 안 된다. */}
+              <Th>판정</Th><Th>불량유형</Th><Th>편차(mm)</Th>
+              <Th>검사시각</Th><Th>측정길이(mm)</Th><Th>처리(ms)</Th>
+              <Th>LOT</Th><Th>품목</Th><Th>ID</Th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && !isFetching && (
               <tr><td colSpan={9} className="p-6 text-center text-slate-400">결과 없음</td></tr>
             )}
-            {rows.map((r) => (
+            {rows.map((r) => {
+              const outOfTol = r.length_verdict === "NG";
+              return (
               <tr key={r.id ?? `${r.lot}-${r.inspected_at}`}
-                className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
+                className="cursor-pointer border-t border-slate-100 odd:bg-white even:bg-slate-50/60 hover:bg-sky-50"
                 onClick={() => setSelected(r)} data-testid="insp-row">
-                <Td>{r.id}</Td>
-                <Td>{r.lot}</Td>
-                <Td>{r.item_code}</Td>
-                <Td>{fmtDateTime(r.inspected_at)}</Td>
-                <Td>{fmtNum(r.meas_length_mm, 3)}</Td>
-                <Td>{fmtNum(r.deviation_mm, 3)}</Td>
                 <Td><VerdictBadge verdict={r.final_verdict} /></Td>
                 <Td>{(r.defect_codes ?? []).join(", ") || "-"}</Td>
+                {/* 공차를 벗어난 편차는 눈에 띄어야 한다 — -0.25 와 19.75 가
+                    숫자만으로는 비슷해 보인다. */}
+                <Td>
+                  <span className={outOfTol ? "font-bold text-ng-fg" : undefined}>
+                    {fmtNum(r.deviation_mm, 3)}
+                  </span>
+                </Td>
+                <Td>{fmtTimeShort(r.inspected_at)}</Td>
+                <Td>{fmtNum(r.meas_length_mm, 3)}</Td>
                 <Td>{fmtNum(r.proc_time_ms, 0)}</Td>
+                <Td>{r.lot}</Td>
+                <Td>{r.item_code}</Td>
+                <Td>{r.id}</Td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
