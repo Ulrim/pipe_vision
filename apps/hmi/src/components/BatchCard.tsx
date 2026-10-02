@@ -2,10 +2,14 @@
  * 다중 튜브 배치 결과 — 현장 고정화면용 (CLAUDE.md §5 M10, 부록 A.1).
  *
  * 설계 근거(파이 7" 800x480 실측 후 재설계):
- * - 한 번에 최대 20개를 검사하므로, 작업자의 질문은 **"이번 판에 불량이 몇 개
- *   있고 어느 것인가?"** 다. 그래서 좌측에 "NG n개 / 총 m개"를 초대형으로 두고,
- *   튜브별 상태는 **번호 타일 한 줄**로 압축한다. 이전의 큰 카드 그리드는
- *   480px 안에 들어가지 않아 스크롤을 유발했다.
+ * - 작업자의 질문은 **"이번 판에 불량이 몇 개 있고 어느 것인가?"** 다. 그래서
+ *   좌측에 "NG n개 / 총 m개"를 초대형으로 두고, 튜브별 상태는 **번호 타일**로
+ *   압축한다. 이전의 큰 카드 그리드는 480px 안에 들어가지 않아 스크롤을 유발했다.
+ * - **다발이 커지면 전량 타일을 포기한다.** 에이엠피는 다발 동시 절단이 상시
+ *   공정이라 한 판에 수십 개가 들어온다(부록 A.1). 장갑 터치를 위해 타일이
+ *   44px 이상이어야 하는데, 좌측 패널 폭(약 376px)에는 한 줄에 7개뿐이라
+ *   64개면 10줄이 되어 480px 화면을 넘긴다. 임계를 넘으면 **NG 번호만** 보여준다
+ *   — 어차피 작업자가 눌러야 하는 것은 NG 타일뿐이고, 양품은 개수로 충분하다.
  * - NG 타일만 누를 수 있고(재확인 대상), 타일은 장갑 터치를 고려해 최소 44px.
  * - 원본 토글은 뺐다 — 작은 화면에서 원본은 판독에 도움이 안 되고(관리자
  *   웹에서 확인), 오조작만 늘린다.
@@ -16,6 +20,11 @@
  */
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
+
+/** 전량 타일을 보여줄 수 있는 최대 개수(7인치 800x480 기준 약 4줄). */
+export const ALL_TILES_LIMIT = 24;
+/** 임계를 넘었을 때 보여줄 NG 타일 최대 수. 더 있으면 "+n" 로 접는다. */
+export const NG_TILES_LIMIT = 24;
 import type { BatchGroup } from "@/lib/batching";
 import { ImageView } from "./ImageView";
 
@@ -26,6 +35,14 @@ export interface BatchCardProps {
 
 export function BatchCard({ batch, onReview }: BatchCardProps) {
   const isNg = batch.verdict === Verdict.NG;
+
+  // 다발이 크면 전량 타일이 화면을 넘긴다 → NG 번호만 추린다.
+  const compact = batch.tubes.length > ALL_TILES_LIMIT;
+  const candidates = compact
+    ? batch.tubes.filter((t) => t.final_verdict === Verdict.NG)
+    : batch.tubes;
+  const shown = compact ? candidates.slice(0, NG_TILES_LIMIT) : candidates;
+  const hiddenNg = compact ? candidates.length - shown.length : 0;
 
   return (
     <section
@@ -70,8 +87,9 @@ export function BatchCard({ batch, onReview }: BatchCardProps) {
         <ul
           className="flex flex-wrap content-start gap-1.5"
           data-testid="batch-tube-grid"
+          data-compact={compact ? "yes" : "no"}
         >
-          {batch.tubes.map((t, i) => (
+          {shown.map((t, i) => (
             <TubeTile
               key={t.id ?? `tube-${i}`}
               tube={t}
@@ -79,7 +97,23 @@ export function BatchCard({ batch, onReview }: BatchCardProps) {
               onReview={onReview}
             />
           ))}
+          {hiddenNg > 0 && (
+            <li
+              className="flex h-11 items-center px-2 text-hmi-cap font-black text-white"
+              data-testid="batch-tube-more"
+            >
+              +{hiddenNg}
+            </li>
+          )}
         </ul>
+        {compact && (
+          <p
+            className={`text-hmi-cap font-bold ${isNg ? "text-white/90" : "text-gray-600"}`}
+            data-testid="batch-compact-note"
+          >
+            불량 번호만 표시 · 양품 {batch.okCount}개
+          </p>
+        )}
 
         {isNg && onReview && (
           <p className="text-hmi-cap font-bold text-white">

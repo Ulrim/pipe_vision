@@ -23,11 +23,16 @@
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
 import type { BatchGroup } from "@/lib/batching";
+import { RECENT_BATCHES } from "@/store/liveStore";
 
 /** 화면 폭에 들어가는 만큼만(넘치면 가로 스크롤 대신 잘라낸다).
  *  타일에서 시각을 빼 좁아진 만큼 더 많은 이력을 보여준다 — 패턴을 읽으려면
- *  최근 몇 개가 아니라 흐름이 보여야 한다. */
-const MAX_TILES = 18;
+ *  최근 몇 개가 아니라 흐름이 보여야 한다.
+ *
+ *  liveStore 의 보존 건수가 이 값에 맞춰져 있다(RECENT_BATCHES × 배치 최대
+ *  크기). 두 값이 어긋나면 타일 자리는 18칸인데 데이터가 2칸치만 남는 식이
+ *  된다. 그래서 같은 상수를 쓴다. */
+const MAX_TILES = RECENT_BATCHES;
 
 /** NG 배치의 대표 불량유형. 여러 개면 가장 많이 나온 코드(반복되는 문제). */
 export function dominantDefect(batch: BatchGroup): string | null {

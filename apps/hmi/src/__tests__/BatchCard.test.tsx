@@ -77,3 +77,42 @@ describe("BatchCard (다중 튜브 배치 카드)", () => {
     expect(onReview).not.toHaveBeenCalled();
   });
 });
+
+describe("BatchCard — 다발 동시 절단(수십 개) 규모", () => {
+  beforeEach(() => stubImageFetch());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("임계 이하(20개)는 전량 타일을 그대로 보여준다", () => {
+    const batch = groupFeed(makeBatch(20, { ngIdx: [2] }))[0];
+    render(<BatchCard batch={batch} />);
+    const grid = screen.getByTestId("batch-tube-grid");
+    expect(grid).toHaveAttribute("data-compact", "no");
+    expect(grid.querySelectorAll("li").length).toBe(20);
+  });
+
+  it("64개 배치는 NG 번호만 보여준다(전량 타일은 480px 화면을 넘긴다)", () => {
+    const batch = groupFeed(makeBatch(64, { ngIdx: [5, 40] }))[0];
+    render(<BatchCard batch={batch} />);
+
+    const grid = screen.getByTestId("batch-tube-grid");
+    expect(grid).toHaveAttribute("data-compact", "yes");
+    // NG 2개만. 64개를 다 그리면 한 줄 7개 × 10줄이라 화면을 넘긴다.
+    expect(grid.querySelectorAll("li").length).toBe(2);
+    expect(screen.getByTestId("batch-compact-note")).toHaveTextContent("양품 62개");
+    // 총 개수는 여전히 정확히 보고된다.
+    expect(screen.getByTestId("batch-card")).toHaveTextContent("총 64개 검사");
+  });
+
+  it("NG 가 너무 많으면 타일을 접고 남은 수를 알려준다", () => {
+    const ngIdx = Array.from({ length: 40 }, (_, i) => i);
+    const batch = groupFeed(makeBatch(64, { ngIdx }))[0];
+    render(<BatchCard batch={batch} />);
+
+    const grid = screen.getByTestId("batch-tube-grid");
+    // 타일 24개 + "+16" 안내 1개.
+    expect(screen.getByTestId("batch-tube-more")).toHaveTextContent("+16");
+    expect(grid.querySelectorAll("li").length).toBe(25);
+  });
+});

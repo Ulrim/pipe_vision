@@ -110,3 +110,28 @@ describe("liveStore", () => {
     expect(useLiveStore.getState().reconnectAttempts).toBe(0);
   });
 });
+
+describe("보존 건수 — 다발 동시 절단 규모", () => {
+  beforeEach(reset);
+
+  it("최근 배치 줄이 채워질 만큼 건수를 보존한다", async () => {
+    const { RECENT_BATCHES } = await import("@/store/liveStore");
+    const { MAX_EXPECTED_COUNT } = await import("@aivis/shared-types");
+    const { makeBatch } = await import("./factories");
+    const { groupFeed } = await import("@/lib/batching");
+
+    // 가장 큰 다발로 RECENT_BATCHES 개 배치를 흘려보낸다.
+    for (let b = 0; b < RECENT_BATCHES; b += 1) {
+      const rows = makeBatch(MAX_EXPECTED_COUNT, {
+        lot: `LOT-${b}`,
+        baseId: 100000 + b * 1000,
+        inspected_at: `2026-07-06T09:${String(b).padStart(2, "0")}:00+09:00`,
+      });
+      for (const r of rows) useLiveStore.getState().pushInspection(r);
+    }
+    const feed = useLiveStore.getState().feed;
+    // 100 건으로 자르던 때는 64개짜리 배치가 1.5 개밖에 안 남아, 18칸짜리
+    // 이력 줄이 1~2칸만 채워졌다 — 그 줄의 존재 이유가 사라진다.
+    expect(groupFeed(feed).length).toBe(RECENT_BATCHES);
+  });
+});

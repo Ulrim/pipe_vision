@@ -9,17 +9,29 @@
  */
 import { create } from "zustand";
 import type { InspectionResult } from "@aivis/shared-types";
-import { Verdict } from "@aivis/shared-types";
+import { Verdict, MAX_EXPECTED_COUNT } from "@aivis/shared-types";
 import type { AlarmEvent, StatusData } from "@/types/ws";
 
 /** WS 연결 상태(인디케이터). */
 export type ConnState = "connecting" | "open" | "reconnecting" | "closed";
 
+/** 하단 이력 줄이 보여주는 최대 배치 수(RecentFeed 의 MAX_TILES 와 같은 값). */
+export const RECENT_BATCHES = 18;
+
 /** 연속 NG 임계 — 이 횟수 이상 연속되면 관리자 확인 요청 알람(M6). */
 export const CONSECUTIVE_NG_THRESHOLD = 3;
 
-/** 목록 보존 최대 건수(현장 디스플레이 메모리 보호). */
-const MAX_FEED = 100;
+/** 목록 보존 최대 건수(현장 디스플레이 메모리 보호).
+ *
+ * **건수이지 배치 수가 아니다.** 다발 동시 절단이 상시 공정이라 한 배치가
+ * 수십 건이다(부록 A.1). 100 으로 두면 64개짜리 배치에서 1.5 배치밖에 남지
+ * 않아, 하단 이력 줄이 최대 18 배치를 보여주도록 만들어 놨어도 1~2칸만 뜬다.
+ * 그러면 "불량이 몰리는가" 라는 그 줄의 존재 이유가 사라진다.
+ *
+ * 그래서 **보여줄 배치 수 × 배치 최대 크기**로 잡는다. 행 하나는 작은 JSON
+ * 메타데이터라(이미지는 보관하지 않는다) 이 크기는 파이에서도 감당된다.
+ */
+const MAX_FEED = RECENT_BATCHES * MAX_EXPECTED_COUNT;
 
 export function isNg(r: Pick<InspectionResult, "final_verdict">): boolean {
   return r.final_verdict === Verdict.NG;
