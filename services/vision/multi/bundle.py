@@ -13,17 +13,17 @@
 상한도 20개다. 단면 번들은 2차원으로 조밀 충전된 원이 수백 개라 가정이
 전혀 다르다.
 
-**측정 결과 — 이 모듈은 기준선(baseline)이지 운영 검출기가 아니다.**
-공개 데이터셋 두 개에 전수로 걸어본 결과 일반화에 실패했다.
+**측정 결과.** 피사체에 따라 성능이 갈린다.
 
-    Steel Pipe(창고 번들) 54장/22,187박스 : 정밀도 0.401 재현율 0.342 F1 0.369
-    Steel-bar(강봉 단면) 93장/14,814박스 : 정밀도 0.034 재현율 0.402 F1 0.063
+    에이엠피 크레이트(중공 튜브, 근접·고대비) : 번들 내부 사실상 1:1 검출
+    Steel Pipe(중공 강관, 창고 원거리·가림)   : F1 0.359 (정답 22,187)
+    Steel-bar(속이 찬 봉강)                   : F1 0.063 (정답 14,814)
 
-같은 파라미터로 F1 이 0.37 → 0.06 으로 무너진다(19배 과검출). 한 데이터셋에
-맞춘 임계값이 다른 데이터셋에서 전혀 듣지 않으므로, 조명이 바뀌는 실제
-현장에서는 더 나쁘다. 단면 번들 계수는 **학습 기반 검출기**가 필요하고,
-이 모듈은 그 검출기와 비교할 고전 CV 기준선으로만 둔다.
-자세한 내용은 docs/PUBLIC_DATASET_REVIEW.md §10.
+이 알고리즘은 **어두운 보어**를 찾는다. 봉강은 속이 차서 보어가 없으니
+F1 0.06 은 방법의 한계가 아니라 **데이터셋이 제품과 다르다는 증거**다.
+창고 영상은 중공이지만 멀고 가려서 중간 점수가 나온다. 제품 성능을 공개
+데이터셋 점수로 예측하면 안 된다. 자세한 내용은
+docs/PUBLIC_DATASET_REVIEW.md §11~14.
 
 알고리즘(결정적, numpy/cv2 만 — 라즈베리파이 CPU):
 1) 그레이 + CLAHE. 창고 조명은 한쪽만 밝아 전역 임계가 듣지 않는다.
@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -78,6 +78,26 @@ def _bore_mask(gray: np.ndarray, block: int, c: int) -> np.ndarray:
     )
 
 
+def _scale_hint(gray: np.ndarray) -> float:
+    """Otsu 전역 임계로 보어 반지름을 대략 잡는다(적응형 블록 크기 결정용).
+
+    적응형 임계의 블록이 보어보다 작으면 **보어 안쪽이 국소 평균과 비슷해져
+    어둡다고 판정되지 않는다.** 그러면 보어가 가장자리 조각만 남아 반지름이
+    과소추정되고, 억제 반경도 같이 작아져 한 보어를 여러 번 센다. 에이엠피
+    크레이트 영상(보어 지름 약 44px)에서 block=41 로 20배 과검출이 났다.
+    그래서 블록을 영상에서 추정한 크기에 맞춘다.
+    """
+    _, m = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    d = cv2.distanceTransform(m, cv2.DIST_L2, 3)
+    if float(d.max()) < 2.0:
+        return 0.0
+    pk = _peaks(d, min_dist=5, min_val=2.0)
+    if len(pk) == 0:
+        return 0.0
+    return float(np.percentile(d[pk[:, 0], pk[:, 1]], 90))
+
+
 def _peaks(dist: np.ndarray, min_dist: int, min_val: float) -> np.ndarray:
     """거리변환의 국소 최대 좌표 (N,2) [y,x]. 팽창 비교 — scipy 불필요."""
     k = max(3, int(min_dist) | 1)
@@ -107,18 +127,27 @@ def _nms(pts: np.ndarray, vals: np.ndarray, min_dist: float) -> np.ndarray:
 def count_bundle(
     bgr: np.ndarray,
     *,
-    block: int = 41,
+    block: Optional[int] = None,
     c: int = 5,
     open_ksize: int = 3,
+    close_ratio: float = 0.30,
+    radius_percentile: float = 90.0,
     min_radius_px: float = 4.0,
-    nms_scale: float = 2.4,
+    min_radius_ratio: float = 0.55,
+    nms_scale: float = 1.8,
 ) -> BundleResult:
     """단면 번들 프레임 → 개별 단면 검출.
 
-    `nms_scale` 은 추정 반지름 대비 억제 반경 배율이다. 조밀 충전에서는
-    중심 간 거리가 2r 에 가깝지만, 겹쳐 보이는 뒤쪽 열 때문에 그대로 쓰면
-    과소검출된다. 기본값은 공개 데이터셋 전수 격자탐색에서 F1 이 가장 높았던
-    (block=41, c=5, nms_scale=2.4) 조합이다.
+    **2단계로 돈다.** 1단계에서 보어 반지름을 대략 잡고, 그 크기에 비례한
+    커널로 닫힘 연산을 한 뒤 2단계에서 다시 센다. 고정 커널을 쓰면 안 된다 —
+    보어가 작은 영상에서는 이웃 보어끼리 붙어버려 번들 전체가 한 덩어리가
+    된다(합성 테스트에서 실제로 1개로 셌다).
+
+    - `close_ratio`: 닫힘 커널 = 반지름 × 이 값. 보어 사이 벽 두께보다
+      작아야 이웃이 안 붙고, 보어 안 반사 얼룩보다는 커야 조각이 메워진다.
+      에이엠피 크레이트 영상 기준 벽 간격은 반지름의 약 0.5배라 0.3 으로 둔다.
+    - `radius_percentile`: 억제 반경의 기준. 중앙값을 쓰면 남은 가짜 봉우리가
+      값을 끌어내려 억제 반경이 실제 피치보다 작아지고 중복이 살아남는다.
     """
     t0 = time.perf_counter()
     if bgr is None or bgr.size == 0:
@@ -127,31 +156,54 @@ def count_bundle(
     gray = _clahe(gray)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
 
-    mask = _bore_mask(gray, block, c)
+    if block is None:
+        # 추정 반지름의 약 4배를 블록으로 — 보어보다 충분히 커야 한다.
+        r_hint = _scale_hint(gray)
+        block = 41 if r_hint <= 0 else int(max(31, min(301, round(r_hint * 4))))
+    base = _bore_mask(gray, block, c)
     if open_ksize >= 3:
-        k = np.ones((open_ksize, open_ksize), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
+        base = cv2.morphologyEx(
+            base, cv2.MORPH_OPEN, np.ones((open_ksize, open_ksize), np.uint8)
+        )
 
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
-    if float(dist.max()) < min_radius_px:
+    def _radius(mask: np.ndarray) -> tuple:
+        d = cv2.distanceTransform(mask, cv2.DIST_L2, 3)
+        if float(d.max()) < min_radius_px:
+            return d, None
+        pk = _peaks(d, min_dist=5, min_val=min_radius_px)
+        if len(pk) == 0:
+            return d, None
+        r = float(np.percentile(d[pk[:, 0], pk[:, 1]], radius_percentile))
+        return d, max(r, min_radius_px)
+
+    dist, r0 = _radius(base)
+    if r0 is None:
         return BundleResult(0, [], 0.0, int((time.perf_counter() - t0) * 1000))
 
-    # 1차 봉우리로 반지름을 추정한 뒤, 그 반지름으로 억제 반경을 다시 잡는다.
-    rough = _peaks(dist, min_dist=5, min_val=min_radius_px)
-    if len(rough) == 0:
-        return BundleResult(0, [], 0.0, int((time.perf_counter() - t0) * 1000))
-    r_est = float(np.median(dist[rough[:, 0], rough[:, 1]]))
-    r_est = max(r_est, min_radius_px)
+    # 2단계: 반지름에 비례한 커널로 보어 내부 반사 조각을 메우고 다시 잰다.
+    k = int(round(r0 * close_ratio))
+    if k >= 2:
+        kc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k | 1, k | 1))
+        closed = cv2.morphologyEx(base, cv2.MORPH_CLOSE, kc)
+        d2, r2 = _radius(closed)
+        if r2 is not None:
+            dist, r0 = d2, r2
 
-    pts = _peaks(dist, min_dist=max(3, int(r_est)), min_val=min_radius_px)
+    pts = _peaks(dist, min_dist=max(3, int(r0)), min_val=min_radius_px)
+    if len(pts) == 0:
+        return BundleResult(0, [], 0.0, int((time.perf_counter() - t0) * 1000))
     vals = dist[pts[:, 0], pts[:, 1]]
-    pts = _nms(pts, vals, min_dist=r_est * nms_scale)
+    pts = _nms(pts, vals, min_dist=r0 * nms_scale)
 
+    # 튜브 셋이 만나는 삼각형 틈도 어두워서 보어로 잡힌다. 그 틈의 내접원은
+    # 보어보다 뚜렷하게 작으므로 반지름 비율로 걸러낸다.
+    floor_r = max(min_radius_px, r0 * min_radius_ratio)
     dets = [
         BundleDetection(
             cx=float(x), cy=float(y), r=float(dist[y, x]), score=float(dist[y, x])
         )
         for y, x in pts
+        if float(dist[y, x]) >= floor_r
     ]
     med_r = float(np.median([d.r for d in dets])) if dets else 0.0
     return BundleResult(
