@@ -239,3 +239,22 @@ def test_schema_cap_matches_segmenter_cap():
     from vision.multi.segment import MAX_TUBES_HARD
 
     assert MAX_EXPECTED_COUNT == MAX_TUBES_HARD
+
+
+def test_isolated_bright_row_does_not_stretch_band():
+    """밴드에서 **떨어진** 밝은 줄이 밴드를 화면 전체로 늘리면 안 된다.
+
+    예전 _foreground_band 는 임계를 넘는 행의 min~max 를 밴드로 삼았다. 그래서
+    튜브 띠와 무관한 밝은 한 줄(설비 반사, 조명 띠 등)만 걸려도 밴드가 프레임
+    전체로 벌어지고, 배경까지 튜브 스트립으로 잘렸다.
+    """
+    img, _ = make_multi_image(5)
+    h, w = img.shape[:2]
+    tall = np.full((h * 3, w, 3), 20, dtype=np.uint8)
+    tall[h * 2 :] = img                      # 튜브 다발은 아래쪽에
+    tall[5:9, :] = 255                       # 멀리 떨어진 밝은 줄
+
+    rois = segment_tubes(tall)
+    assert len(rois) == 5, f"밝은 줄 때문에 {len(rois)}개로 잘렸다"
+    # 모든 스트립이 실제 다발 영역(아래 1/3) 안에 있어야 한다.
+    assert min(r.y0 for r in rois) >= h * 2 - 5

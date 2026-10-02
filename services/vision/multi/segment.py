@@ -84,13 +84,45 @@ def _smooth(p: np.ndarray, win: int) -> np.ndarray:
 def _foreground_band(
     binm: np.ndarray, cov_thresh: float = 0.3
 ) -> Optional[Tuple[int, int]]:
-    """행 커버리지로 튜브 밴드[lo,hi) 를 찾는다(단일 층 가정)."""
+    """행 커버리지로 튜브 밴드[lo,hi) 를 찾는다(단일 층 가정).
+
+    **틈을 메운 뒤 최장 연속 구간**을 쓴다. 두 가지를 동시에 피해야 한다.
+
+    - 예전처럼 임계를 넘는 행의 min~max 를 쓰면, 밴드와 멀리 떨어진 밝은 배경
+      한 줄만 걸려도 밴드가 화면 전체로 늘어난다. 현장 사진(흰 양동이·창문이
+      금속만큼 밝다)에서 실제로 배경까지 튜브 띠로 잘렸다.
+    - 그렇다고 그냥 최장 구간을 쓰면, 튜브 사이 seam(어두운 골)에서 커버리지가
+      임계 아래로 떨어져 밴드가 튜브마다 조각나고 결국 1개만 남는다.
+
+    그래서 seam 폭 정도의 틈은 메우고(gap_tol), 그 뒤 가장 긴 덩어리를 고른다.
+    배경은 밴드에서 충분히 떨어져 있어 메워지지 않는다.
+    """
     cov = (binm > 0).mean(axis=1)  # 행별 전경 비율
-    rows = np.where(cov >= cov_thresh)[0]
-    if rows.size == 0:
+    hot = cov >= cov_thresh
+    if not hot.any():
         return None
-    lo = int(rows.min())
-    hi = int(rows.max()) + 1
+
+    # seam 은 좁고 배경은 멀다 — 그 사이를 가르는 틈 허용치.
+    gap_tol = max(3, int(round(len(hot) * 0.05)))
+    filled = hot.copy()
+    idx = np.flatnonzero(hot)
+    for a, b in zip(idx[:-1], idx[1:]):
+        if 1 < b - a <= gap_tol + 1:
+            filled[a + 1 : b] = True
+
+    best = (0, 0, 0)  # (길이, lo, hi)
+    run_lo = None
+    for i, v in enumerate(filled):
+        if v and run_lo is None:
+            run_lo = i
+        elif not v and run_lo is not None:
+            if i - run_lo > best[0]:
+                best = (i - run_lo, run_lo, i)
+            run_lo = None
+    if run_lo is not None and len(filled) - run_lo > best[0]:
+        best = (len(filled) - run_lo, run_lo, len(filled))
+
+    lo, hi = int(best[1]), int(best[2])
     if hi - lo < 3:
         return None
     return lo, hi
