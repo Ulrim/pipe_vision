@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { MAX_EXPECTED_COUNT } from "@aivis/shared-types";
 import type { ItemMaster, ItemMasterUpdate } from "@aivis/shared-types";
 import {
   calibrateItem,
@@ -284,7 +285,10 @@ function ItemEditForm({
   );
   const [recipeErr, setRecipeErr] = useState<string | null>(null);
 
-  const countInvalid = !Number.isInteger(Number(count)) || Number(count) < 1;
+  const countInvalid =
+    !Number.isInteger(Number(count)) ||
+    Number(count) < 1 ||
+    Number(count) > MAX_EXPECTED_COUNT;
 
   function submit(): void {
     setRecipeErr(null);
@@ -334,14 +338,15 @@ function ItemEditForm({
             <span className="label" title="한 프레임(오더)당 튜브 개수. 1=단일, N=다중 검사">
               개수(오더당 튜브)
             </span>
-            <input type="number" step="1" min="1" className="input w-full"
+            <input type="number" step="1" min="1" max={MAX_EXPECTED_COUNT}
+              className="input w-full"
               value={count} aria-invalid={countInvalid}
-              title="한 프레임(오더)당 튜브 개수. 1=단일, N=다중 검사"
+              title={`한 프레임(오더)당 튜브 개수. 1=단일, N=다중 검사 (최대 ${MAX_EXPECTED_COUNT})`}
               onChange={(e) => setCount(e.target.value)}
               data-testid="edit-expected_count" />
             {countInvalid && (
               <div className="mt-1 text-xs text-ng" data-testid="count-err">
-                1 이상의 정수를 입력하세요.
+                1 ~ {MAX_EXPECTED_COUNT} 사이의 정수를 입력하세요.
               </div>
             )}
           </div>

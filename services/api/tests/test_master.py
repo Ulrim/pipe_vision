@@ -103,3 +103,32 @@ def test_calibrate_requires_quality_role(client, auth):
         headers=auth("op1"),
     )
     assert r.status_code == 403, r.text
+
+
+def test_expected_count_over_cap_is_rejected(client, auth):
+    """상한을 넘는 다발 설정은 **설정 시점에 거부**되어야 한다.
+
+    예전에는 여기서 통과시킨 뒤 분할기가 조용히 20 으로 깎았다. 그러면
+    수량이 틀린 채로 검사 결과가 쌓인다. 거부가 맞다.
+    """
+    from aivis_types.inspection import MAX_EXPECTED_COUNT
+
+    body = {
+        "item_code": "M_OVERCAP",
+        "item_name": "Over cap",
+        "ref_length_mm": 125.0,
+        "tol_plus_mm": 0.5,
+        "tol_minus_mm": 0.5,
+        "px_to_mm_scale": 0.25,
+        "expected_count": MAX_EXPECTED_COUNT + 1,
+    }
+    r = client.post("/master/items", json=body, headers=auth("qa1"))
+    assert r.status_code == 422, r.text
+
+
+def test_expected_count_at_cap_is_allowed(client, auth):
+    """상한값 자체는 허용된다(다발 동시 절단 규모)."""
+    from aivis_types.inspection import MAX_EXPECTED_COUNT
+
+    data = _create(client, auth, "M_ATCAP", expected_count=MAX_EXPECTED_COUNT)
+    assert data["expected_count"] == MAX_EXPECTED_COUNT

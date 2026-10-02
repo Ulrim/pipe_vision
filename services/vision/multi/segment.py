@@ -23,13 +23,26 @@
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
 
-MAX_TUBES_HARD = 20  # §요구: 최대 20개
+# 한 프레임에서 분할할 수 있는 튜브 수의 안전 상한.
+#
+# 처음에 20 으로 잡았는데 **현장 사진을 보고 틀렸음을 확인했다.** 에이엠피는
+# 다발 동시 절단이 상시 공정이라(도입기업 확인) 절단기 클램프에만 11~12단이
+# 적층되고, 출력 랙에는 수십 개가 나란히 눕는다. 20 은 현실보다 작다.
+#
+# 더 나쁜 것은 **조용히 잘렸다는 점**이다. 기준정보에 expected_count=40 을
+# 넣어도 분할기가 말없이 20 으로 깎아 20개만 돌려줬다. 설정이 무시된 채
+# 검사 결과가 나오면 수량이 틀린 것을 아무도 모른다. 그래서 상한을 올리고,
+# 넘는 설정은 API 스키마에서 **거부**되게 했다(aivis_types).
+#
+# 설비가 더 큰 다발을 쓰면 AIVIS_MAX_TUBES 로 올린다.
+MAX_TUBES_HARD = int(os.getenv("AIVIS_MAX_TUBES", "64") or 64)
 
 
 @dataclass(frozen=True)
@@ -293,7 +306,8 @@ def segment_tubes(
 
     axis: "horizontal"(튜브가 가로로 누워 세로로 쌓임) | "vertical"(반대).
     expected_count: 알려진 튜브 개수. 주어지면 그 수에 맞춰 seam 보정.
-    min_tubes/max_tubes: 자동/보정 개수의 하한·상한(최대 20).
+    min_tubes/max_tubes: 자동/보정 개수의 하한·상한(하드 상한 MAX_TUBES_HARD,
+        기본 64 · 환경변수 AIVIS_MAX_TUBES 로 조정).
     결정적. 빈/전경없음 → 빈 리스트.
     """
     if frame is None or frame.ndim != 3:

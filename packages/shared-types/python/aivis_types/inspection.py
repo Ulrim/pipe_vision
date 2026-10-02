@@ -13,6 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from .enums import DefectCode, InspectionStage, Verdict
 
 
+#: 한 프레임당 튜브 개수의 상한. vision 의 MAX_TUBES_HARD 와 같은 값이어야
+#: 한다 — 분할기가 조용히 깎는 대신 설정 시점에 거부하기 위한 경계다.
+MAX_EXPECTED_COUNT = 64
+
+
 class ItemMaster(BaseModel):
     """품목/기준정보 (item_master 테이블, §7.1)."""
 
@@ -31,7 +36,10 @@ class ItemMaster(BaseModel):
         None, description="촬영 레시피(노출/게인/조명) JSON"
     )
     expected_count: int = Field(
-        1, ge=1, description="한 프레임(오더)당 튜브 개수. 기본 1(단일 튜브)"
+        1,
+        ge=1,
+        le=MAX_EXPECTED_COUNT,
+        description="한 프레임(오더)당 튜브 개수. 기본 1(단일 튜브)",
     )
     outer_diameter_mm: Optional[float] = Field(
         None, description="튜브 외경(mm). 단면/직경 검증·세그멘테이션 힌트용"
@@ -56,7 +64,7 @@ class ItemMasterCreate(BaseModel):
     discolor_threshold: Optional[float] = None
     scratch_threshold: Optional[float] = None
     capture_recipe: Optional[Dict[str, Any]] = None
-    expected_count: int = 1
+    expected_count: int = Field(1, ge=1, le=MAX_EXPECTED_COUNT)
     outer_diameter_mm: Optional[float] = None
 
 
@@ -74,7 +82,7 @@ class ItemMasterUpdate(BaseModel):
     discolor_threshold: Optional[float] = None
     scratch_threshold: Optional[float] = None
     capture_recipe: Optional[Dict[str, Any]] = None
-    expected_count: Optional[int] = Field(None, ge=1)
+    expected_count: Optional[int] = Field(None, ge=1, le=MAX_EXPECTED_COUNT)
     outer_diameter_mm: Optional[float] = None
 
 

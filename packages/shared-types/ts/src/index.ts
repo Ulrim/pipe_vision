@@ -55,6 +55,10 @@ export enum CameraView {
  * ========================================================================= */
 
 /** 품목/기준정보 (item_master 테이블, §7.1). */
+/** 한 프레임당 튜브 개수의 상한. 서버(aivis_types)·분할기(MAX_TUBES_HARD)와
+ *  같은 값이어야 한다. 넘으면 분할기가 조용히 깎아 수량이 틀어진다. */
+export const MAX_EXPECTED_COUNT = 64;
+
 export interface ItemMaster {
   item_code: string;
   item_name: string;

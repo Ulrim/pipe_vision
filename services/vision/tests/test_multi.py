@@ -210,3 +210,32 @@ def test_batch_overlay_deterministic(item):
     a = render_batch_overlay(img, br)
     b = render_batch_overlay(img, br)
     assert np.array_equal(a, b)
+
+
+# -------- 다발 동시 절단: 20개를 넘는 설정이 조용히 깎이지 않아야 한다 --------
+
+def test_expected_count_above_old_cap_is_honoured():
+    """상한을 20 으로 두던 때는 expected_count=30 이 말없이 20 으로 깎였다.
+
+    에이엠피는 다발 동시 절단이 상시 공정이라 한 프레임에 20개를 넘는다.
+    설정이 조용히 무시되면 수량이 틀린 채로 검사 결과가 나온다.
+    """
+    img, _ = make_multi_image(30)
+    rois = segment_tubes(img, expected_count=30)
+    assert len(rois) == 30
+    assert [r.index for r in rois] == list(range(1, 31))
+
+
+def test_max_tubes_hard_covers_bundle_cutting():
+    """하드 상한이 현장 다발 규모(20 초과)를 담아야 한다."""
+    from vision.multi.segment import MAX_TUBES_HARD
+
+    assert MAX_TUBES_HARD >= 32
+
+
+def test_schema_cap_matches_segmenter_cap():
+    """스키마 상한과 분할기 상한이 어긋나면 한쪽에서 조용히 깎인다."""
+    from aivis_types.inspection import MAX_EXPECTED_COUNT
+    from vision.multi.segment import MAX_TUBES_HARD
+
+    assert MAX_EXPECTED_COUNT == MAX_TUBES_HARD
