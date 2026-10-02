@@ -142,8 +142,8 @@
     "p50_ms": 6.0,
     "p95_ms": 8.0,
     "p99_ms": 9.0,
-    "max_ms": 14.0,
-    "mean_ms": 6.025,
+    "max_ms": 12.0,
+    "mean_ms": 6.049,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -198,5 +198,5 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-10-02T15:56:27.172347+00:00"
+  "generated_at": "2026-10-02T16:30:51.769627+00:00"
 }

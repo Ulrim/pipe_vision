@@ -27,6 +27,7 @@ from aivis_types import (
 )
 
 from .length import LengthSpan, measure_length_ex
+from .calib.lens import LensCalibration, resolve_calibration
 from .preprocess import preprocess
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
@@ -103,9 +104,24 @@ class InspectionPipeline:
 
     surface_model: Optional[SurfaceModel] = None
     surface_inset_ratio: float = 0.06
+    #: 렌즈 왜곡 보정. None 이면 환경변수(AIVIS_LENS_CALIB)에서 1회 해석한다.
+    #: 설정이 없으면 보정 없이 돈다 — 시뮬레이터·합성에는 왜곡이 없고, 현장도
+    #: 캘리브레이션 전에는 돌아야 하기 때문이다. 다만 그 상태의 길이값은
+    #: 정확도를 보장하지 못한다(§6.2, calib/lens.py 참조).
+    lens: Optional[LensCalibration] = None
     _model_cache: Dict[tuple, SurfaceModel] = field(
         default_factory=dict, repr=False, compare=False
     )
+    _lens_resolved: bool = field(default=False, repr=False, compare=False)
+
+    def _lens_calibration(self) -> Optional[LensCalibration]:
+        """환경변수에서 한 번만 해석한다(매 프레임 파일을 읽지 않는다)."""
+        if self.lens is not None:
+            return self.lens
+        if not self._lens_resolved:
+            self._lens_resolved = True
+            self.lens = resolve_calibration()
+        return self.lens
 
     def _select_surface_model(self, master: ItemMaster) -> SurfaceModel:
         """품목·모드별 표면 모델 선택(캐시). 명시 주입 시 그대로 사용."""
@@ -181,6 +197,19 @@ class InspectionPipeline:
         t0 = time.perf_counter()
         # ItemMaster 변환 실패는 호출자 오류이므로 그대로 raise(검사 불가).
         master = _to_item(item)
+
+        # ①' 렌즈 왜곡 보정 — 전처리보다 먼저. 광각 렌즈는 가장자리가 눌려
+        # 보이는데 길이는 하필 양 끝단을 쓴다. 보정 없이는 왜곡만으로 공차를
+        # 넘는다(calib/lens.py 의 측정값 참조).
+        try:
+            calib = self._lens_calibration()
+            if calib is not None:
+                frame_bgr = calib.undistort(frame_bgr)
+        except Exception as exc:  # noqa: BLE001
+            total = int(round((time.perf_counter() - t0) * 1000))
+            reason = f"렌즈 보정 실패: {type(exc).__name__}: {exc}"
+            result = _error_verdict(master, proc_time_ms=total)
+            return result, StageTimings(total_ms=total), reason, None
 
         # ② 전처리 — 실패해도 검사 자체는 NG 로 종료(미판정 0).
         try:
