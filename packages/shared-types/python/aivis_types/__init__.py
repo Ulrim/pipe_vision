@@ -20,6 +20,7 @@ from .inspection import (
     ItemMaster,
     ItemMasterCreate,
     ItemMasterUpdate,
+    ItemSpecUpdate,
     ReviewUpdate,
 )
 from .vision import (

@@ -94,6 +94,15 @@ export interface ItemMasterCreate {
 }
 
 /** 기준정보 수정 입력(부분 갱신). 변경 시 version 자동 증가. */
+/** 오더 교체용 치수 사양 — 기준길이·공차만. 보정계수·표면 임계는 못 바꾼다. */
+export interface ItemSpecUpdate {
+  ref_length_mm: number;
+  tol_plus_mm: number;
+  tol_minus_mm: number;
+  /** 한 프레임당 튜브 수(생략 시 유지). */
+  expected_count?: number;
+}
+
 export interface ItemMasterUpdate {
   item_name?: string | null;
   ref_length_mm?: number | null;

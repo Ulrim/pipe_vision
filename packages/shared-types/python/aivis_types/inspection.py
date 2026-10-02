@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .enums import DefectCode, InspectionStage, Verdict
 
@@ -84,6 +84,36 @@ class ItemMasterUpdate(BaseModel):
     capture_recipe: Optional[Dict[str, Any]] = None
     expected_count: Optional[int] = Field(None, ge=1, le=MAX_EXPECTED_COUNT)
     outer_diameter_mm: Optional[float] = None
+
+
+class ItemSpecUpdate(BaseModel):
+    """오더 교체용 치수 사양 입력 — 기준길이와 허용공차만 바꾼다.
+
+    ItemMasterUpdate 와 따로 두는 이유: 오더가 바뀔 때 현장에서 고치는 것은
+    **이 세 값뿐**이다. 전체 갱신 스키마를 라인에 열어주면 px→mm 보정계수나
+    표면 임계값까지 실수로 바꿀 수 있다. 바꿀 수 있는 것을 좁혀 사고를 막는다.
+
+    셋 다 필수다. 부분 입력을 허용하면 "공차는 그대로겠지" 하고 넘어간 값이
+    실제로는 이전 오더 값인 채로 판정이 돈다.
+    """
+
+    ref_length_mm: float = Field(..., gt=0, description="기준 길이(mm)")
+    tol_plus_mm: float = Field(..., ge=0, description="허용 공차 + (mm)")
+    tol_minus_mm: float = Field(..., ge=0, description="허용 공차 − (mm)")
+    #: 한 프레임당 튜브 수. 길이·공차와 달리 **선택**이다 — 빼먹어도 개수
+    #: 불일치로 드러나 NG 가 뜨지만, 공차를 빼먹으면 틀린 기준으로 조용히
+    #: 합격 판정이 난다. 사고의 무게가 달라 필수 여부를 다르게 둔다.
+    expected_count: Optional[int] = Field(
+        None, ge=1, le=MAX_EXPECTED_COUNT, description="한 프레임당 튜브 수(생략 시 유지)"
+    )
+
+    @model_validator(mode="after")
+    def _check(self) -> "ItemSpecUpdate":
+        if self.tol_plus_mm <= 0 and self.tol_minus_mm <= 0:
+            raise ValueError("공차가 양쪽 모두 0 이면 전부 불량이 된다")
+        if self.tol_plus_mm >= self.ref_length_mm or self.tol_minus_mm >= self.ref_length_mm:
+            raise ValueError("공차가 기준 길이보다 크거나 같다 — 입력을 확인하라")
+        return self
 
 
 class CalibrationRequest(BaseModel):

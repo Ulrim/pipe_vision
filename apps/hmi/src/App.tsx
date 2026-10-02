@@ -1,11 +1,17 @@
 /**
  * AIVIS 작업자 HMI 메인 화면 (CLAUDE.md §5 M6/M10).
  *
- * **고정 화면 원칙(파이 7" 800x480 실측 후 재설계)**
+ * **고정 화면 원칙**
  * 현장 작업자는 설비 앞에서 화면을 힐끗 볼 뿐, 스크롤하지 않는다(장갑도 낀다).
- * 그런데 이전 레이아웃은 800x480 에서 문서 높이가 1011px 이라 **531px 가 잘려**
- * 판정(OK/NG)조차 스크롤해야 보였다 — 검사 화면으로서 치명적이었다.
- * 그래서 화면을 `h-full overflow-hidden` 3단 고정 구조로 바꾼다:
+ * 그래서 화면은 `h-full overflow-hidden` 3단 고정 구조다 — 어떤 요소도 본문을
+ * 밀어내지 못한다.
+ *
+ * 이 구조는 7" 800x480 에서 문서 높이가 1011px 이라 **531px 가 잘려** 판정조차
+ * 스크롤해야 보이던 문제를 고치며 만들었다. **2026-10-02 화면이 15.6" FHD
+ * (1920x1080)로 바뀌었다.** 높이가 2.25배가 되어 잘릴 걱정은 사라졌지만 고정
+ * 구조는 그대로 둔다 — 스크롤하지 않는다는 전제가 화면 크기 때문이 아니라
+ * **장갑 낀 손과 힐끗 보는 사용 방식** 때문이기 때문이다. 늘어난 높이는 본문
+ * (판정·이미지)이 가져간다.
  *
  *   [상단바 ~52px]  품목·LOT / 검출 / 상태 / 시각
  *   [본문  flex-1 ]  판정(초대형) | 판정 이미지     ← 남는 높이를 전부 차지
@@ -31,6 +37,7 @@ import { RecentFeed } from "@/components/RecentFeed";
 import { ReviewDialog } from "@/components/ReviewDialog";
 import { LoginScreen } from "@/components/LoginScreen";
 import { ImageZoom } from "@/components/ImageZoom";
+import { OrderSetup } from "@/components/OrderSetup";
 
 export default function App() {
   // 전체 로그인 게이트: 세션(토큰)이 없으면 본문 대신 로그인 화면만 렌더.
@@ -49,12 +56,32 @@ function AppShell() {
   const latestBatch = batches[0] ?? null;
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
   const [zoomed, setZoomed] = useState<InspectionResult | null>(null);
+  // 오더 교체 — 제품 길이가 주문마다 바뀌므로 라인에서 직접 바꿔야 한다.
+  const [setupOpen, setSetupOpen] = useState(false);
   // 공차 밴드를 그리려면 기준정보가 필요하다(검사결과에는 공차가 없다).
   const item = useItemMaster(latest?.item_code);
 
   return (
     <div className="relative flex h-full flex-col overflow-hidden bg-gray-100">
       <HmiHeader />
+
+      {/* 오더 교체 진입 — 상단바 아래 고정. 길이·공차가 주문마다 바뀐다. */}
+      <div className="flex flex-none justify-end px-2 pt-2">
+        <button
+          type="button"
+          onClick={() => setSetupOpen(true)}
+          disabled={!item}
+          data-testid="open-order-setup"
+          className="min-h-[72px] rounded-2xl border-4 border-gray-400 bg-white px-8 text-hmi-body font-black text-gray-800 active:scale-95 disabled:opacity-40"
+        >
+          오더 설정
+          {item && (
+            <span className="ml-3 font-bold text-gray-500">
+              {item.ref_length_mm}mm ±{item.tol_plus_mm}/{item.tol_minus_mm}
+            </span>
+          )}
+        </button>
+      </div>
 
       <main className="flex min-h-0 flex-1 flex-col p-2">
         {/* 최신 그룹이 다중 튜브 배치면 배치 화면, 아니면 단일(하위호환). */}
@@ -86,6 +113,10 @@ function AppShell() {
       )}
 
       {zoomed && <ImageZoom result={zoomed} onClose={() => setZoomed(null)} />}
+
+      {setupOpen && item && (
+        <OrderSetup item={item} onClose={() => setSetupOpen(false)} />
+      )}
     </div>
   );
 }

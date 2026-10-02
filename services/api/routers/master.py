@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -18,6 +19,7 @@ from aivis_types import (
     ItemMaster as ItemMasterSchema,
     ItemMasterCreate,
     ItemMasterUpdate,
+    ItemSpecUpdate,
     LogCategory,
     Role,
 )
@@ -214,6 +216,81 @@ def update_item(
         category=LogCategory.USER,
         message=f"master.update {item_code} v{row.version} by={user.username}",
         payload={"changes": list(changes.keys())},
+        commit=False,
+    )
+    db.commit()
+    db.refresh(row)
+    return item_to_schema(row)
+
+
+#: 치수 사양(기준길이·공차)을 고칠 수 있는 최소 권한.
+#:
+#: 제품 길이가 **주문마다 바뀌는** 공정이라(도입기업 확인) 오더 교체 때마다
+#: 품질관리자를 부르면 라인이 선다. 그래서 기본값을 작업자로 둔다. 대신
+#: 바꿀 수 있는 항목을 기준길이·공차 셋으로 좁히고(ItemSpecUpdate), 변경은
+#: version 증가와 감사 로그(이전값→새값)로 남긴다.
+#:
+#: 현장 정책상 품질관리자만 바꿔야 한다면 AIVIS_SPEC_EDIT_MIN_ROLE=quality.
+_SPEC_EDIT_MIN_ROLE = {
+    "operator": Role.OPERATOR,
+    "quality": Role.QUALITY,
+    "admin": Role.ADMIN,
+}.get(os.getenv("AIVIS_SPEC_EDIT_MIN_ROLE", "operator").strip().lower(), Role.OPERATOR)
+
+
+@router.put("/{item_code}/spec", response_model=ItemMasterSchema)
+def update_item_spec(
+    item_code: str,
+    body: ItemSpecUpdate,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_min_role(_SPEC_EDIT_MIN_ROLE)),
+):
+    """오더 교체용 치수 사양 변경 — 기준길이·공차만.
+
+    전체 갱신(PUT /{item_code})과 달리 px→mm 보정계수나 표면 임계값은 건드릴
+    수 없다. 라인에서 급히 바꾸다 엉뚱한 값을 흔드는 사고를 막기 위함이다.
+
+    감사 로그에 **이전값과 새값을 함께** 남긴다. 판정 결과가 이상할 때 "언제
+    누가 무엇을 얼마에서 얼마로 바꿨나" 를 되짚을 수 있어야 한다.
+    """
+    row = db.get(ItemMaster, item_code)
+    if not row:
+        raise HTTPException(status_code=404, detail="품목 없음")
+
+    before = {
+        "ref_length_mm": float(row.ref_length_mm),
+        "tol_plus_mm": float(row.tol_plus_mm),
+        "tol_minus_mm": float(row.tol_minus_mm),
+    }
+    after = {
+        "ref_length_mm": float(body.ref_length_mm),
+        "tol_plus_mm": float(body.tol_plus_mm),
+        "tol_minus_mm": float(body.tol_minus_mm),
+    }
+    if body.expected_count is not None:
+        before["expected_count"] = int(row.expected_count or 1)
+        after["expected_count"] = int(body.expected_count)
+    if before == after:
+        # 값이 같으면 version 을 올리지 않는다 — 이력이 의미 없는 줄로 불어난다.
+        return item_to_schema(row)
+
+    row.ref_length_mm = after["ref_length_mm"]
+    row.tol_plus_mm = after["tol_plus_mm"]
+    row.tol_minus_mm = after["tol_minus_mm"]
+    if body.expected_count is not None:
+        row.expected_count = int(body.expected_count)
+    row.version = (row.version or 1) + 1
+    row.updated_by = user.username
+    row.updated_at = datetime.now(timezone.utc)
+    write_log(
+        db,
+        category=LogCategory.USER,
+        message=(
+            f"master.spec {item_code} v{row.version} "
+            f"{before['ref_length_mm']}→{after['ref_length_mm']}mm "
+            f"(+{after['tol_plus_mm']}/-{after['tol_minus_mm']}) by={user.username}"
+        ),
+        payload={"before": before, "after": after},
         commit=False,
     )
     db.commit()

@@ -21,8 +21,12 @@
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
 
-/** 전량 타일을 보여줄 수 있는 최대 개수(7인치 800x480 기준 약 4줄). */
-export const ALL_TILES_LIMIT = 24;
+/** 전량 타일을 보여줄 수 있는 최대 개수.
+ *
+ * 15.6" 1920x1080 기준: 좌측 패널이 약 940px 라 44px 타일+여백이 한 줄에
+ * 18개 들어가고, 본문 높이에 3줄은 여유롭다 → 48개까지는 전량 표시해도
+ * 화면을 넘기지 않는다. (7" 800x480 일 때는 한 줄 7개·4줄이라 24 였다.) */
+export const ALL_TILES_LIMIT = 48;
 /** 임계를 넘었을 때 보여줄 NG 타일 최대 수. 더 있으면 "+n" 로 접는다. */
 export const NG_TILES_LIMIT = 24;
 import type { BatchGroup } from "@/lib/batching";

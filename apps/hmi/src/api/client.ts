@@ -5,6 +5,7 @@
 import type {
   InspectionResult,
   ItemMaster,
+  ItemSpecUpdate,
   LoginRequest,
   ReviewUpdate,
   TokenResponse,
@@ -129,6 +130,24 @@ export function submitReview(
       method: "PATCH",
       body: JSON.stringify(body),
     },
+    { auth: true },
+  );
+}
+
+/**
+ * PUT /master/items/{code}/spec — 오더 교체용 치수 사양 변경.
+ *
+ * 전체 갱신과 달리 기준길이·공차·개수만 바뀐다. px→mm 보정계수나 표면
+ * 임계값은 서버가 받지 않는다 — 라인에서 급히 고치다 엉뚱한 값을 흔드는
+ * 사고를 구조적으로 막기 위함이다.
+ */
+export function updateItemSpec(
+  itemCode: string,
+  body: ItemSpecUpdate,
+): Promise<ItemMaster> {
+  return request<ItemMaster>(
+    `/master/items/${encodeURIComponent(itemCode)}/spec`,
+    { method: "PUT", body: JSON.stringify(body) },
     { auth: true },
   );
 }
