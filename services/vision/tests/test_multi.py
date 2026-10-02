@@ -214,16 +214,39 @@ def test_batch_overlay_deterministic(item):
 
 # -------- 다발 동시 절단: 20개를 넘는 설정이 조용히 깎이지 않아야 한다 --------
 
-def test_expected_count_above_old_cap_is_honoured():
-    """상한을 20 으로 두던 때는 expected_count=30 이 말없이 20 으로 깎였다.
+def test_generator_cap_matches_segmenter_cap():
+    """합성 생성기가 분할기보다 먼저 깎으면 다중튜브 테스트가 전부 허수가 된다.
 
-    에이엠피는 다발 동시 절단이 상시 공정이라 한 프레임에 20개를 넘는다.
-    설정이 조용히 무시되면 수량이 틀린 채로 검사 결과가 나온다.
+    예전 생성기는 min(20, n) 으로 캡을 걸었다. 그래서 make_multi_image(30) 이
+    **20개짜리** 이미지를 주고, 테스트는 그걸 30조각으로 쪼갠 결과를 통과시켰다.
+    아무것도 검증하지 않는 테스트였다.
     """
-    img, _ = make_multi_image(30)
-    rois = segment_tubes(img, expected_count=30)
-    assert len(rois) == 30
-    assert [r.index for r in rois] == list(range(1, 31))
+    from vision.multi.segment import MAX_TUBES_HARD
+
+    _img, boxes = make_multi_image(MAX_TUBES_HARD)
+    assert len(boxes) == MAX_TUBES_HARD
+
+
+@pytest.mark.parametrize("n", [32, 64])
+def test_segment_above_old_cap(n):
+    """20을 넘는 다발을 자동으로도, 기대개수 지정으로도 전부 찾아야 한다."""
+    img, boxes = make_multi_image(n)
+    assert len(boxes) == n, "생성기가 먼저 깎으면 아래 검증이 무의미하다"
+    assert len(segment_tubes(img)) == n                      # 자동
+    assert len(segment_tubes(img, expected_count=n)) == n     # 기대 지정
+
+
+@pytest.mark.parametrize("n", [32, 64])
+def test_batch_inspects_every_tube_above_old_cap(n, item):
+    """inspect_batch 의 max_tubes 가 20 으로 박혀 있어 44개가 조용히 사라졌다.
+
+    자동 검출이 20 에서 잘리면 기대개수와 불일치해 20개짜리 결과로 떨어진다.
+    예외도 경고도 없이 튜브가 사라지므로 수량이 틀린 채로 결과가 쌓인다.
+    """
+    img, _ = make_multi_image(n)
+    res = inspect_batch(img, item, expected_count=n)
+    assert len(res.tubes) == n
+    assert res.count_detected == n
 
 
 def test_max_tubes_hard_covers_bundle_cutting():

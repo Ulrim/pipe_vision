@@ -25,7 +25,12 @@ from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
 from ..length.measure import LengthSpan
 from ..pipeline import InspectionPipeline
-from .segment import TubeROI, segment_tubes
+from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
+
+#: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
+#: 하드 상한(MAX_TUBES_HARD)과 다르다 — 자동 추정은 상한이 크면 최소 피치가
+#: 작아져 없는 seam 까지 찾아 과분할한다. 기대개수를 주면 그만큼 올라간다.
+DEFAULT_AUTO_MAX_TUBES = 20
 
 
 @dataclass
@@ -130,7 +135,7 @@ def inspect_batch(
     axis: str = "horizontal",
     expected_count: Optional[int] = None,
     min_tubes: int = 1,
-    max_tubes: int = 20,
+    max_tubes: Optional[int] = None,
     pipeline: Optional[InspectionPipeline] = None,
 ) -> BatchResult:
     """다중 튜브 프레임 → 튜브별 검사 + 배치 판정.
@@ -141,9 +146,24 @@ def inspect_batch(
 
     개수 확인: expected_count 가 주어지면 검출 N 과 비교해 count_ok/mismatch 설정.
     배치 판정: 모든 튜브 OK 이고 개수 불일치 없으면 OK, 아니면 NG.
+
+    `max_tubes` 는 **expected_count 보다 작게 내려가지 않는다.** 예전에는 20 이
+    하드코딩돼 있어서 expected_count=64 를 줘도 자동 검출이 20 에서 잘렸고,
+    그러면 기대와 불일치해 20개짜리 결과로 떨어졌다 — 튜브 44개가 예외도 경고도
+    없이 사라졌다. 다발 동시 절단이 상시 공정이므로(부록 A.1) 이 경로가 조용히
+    잘리면 수량이 틀린 채로 검사 결과가 쌓인다.
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
+
+    # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
+    # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
+    # 그래서 **자동 추정 상한과 하드 상한을 분리**한다 — 기본은 보수적으로
+    # 두고, 기대개수가 주어지면 거기까지만 올린다.
+    cap = DEFAULT_AUTO_MAX_TUBES if max_tubes is None else int(max_tubes)
+    if expected_count:
+        cap = max(cap, int(expected_count))
+    max_tubes = max(1, min(MAX_TUBES_HARD, cap))
 
     # 개수 불일치를 감지하려면 expected 에 강제되지 않은 '독립' 자동 검출이
     # 필요하다(expected 로 강제 분할하면 count 가 항상 일치해 불일치를 못 잡음).

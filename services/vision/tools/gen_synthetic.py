@@ -25,6 +25,8 @@ from typing import List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
+from vision.multi.segment import MAX_TUBES_HARD
+
 # 합성 기준 캔버스(테스트가 의존하는 고정 지오메트리)
 DEFAULT_W = 800
 DEFAULT_H = 300
@@ -243,7 +245,10 @@ def make_multi_image(
     - axis="vertical" 이면 가로 생성 후 90° 회전(세로 튜브 배열).
     결정적(시드 고정 노이즈).
     """
-    n_tubes = int(max(1, min(20, n_tubes)))
+    # 상한은 분할기와 같은 값을 쓴다. 예전엔 20 으로 박혀 있었는데, 그러면
+    # make_multi_image(30) 이 말없이 20개짜리 이미지를 주고 테스트는 그걸
+    # 30조각으로 쪼갠 결과를 통과시킨다 — 아무것도 검증하지 않는 테스트가 된다.
+    n_tubes = int(max(1, min(MAX_TUBES_HARD, n_tubes)))
     defects = defects or {}
     h = margin * 2 + n_tubes * thick_px
     img = _base_canvas(w, h)
