@@ -373,63 +373,76 @@ else
   # 스왑을 늘리세요" 라고 했는데, 실제로 난 실패는 `tsc: not found`(127) 였다.
   # 127 은 '명령을 못 찾음'이지 메모리와 무관하다 — 틀린 진단은 사용자를
   # 엉뚱한 곳으로 보낸다. OOM 은 137(SIGKILL) 이나 로그의 "Killed" 로 온다.
+  # 빌드 실패의 **출력은 절대 버리지 않는다.** 앞 판에서 복구 분기가
+  # $out 을 지우고 재시도도 >/dev/null 로 돌려, 현장에서 진짜 원인이 두 번
+  # 사라졌다. 진단보다 원문이 먼저다.
+  save_log() {   # $1=출력파일 $2=라벨 → 저장 경로를 echo
+    local dest="/tmp/aivis-build-${2// /_}.log"
+    cp "$1" "$dest" 2>/dev/null || dest="(저장 실패)"
+    echo "$dest"
+  }
+
+  # 정말로 **실행파일이 없을 때**만 참. 종전에는 "cannot find module" 까지
+  # 묶어서, TypeScript 의 TS2307(소스에서 모듈 못 찾음)이나 번들러 오류를
+  # 도구 문제로 오진했다. 그 둘은 전혀 다른 문제다.
+  missing_build_tool() {   # $1=출력파일 $2=종료코드
+    grep -qE "error TS[0-9]+" "$1" && return 1   # 타입 오류면 도구 문제 아님
+    [ "$2" -eq 127 ] && return 0
+    grep -qE ":[0-9]*: (tsc|vite): not found|(tsc|vite): command not found" "$1"
+  }
+
+  show_build_output() {   # $1=출력파일
+    if grep -qE "error TS[0-9]+" "$1"; then
+      echo >&2
+      echo >&2 "  ── 타입 오류 (이게 원인입니다) ─────────────────────────"
+      grep -E "error TS[0-9]+" "$1" | head -20 | sed 's/^/  /' >&2
+      echo >&2 "  ────────────────────────────────────────────────────────"
+    else
+      echo >&2
+      echo >&2 "  ── 빌드 출력 (마지막 부분) ─────────────────────────────"
+      tail -30 "$1" | sed 's/^/  /' >&2
+      echo >&2 "  ────────────────────────────────────────────────────────"
+    fi
+  }
+
   build_ws() {
-    local ws="$1" label="$2" out rc
+    local ws="$1" label="$2" out rc logpath
     out="$(mktemp)"
     info "${label} 만드는 중…"
     npm run build --workspace "$ws" >"$out" 2>&1
     rc=$?
     [ $rc -eq 0 ] && { rm -f "$out"; return 0; }
 
-    # 127 = 실행파일 없음. 의존성이 덜 깔린 것이므로 한 번 복구를 시도한다.
-    if [ $rc -eq 127 ] || grep -qiE "not found|cannot find module" "$out"; then
-      warn "빌드 도구를 찾지 못했습니다(코드 $rc) — 의존성을 다시 설치합니다."
-      rm -f "$out"
+    # 실행파일이 없을 때만 한 번 복구한다. 재시도 출력도 같은 파일에 받아
+    # 실패하면 그대로 보여준다.
+    if missing_build_tool "$out" "$rc"; then
+      warn "빌드 도구(tsc/vite)가 없습니다(코드 $rc) — 의존성을 다시 설치합니다."
       if npm_fetch; then
         info "${label} 다시 만드는 중…"
-        npm run build --workspace "$ws" >/dev/null 2>&1 && return 0
+        npm run build --workspace "$ws" >"$out" 2>&1
+        rc=$?
+        [ $rc -eq 0 ] && { rm -f "$out"; return 0; }
       fi
-      die "[4/6] ${label} 빌드 실패 — 빌드 도구(tsc/vite)를 찾을 수 없습니다.
-    메모리 문제가 아닙니다. 의존성이 덜 깔린 상태입니다. 다음을 시도하세요:
-      rm -rf node_modules apps/*/node_modules packages/*/ts/node_modules
-      npm install --no-audit --no-fund
-      bash scripts/aivis-install.sh
-    그래도 안 되면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
-      bash scripts/aivis-install.sh --no-build"
     fi
 
-    # TypeScript 에러는 npm 이 뒤에 쏟아내는 'npm error ...' 블록에 묻힌다.
-    # tail 만 보여주면 정작 원인 줄이 화면 밖으로 밀려난다 — 현장에서 실제로
-    # 그래서 원인을 못 봤다. 그러니 'error TS' 줄을 **따로 먼저** 꺼낸다.
-    if grep -qE "error TS[0-9]+" "$out"; then
-      echo >&2
-      echo >&2 "  ── 타입 오류 (이게 원인입니다) ─────────────────────────"
-      grep -E "error TS[0-9]+" "$out" | head -20 | sed 's/^/  /' >&2
-      echo >&2 "  ────────────────────────────────────────────────────────"
-      cp "$out" "/tmp/aivis-build-${label// /_}.log" 2>/dev/null || true
-      rm -f "$out"
-      die "[4/6] ${label} 빌드 실패 — **소스 코드의 타입 오류**입니다(코드 $rc).
-    메모리·디스크 문제가 아닙니다. 위 'error TS' 줄이 원인이고, 저장소가
-    최신이 아닐 가능성이 가장 큽니다. 먼저 최신으로 맞춰 보세요:
-      cd ~/pipe_vision && git fetch origin main && git checkout -B main origin/main
-      bash scripts/aivis-install.sh
-    최신인데도 같은 오류가 나면 위 'error TS' 줄을 그대로 알려주세요
-    (전체 출력: /tmp/aivis-build-${label// /_}.log).
-    급하면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
-      bash scripts/aivis-install.sh --no-build"
-    fi
-
-    tail -25 "$out" | sed 's/^/  /' >&2
-    cp "$out" "/tmp/aivis-build-${label// /_}.log" 2>/dev/null || true
+    show_build_output "$out"
+    logpath="$(save_log "$out" "$label")"
     rm -f "$out"
-    show_npm_log
+
     if [ $rc -eq 137 ] || [ $rc -eq 139 ]; then
       die "[4/6] ${label} 빌드가 메모리 부족으로 강제 종료됐습니다(코드 $rc).
-    스왑을 늘린 뒤 다시 실행하세요. ${SWAP_HOWTO}"
+    스왑을 늘린 뒤 다시 실행하세요. ${SWAP_HOWTO}
+    전체 출력: ${logpath}"
     fi
-    die "[4/6] ${label} 빌드 실패 (코드 $rc). 위 출력에서 원인을 확인하세요.
-    전체 출력: /tmp/aivis-build-${label// /_}.log
-    로그에 Killed/ENOMEM 이 보이면 스왑을 늘린 뒤 재시도하세요. ${SWAP_HOWTO}"
+    die "[4/6] ${label} 빌드 실패 (코드 $rc).
+    **위 출력이 원인입니다.** 메모리·디스크 문제가 아닙니다
+    (메모리 부족이면 코드 137 로 끝납니다).
+    전체 출력: ${logpath}
+    저장소가 최신인지 먼저 확인하세요:
+      cd ~/pipe_vision && git fetch origin main && git checkout -B main origin/main
+    그래도 같으면 **위 출력 몇 줄을 그대로** 알려주세요.
+    급하면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
+      bash scripts/aivis-install.sh --no-build"
   }
 
   build_ws @aivis/hmi "작업자 화면"
