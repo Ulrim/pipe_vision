@@ -305,7 +305,25 @@ else
     echo >&2 "  전체 로그: $latest"
   }
 
-  if [ ! -d node_modules ]; then
+  # node_modules **폴더가 있다**는 것은 설치가 끝났다는 뜻이 아니다. 앞선
+  # 시도가 OOM 이나 Ctrl-C 로 중간에 죽으면 폴더만 남고 알맹이가 빈다. 그걸
+  # 완료로 보고 건너뛰면 빌드 단계에서 `tsc: not found`(코드 127)로 터진다 —
+  # 현장에서 실제로 난 일이다. 그래서 **빌드에 필요한 실행파일이 있는지**로
+  # 판정한다. 호이스팅 위치는 npm 버전에 따라 달라지므로 양쪽을 본다.
+  have_bin() {
+    [ -x "node_modules/.bin/$1" ] && return 0
+    for w in apps/hmi apps/dashboard; do
+      [ -x "$w/node_modules/.bin/$1" ] && return 0
+    done
+    return 1
+  }
+  deps_ready() { have_bin tsc && have_bin vite; }
+
+  if ! deps_ready; then
+    if [ -d node_modules ]; then
+      warn "node_modules 가 있지만 빌드 도구(tsc/vite)가 없습니다 — 이전 설치가"
+      warn "중간에 끊긴 것으로 보입니다. 내려받기를 다시 합니다."
+    fi
     info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
     if ! npm install --no-audit --no-fund; then
       show_npm_log
@@ -321,16 +339,51 @@ else
       bash scripts/aivis-install.sh --no-build"
     fi
   fi
-  info "작업자 화면 만드는 중…"
-  npm run build --workspace @aivis/hmi >/dev/null || {
+  # 빌드 실패의 원인을 **종료코드로 구분**한다. 전에는 무조건 "메모리 부족이면
+  # 스왑을 늘리세요" 라고 했는데, 실제로 난 실패는 `tsc: not found`(127) 였다.
+  # 127 은 '명령을 못 찾음'이지 메모리와 무관하다 — 틀린 진단은 사용자를
+  # 엉뚱한 곳으로 보낸다. OOM 은 137(SIGKILL) 이나 로그의 "Killed" 로 온다.
+  build_ws() {
+    local ws="$1" label="$2" out rc
+    out="$(mktemp)"
+    info "${label} 만드는 중…"
+    npm run build --workspace "$ws" >"$out" 2>&1
+    rc=$?
+    [ $rc -eq 0 ] && { rm -f "$out"; return 0; }
+
+    # 127 = 실행파일 없음. 의존성이 덜 깔린 것이므로 한 번 복구를 시도한다.
+    if [ $rc -eq 127 ] || grep -qiE "not found|cannot find module" "$out"; then
+      warn "빌드 도구를 찾지 못했습니다(코드 $rc) — 의존성을 다시 설치합니다."
+      rm -f "$out"
+      if npm install --no-audit --no-fund; then
+        info "${label} 다시 만드는 중…"
+        npm run build --workspace "$ws" >/dev/null 2>&1 && return 0
+      fi
+      die "[4/6] ${label} 빌드 실패 — 빌드 도구(tsc/vite)를 찾을 수 없습니다.
+    메모리 문제가 아닙니다. 의존성이 덜 깔린 상태입니다. 다음을 시도하세요:
+      rm -rf node_modules apps/*/node_modules packages/*/ts/node_modules
+      npm install --no-audit --no-fund
+      bash scripts/aivis-install.sh
+    그래도 안 되면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
+      bash scripts/aivis-install.sh --no-build"
+    fi
+
+    tail -25 "$out" | sed 's/^/  /' >&2
+    rm -f "$out"
     show_npm_log
-    die "[4/6] 작업자 화면 빌드 실패 (메모리 부족이면 위 스왑 안내를 참고하세요)."
+    if [ $rc -eq 137 ] || [ $rc -eq 139 ]; then
+      die "[4/6] ${label} 빌드가 메모리 부족으로 강제 종료됐습니다(코드 $rc).
+    스왑을 2GB 로 늘린 뒤 다시 실행하세요:
+      sudo dphys-swapfile swapoff
+      sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+      sudo dphys-swapfile setup && sudo dphys-swapfile swapon"
+    fi
+    die "[4/6] ${label} 빌드 실패 (코드 $rc). 위 출력에서 원인을 확인하세요.
+    로그에 Killed/ENOMEM 이 보이면 스왑을 2GB 로 늘린 뒤 재시도하세요."
   }
-  info "관리자 대시보드 만드는 중…"
-  npm run build --workspace @aivis/dashboard >/dev/null || {
-    show_npm_log
-    die "[4/6] 관리자 대시보드 빌드 실패 (메모리 부족이면 위 스왑 안내를 참고하세요)."
-  }
+
+  build_ws @aivis/hmi "작업자 화면"
+  build_ws @aivis/dashboard "관리자 대시보드"
   ok "화면 준비 완료"
 fi
 

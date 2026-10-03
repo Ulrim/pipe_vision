@@ -75,7 +75,9 @@ describe("사양 검증 — 서버와 같은 규칙", () => {
 
 describe("OrderSetup 화면", () => {
   beforeEach(() => stubFetch());
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it("현재 값과 합격 범위를 보여준다", () => {
     render(<OrderSetup item={ITEM} onClose={() => {}} />);
