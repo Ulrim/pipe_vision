@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -36,6 +37,49 @@ try:  # OpenCV 는 vision 서비스의 기본 의존이지만, 임포트 실패�
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None  # type: ignore
+
+
+#: 기준자 설정 환경변수. "pitch_mm:x,y,w,h" 형식.
+#:   AIVIS_FIDUCIAL="10:0,0,4056,220"
+#: 미설정이면 기준자를 쓰지 않는다(저장된 px_to_mm_scale 로 동작).
+ENV_FIDUCIAL = "AIVIS_FIDUCIAL"
+
+
+@dataclass(frozen=True)
+class FiducialConfig:
+    """기준자 띠의 위치와 눈금 간격."""
+
+    pitch_mm: float
+    roi: Tuple[int, int, int, int]
+    dark_marks: bool = True
+
+    @staticmethod
+    def parse(spec: str) -> "FiducialConfig":
+        """'10:0,0,4056,220' → FiducialConfig. 형식이 틀리면 설명과 함께 실패."""
+        try:
+            pitch_s, roi_s = spec.split(":", 1)
+            x, y, w, h = (int(v) for v in roi_s.split(","))
+            pitch = float(pitch_s)
+        except Exception as exc:  # noqa: BLE001
+            raise FiducialError(
+                f"{ENV_FIDUCIAL} 형식 오류: {spec!r} — "
+                '"간격mm:x,y,폭,높이" 예) "10:0,0,4056,220"'
+            ) from exc
+        if pitch <= 0 or w <= 0 or h <= 0:
+            raise FiducialError(f"{ENV_FIDUCIAL} 값이 0 이하: {spec!r}")
+        return FiducialConfig(pitch_mm=pitch, roi=(x, y, w, h))
+
+
+def resolve_config() -> Optional["FiducialConfig"]:
+    """환경변수에서 기준자 설정을 읽는다. 미설정이면 None.
+
+    **설정이 틀렸을 때는 None 이 아니라 예외**다. 오타 하나로 조용히 저장된
+    스케일로 떨어지면, 정확도가 왜 안 나오는지 현장에서 알 길이 없다.
+    """
+    spec = os.getenv(ENV_FIDUCIAL, "").strip()
+    if not spec:
+        return None
+    return FiducialConfig.parse(spec)
 
 
 class FiducialError(RuntimeError):

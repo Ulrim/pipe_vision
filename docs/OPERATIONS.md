@@ -66,6 +66,7 @@ docker compose restart api          # 단일 서비스 재시작
 | MinIO | `MINIO_ROOT_USER/PASSWORD`, `MINIO_ACCESS/SECRET_KEY`, `MINIO_BUCKET_RAW/RESULT/REVIEW` | aivis-minio / raw·result·review | 이미지 버킷 분리(§6.4) |
 | 카메라/HAL | `AIVIS_CAMERA`(sim\|genicam), `AIVIS_DATASET_DIR`, `AIVIS_TRIGGER`(timer\|filewatch\|dio\|mqtt) | sim / /data/dataset / timer | 실카메라는 §6 참조 |
 | 추론 | `AIVIS_ONNX_PROVIDERS`, `AIVIS_SURFACE_ONNX` | CPU / (미설정→고전 CV 폴백) | GPU 는 override 가 cuda 설정 |
+| 길이 보정 | `AIVIS_LENS_CALIB`, `AIVIS_FIDUCIAL`("간격mm:x,y,w,h") | 미설정 | **길이 스테이션이면 둘 다 필수.** 렌즈 보정 없으면 0.5~2.5mm, 기준자 없으면 제품 높이 1mm 당 0.5mm 오차. 절차 docs/OPERATIONS_PI.md §1-3 |
 | 인증 | `JWT_SECRET/ALGORITHM/EXPIRE_MINUTES`, `AIVIS_SEED_ADMIN_USER/PASSWORD`, `AIVIS_SEED_ON_STARTUP` | (변경필수) / admin / true | RBAC operator/quality/admin |
 | 내부호출 | `AIVIS_SERVICE_TOKEN` | (미설정=무인증 화이트리스트) | 설정 시 vision→api 내부호출에 X-Service-Token 요구 |
 | 알람 | `AIVIS_CONSEC_NG_THRESHOLD` | 3 | cam 단위 연속 NG 임계(M6) |

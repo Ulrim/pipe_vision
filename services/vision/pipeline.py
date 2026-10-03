@@ -27,6 +27,12 @@ from aivis_types import (
 )
 
 from .length import LengthSpan, measure_length_ex
+from .calib.fiducial import (
+    FiducialConfig,
+    FiducialError,
+    measure_scale,
+)
+from .calib.fiducial import resolve_config as resolve_fiducial_config
 from .calib.lens import LensCalibration, resolve_calibration
 from .preprocess import preprocess
 from .surface.anomaly import resolve_surface_model
@@ -109,10 +115,25 @@ class InspectionPipeline:
     #: 캘리브레이션 전에는 돌아야 하기 때문이다. 다만 그 상태의 길이값은
     #: 정확도를 보장하지 못한다(§6.2, calib/lens.py 참조).
     lens: Optional[LensCalibration] = None
+    #: 프레임별 기준자. None 이면 환경변수(AIVIS_FIDUCIAL)에서 1회 해석한다.
+    #: 설정하면 매 프레임 기준자를 읽어 **그 프레임의** 배율로 길이를 잰다 —
+    #: 제품 높이·초점이 흔들려도 상쇄된다(calib/fiducial.py). 미설정이면
+    #: item_master.px_to_mm_scale(저장된 상수)로 동작한다.
+    fiducial: Optional[FiducialConfig] = None
     _model_cache: Dict[tuple, SurfaceModel] = field(
         default_factory=dict, repr=False, compare=False
     )
     _lens_resolved: bool = field(default=False, repr=False, compare=False)
+    _fiducial_resolved: bool = field(default=False, repr=False, compare=False)
+
+    def _fiducial_config(self) -> Optional[FiducialConfig]:
+        """환경변수에서 한 번만 해석한다(매 프레임 파싱하지 않는다)."""
+        if self.fiducial is not None:
+            return self.fiducial
+        if not self._fiducial_resolved:
+            self._fiducial_resolved = True
+            self.fiducial = resolve_fiducial_config()
+        return self.fiducial
 
     def _lens_calibration(self) -> Optional[LensCalibration]:
         """환경변수에서 한 번만 해석한다(매 프레임 파일을 읽지 않는다)."""
@@ -230,7 +251,25 @@ class InspectionPipeline:
                 gray_roi = pre.length_roi.crop(pre.gray_corrected)
             else:
                 gray_roi = pre.gray_corrected  # ROI 미검출 → 끝단검출 실패 유도.
-            length, endpoints = measure_length_ex(gray_roi, master)
+            # 기준자가 설정돼 있으면 **이 프레임에서** 배율을 읽어 쓴다.
+            # 못 읽으면 저장된 스케일로 떨어지되 반드시 기록에 남긴다 —
+            # 조용히 떨어지면 정확도가 왜 나빠졌는지 알 수 없다.
+            gauge = None
+            fid = self._fiducial_config()
+            if fid is not None:
+                try:
+                    gauge = measure_scale(
+                        pre.gray_corrected,
+                        pitch_mm=fid.pitch_mm,
+                        roi=fid.roi,
+                        dark_marks=fid.dark_marks,
+                    )
+                except FiducialError as exc:
+                    errors.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+            roi_x0 = pre.length_roi.x0 if pre.length_roi is not None else 0
+            length, endpoints = measure_length_ex(
+                gray_roi, master, gauge=gauge, roi_x_offset=float(roi_x0)
+            )
             if endpoints is not None and pre.length_roi is not None:
                 r = pre.length_roi
                 # 로컬(gray_roi) x → 프레임 x(+roi.x0). 세로는 length_roi 범위.
