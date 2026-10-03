@@ -291,6 +291,23 @@ else
     warn "실패하면 스왑을 2GB 로 늘린 뒤 다시 시도하세요(아래 실패 안내에 명령 있음)."
   fi
 
+  # 스왑 늘리는 방법은 이미지마다 다르다. dphys-swapfile 이 없는 파이 OS 도
+  # 있어서(현장 확인: "sudo: dphys-swapfile: command not found"), 있는 쪽을
+  # 골라 안내한다. 없는 명령을 알려주면 사용자가 거기서 또 막힌다.
+  if command -v dphys-swapfile >/dev/null 2>&1; then
+    SWAP_HOWTO="
+      sudo dphys-swapfile swapoff
+      sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+      sudo dphys-swapfile setup && sudo dphys-swapfile swapon"
+  else
+    SWAP_HOWTO="
+      (이 시스템에는 dphys-swapfile 이 없습니다 — 스왑 파일을 직접 만듭니다)
+      sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+      sudo mkswap /swapfile && sudo swapon /swapfile
+      echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab   # 재부팅 유지
+      free -h                                                      # 확인"
+  fi
+
   # npm 실패 시 npm 이 남긴 디버그 로그의 **핵심 줄**을 꺼내 보여준다.
   show_npm_log() {
     local logdir="${HOME}/.npm/_logs"
@@ -330,10 +347,7 @@ else
       die "[4/6] 화면 재료 내려받기(npm install) 실패.
     위 로그에서 원인을 확인하세요. 흔한 원인과 조치:
       · ENOSPC(공간 부족)  → sudo apt clean; rm -rf ~/.npm/_cacache
-      · Killed / ENOMEM(메모리 부족) → 스왑 2GB 로 늘린 뒤 재시도:
-          sudo dphys-swapfile swapoff
-          sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
-          sudo dphys-swapfile setup && sudo dphys-swapfile swapon
+      · Killed / ENOMEM(메모리 부족) → 스왑 2GB 로 늘린 뒤 재시도:${SWAP_HOWTO}
       · ETIMEDOUT / ENOTFOUND(네트워크) → 인터넷 연결 확인 후 재시도
     급하면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
       bash scripts/aivis-install.sh --no-build"
@@ -368,18 +382,38 @@ else
       bash scripts/aivis-install.sh --no-build"
     fi
 
+    # TypeScript 에러는 npm 이 뒤에 쏟아내는 'npm error ...' 블록에 묻힌다.
+    # tail 만 보여주면 정작 원인 줄이 화면 밖으로 밀려난다 — 현장에서 실제로
+    # 그래서 원인을 못 봤다. 그러니 'error TS' 줄을 **따로 먼저** 꺼낸다.
+    if grep -qE "error TS[0-9]+" "$out"; then
+      echo >&2
+      echo >&2 "  ── 타입 오류 (이게 원인입니다) ─────────────────────────"
+      grep -E "error TS[0-9]+" "$out" | head -20 | sed 's/^/  /' >&2
+      echo >&2 "  ────────────────────────────────────────────────────────"
+      cp "$out" "/tmp/aivis-build-${label// /_}.log" 2>/dev/null || true
+      rm -f "$out"
+      die "[4/6] ${label} 빌드 실패 — **소스 코드의 타입 오류**입니다(코드 $rc).
+    메모리·디스크 문제가 아닙니다. 위 'error TS' 줄이 원인이고, 저장소가
+    최신이 아닐 가능성이 가장 큽니다. 먼저 최신으로 맞춰 보세요:
+      cd ~/pipe_vision && git fetch origin main && git checkout -B main origin/main
+      bash scripts/aivis-install.sh
+    최신인데도 같은 오류가 나면 위 'error TS' 줄을 그대로 알려주세요
+    (전체 출력: /tmp/aivis-build-${label// /_}.log).
+    급하면 화면 없이 먼저 설치할 수 있습니다(검사는 동작):
+      bash scripts/aivis-install.sh --no-build"
+    fi
+
     tail -25 "$out" | sed 's/^/  /' >&2
+    cp "$out" "/tmp/aivis-build-${label// /_}.log" 2>/dev/null || true
     rm -f "$out"
     show_npm_log
     if [ $rc -eq 137 ] || [ $rc -eq 139 ]; then
       die "[4/6] ${label} 빌드가 메모리 부족으로 강제 종료됐습니다(코드 $rc).
-    스왑을 2GB 로 늘린 뒤 다시 실행하세요:
-      sudo dphys-swapfile swapoff
-      sudo sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
-      sudo dphys-swapfile setup && sudo dphys-swapfile swapon"
+    스왑을 늘린 뒤 다시 실행하세요. ${SWAP_HOWTO}"
     fi
     die "[4/6] ${label} 빌드 실패 (코드 $rc). 위 출력에서 원인을 확인하세요.
-    로그에 Killed/ENOMEM 이 보이면 스왑을 2GB 로 늘린 뒤 재시도하세요."
+    전체 출력: /tmp/aivis-build-${label// /_}.log
+    로그에 Killed/ENOMEM 이 보이면 스왑을 늘린 뒤 재시도하세요. ${SWAP_HOWTO}"
   }
 
   build_ws @aivis/hmi "작업자 화면"
