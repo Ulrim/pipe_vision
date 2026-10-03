@@ -336,13 +336,29 @@ else
   }
   deps_ready() { have_bin tsc && have_bin vite; }
 
+  # **npm ci 를 먼저 쓴다.** npm install 은 package.json 의 범위(^5.3.4 등)
+  # 안에서 최신을 다시 고르므로, 파이가 개발·CI 에서 검증한 것과 **다른
+  # 버전**을 받는다. 실제로 그래서 현장에서만 타입 오류가 났다
+  # (jest-dom 매처 타입이 안 잡힘). ci 는 package-lock.json 을 그대로
+  # 재현하므로 "여기선 되는데 파이에선 안 되는" 부류를 없앤다.
+  # lock 이 없거나 package.json 과 어긋나면 ci 가 거부하므로 install 로 떨어진다.
+  npm_fetch() {
+    if [ -f package-lock.json ]; then
+      info "화면 재료 내려받는 중(lock 고정)… (파이에서 10분 이상 걸릴 수 있습니다)"
+      npm ci --no-audit --no-fund && return 0
+      warn "npm ci 실패(lock 과 package.json 불일치 가능) — npm install 로 재시도합니다."
+    fi
+    info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
+    npm install --no-audit --no-fund
+  }
+
+
   if ! deps_ready; then
     if [ -d node_modules ]; then
       warn "node_modules 가 있지만 빌드 도구(tsc/vite)가 없습니다 — 이전 설치가"
       warn "중간에 끊긴 것으로 보입니다. 내려받기를 다시 합니다."
     fi
-    info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
-    if ! npm install --no-audit --no-fund; then
+    if ! npm_fetch; then
       show_npm_log
       die "[4/6] 화면 재료 내려받기(npm install) 실패.
     위 로그에서 원인을 확인하세요. 흔한 원인과 조치:
@@ -369,7 +385,7 @@ else
     if [ $rc -eq 127 ] || grep -qiE "not found|cannot find module" "$out"; then
       warn "빌드 도구를 찾지 못했습니다(코드 $rc) — 의존성을 다시 설치합니다."
       rm -f "$out"
-      if npm install --no-audit --no-fund; then
+      if npm_fetch; then
         info "${label} 다시 만드는 중…"
         npm run build --workspace "$ws" >/dev/null 2>&1 && return 0
       fi
