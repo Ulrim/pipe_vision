@@ -10,12 +10,15 @@
 ### 역할 정책 요약
 | 역할 | 조회(GET inspection/master/kpi/logs) | 재확인(PATCH review) | 기준정보 수정 / KPI 수기입력 | 로그 조회 | 사용자 관리 | 품목 삭제 |
 |---|---|---|---|---|---|---|
-| operator | O | O | X | X(quality+) | X | X |
+| operator | O | O | X (단, 오더 치수는 O — 아래) | X(quality+) | X | X |
 | quality | O | O | O | O | X | X |
 | admin | O | O | O | O | O | O |
 
 - `/logs` 조회는 quality+ (운영 민감 정보). 그 외 조회(inspection/master/kpi summary·report 중 summary)는 operator+.
 - `/kpi/report` 는 quality+ (리포트 산출물).
+- **예외 — 오더 치수 변경은 operator+** (2026-10-03 도입기업 확정). 기준정보 전체 수정(`PUT /master/items/{code}`)은 quality+ 그대로지만,
+  주문마다 바뀌는 **기준길이·공차·검사개수**는 `PUT /master/items/{code}/spec` 으로 작업자가 직접 바꾼다. 권한을 넓히는 대신
+  수정 가능 항목을 그 셋으로 좁히고 전건을 before→after 감사 로그로 남겨 위험을 상쇄했다. `AIVIS_SPEC_EDIT_MIN_ROLE` 로 조일 수 있다.
 
 ### 로그 적재 커버리지 (M15, sys_log.category)
 | 동작 | category | 위치 |
@@ -66,6 +69,7 @@
 | GET | `/master/items/{code}` | operator+ | 단건 |
 | POST | `/master/items` | quality+ | 등록(version=1) |
 | PUT | `/master/items/{code}` | quality+ | 부분 갱신(version +1, updated_by/at 기록) |
+| PUT | `/master/items/{code}/spec` | **operator+** | **오더 교체용**: `ref_length_mm`/`tol_plus_mm`/`tol_minus_mm`/`expected_count` 만 수정(version +1, 감사 로그에 before→after). px_to_mm_scale·표면 임계값은 **전송 불가**. 값이 그대로면 version 을 올리지 않음. 최소 권한은 `AIVIS_SPEC_EDIT_MIN_ROLE`(기본 `operator`) |
 | POST | `/master/items/{code}/calibrate` | quality+ | 웹 자기보정: px_to_mm_scale ×= actual_mm/measured_mm (version +1) |
 | DELETE | `/master/items/{code}` | admin | 삭제 |
 

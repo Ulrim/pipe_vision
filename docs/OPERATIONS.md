@@ -69,6 +69,7 @@ docker compose restart api          # 단일 서비스 재시작
 | 인증 | `JWT_SECRET/ALGORITHM/EXPIRE_MINUTES`, `AIVIS_SEED_ADMIN_USER/PASSWORD`, `AIVIS_SEED_ON_STARTUP` | (변경필수) / admin / true | RBAC operator/quality/admin |
 | 내부호출 | `AIVIS_SERVICE_TOKEN` | (미설정=무인증 화이트리스트) | 설정 시 vision→api 내부호출에 X-Service-Token 요구 |
 | 알람 | `AIVIS_CONSEC_NG_THRESHOLD` | 3 | cam 단위 연속 NG 임계(M6) |
+| 오더 치수 | `AIVIS_SPEC_EDIT_MIN_ROLE`(operator\|quality\|admin) | **operator** | 기준길이·공차·검사개수를 바꿀 수 있는 최소 권한. 작업자 기본은 도입기업 확정 정책이니 **바꾸지 말 것**(현장 정책이 바뀐 경우에만 조인다) |
 | 저장백업 | `AIVIS_LOCAL_QUEUE_DIR` | services/api/local_queue | DB 저장 실패 시 로컬 큐 백업(M7) |
 | MES | `MES_MODE`(table\|rest), `MES_REST_URL`, `MES_WATCHDOG_INTERVAL_S`, `MES_MAX_RETRY`, `MES_BACKOFF_*` | table / 10s / 8 | 연계율 100% 워치독(§7.3) |
 | 로깅 | `LOG_LEVEL` | INFO | |

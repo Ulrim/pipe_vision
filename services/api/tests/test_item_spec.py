@@ -151,3 +151,20 @@ def test_expected_count_over_cap_rejected(client, auth):
     _create(client, auth, "S_CNT3")
     r = _spec(client, auth("op1"), "S_CNT3", expected_count=9999)
     assert r.status_code == 422
+
+
+def test_default_min_role_is_operator():
+    """작업자 기본값은 도입기업 확정 정책이다(2026-10-03) — 코드에서 조용히 못 바꾸게 못 박는다.
+
+    권한을 넓힌 대신 수정 범위를 좁히고(위 테스트들) 전건을 감사 로그로 남기는
+    설계라, 기본값만 슬쩍 quality 로 돌리면 라인이 서는 쪽으로 되돌아간다.
+    """
+    import os
+
+    from aivis_types import Role
+    from routers.master import _SPEC_EDIT_MIN_ROLE
+
+    assert not os.getenv("AIVIS_SPEC_EDIT_MIN_ROLE"), (
+        "이 테스트는 환경변수가 없을 때의 기본값을 검증한다"
+    )
+    assert _SPEC_EDIT_MIN_ROLE is Role.OPERATOR
