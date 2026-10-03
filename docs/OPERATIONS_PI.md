@@ -48,24 +48,51 @@
 
 ```bash
 sudo apt update && sudo apt install -y git
-git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision
-cd ~/pipe_vision
-bash scripts/aivis-install.sh
+
+# 처음이든 다시 하든 이 블록 그대로 쓰면 됩니다.
+if [ -d ~/pipe_vision/.git ]; then
+  cd ~/pipe_vision && git fetch origin main && git checkout -B main origin/main
+elif [ -e ~/pipe_vision ]; then
+  echo "~/pipe_vision 이 있는데 git 저장소가 아닙니다. 아래 '폴더가 이미 있다면' 참조"
+else
+  git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision && cd ~/pipe_vision
+fi
+
+cd ~/pipe_vision && bash scripts/aivis-install.sh
 ```
 
-> **이미 받아둔 폴더가 있다면** 새로 받지 말고 최신으로 맞추세요. 예전에는 개발
-> 브랜치(`claude/...`)를 직접 받아야 했지만 지금은 기본 브랜치에 모두 반영돼
-> 있습니다.
-> ```bash
-> cd ~/pipe_vision
-> git fetch origin main
-> git checkout -B main origin/main
-> bash scripts/aivis-install.sh
-> ```
->
 > 중간에 **관리자 비밀번호**를 한 번 물어봅니다(파이 로그인 비밀번호).
 > 파이에서는 **20~30분** 걸립니다(화면 만들기가 오래 걸립니다). 끝날 때까지
 > 창을 닫지 마세요. `sudo` 를 앞에 붙이지 마세요 — 스크립트가 알아서 씁니다.
+
+#### `destination path '/home/pi/pipe_vision' already exists` 가 나왔다면
+
+폴더가 이미 있어서 `git clone` 이 거부된 것입니다. **정상이고, 지울 필요
+없습니다.** 위 블록을 쓰면 자동으로 처리되지만, 이미 옛 명령을 쓰셨다면:
+
+```bash
+cd ~/pipe_vision
+git fetch origin main
+git checkout -B main origin/main
+bash scripts/aivis-install.sh
+```
+
+그래도 안 되면 무엇이 들어 있는지부터 봅니다:
+
+```bash
+ls -a ~/pipe_vision | head        # .git 이 보이면 저장소가 맞습니다
+cd ~/pipe_vision && git status    # 아니면 "not a git repository"
+```
+
+- **`.git` 이 있고 `git status` 가 동작** → 위 4줄이면 됩니다.
+- **로컬 수정이 있어 checkout 이 거부됨** → 현장 파이에 손댄 게 없다면
+  버려도 됩니다: `git reset --hard && git clean -fd` 후 다시.
+  `.venv/` 와 `node_modules/` 는 gitignore 대상이라 **지워지지 않습니다**
+  (다시 빌드하느라 20~30분을 또 쓰지 않아도 됩니다).
+  ⚠️ **`-x` 를 붙이지 마세요** — `git clean -fdx` 는 그 둘까지 날립니다.
+  검사 이미지·DB 는 저장소 밖(`/var/lib/aivis`)이라 어느 쪽이든 안전합니다.
+- **git 저장소가 아님**(이전 복사본·압축 해제본) → 비켜놓고 새로 받습니다:
+  `mv ~/pipe_vision ~/pipe_vision.old && git clone https://github.com/Ulrim/pipe_vision.git ~/pipe_vision`
 
 설치가 하는 일:
 
