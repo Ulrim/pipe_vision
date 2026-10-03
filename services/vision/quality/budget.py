@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 #: 알루미늄 선팽창계수 [1/K]. Clad AL Header Pipe 가 대상이므로 기본값으로 둔다.
 CTE_ALUMINIUM = 23.1e-6
@@ -97,6 +97,53 @@ class OpticalSetup:
 
     uncorrected_distortion_mm: float = 0.0
     """렌즈 보정을 하지 않았을 때의 끝단 왜곡 오차(mm). 보정했으면 0."""
+
+    # --- 소프트웨어로 좋아지는 항 (2026-10-03 추가) ---
+    edge_average_rows: int = 1
+    """끝단 직선 적합에 쓰인 행 수. 행마다 독립적인 서브픽셀 추정을 평균하므로
+    끝단 노이즈가 1/√N 로 준다. 튜브 OD 가 화면에서 200px 이면 N≈200, 즉
+    **14배** 좋아진다. 초판 예산은 이걸 빼먹어 끝단 항을 크게 과대평가했다.
+    (`length/edges.py` 의 fit_edge_lines)"""
+
+    per_frame_scale: bool = False
+    """기준자로 **매 프레임** 배율을 다시 재는가(`calib/fiducial.py`).
+    True 면 높이 변동이 기준자에도 똑같이 걸려 상쇄되므로, 남는 것은 기준자와
+    제품의 **평면 차이** 변동(coplanarity_sigma_mm)뿐이다. 이게 단일 카메라로
+    ±0.1mm 에 다가가는 가장 큰 한 수다."""
+
+    coplanarity_sigma_mm: float = 0.02
+    """기준자 평면과 제품 상면의 높이차 변동 1σ. per_frame_scale 일 때만 쓴다.
+    기준자를 제품 상면 높이에 고정하면 OD 공차 정도로 떨어진다."""
+
+    tilt_corrected: bool = True
+    """끝단 직선 적합으로 기울기를 보정하는가. False 면 1/cosθ 계통오차가
+    그대로 남는다 — 250mm·2° 에 +0.152mm 다."""
+
+    typical_tilt_deg: float = 1.5
+    """컨베이어에서 흔한 기울기. 보정 전 계통오차와 보정 후 잔차의 기준점."""
+
+    tilt_sigma_deg: Optional[float] = None
+    """기울기 각도의 불확도 1σ. None 이면 edge_span_px·edge_average_rows 로
+    **기하에서 계산**한다(tilt_sigma_from_fit). 추측값을 넣는 것보다 낫다 —
+    처음에 0.1° 로 어림잡았다가 실제론 0.007° 임을 알고 바꿨다."""
+
+    edge_span_px: Optional[float] = None
+    """끝단 직선이 걸쳐 있는 세로 길이(px) ≈ 화면에서의 튜브 OD.
+    기울기 불확도가 이 값에 반비례한다. None 이면 edge_average_rows 로 본다."""
+
+    gauge_interpolated: bool = False
+    """기준자를 '자'로 읽는가(FiducialScale.span_mm). True 면 끝단 바로 옆
+    마크로 그 자리의 배율을 쓰므로 왜곡 잔차가 거의 지워진다. 대신 **마크 중심
+    검출 노이즈**가 새 바닥이 된다."""
+
+    gauge_pitch_px: float = 20.0
+    """기준자 마크 간격(px). 보간 구간이 짧을수록 왜곡이 잘 지워진다."""
+
+    mark_sigma_px: float = 0.05
+    """마크 중심 검출의 1σ(px). 고대비 원형 마크면 0.05px 가 현실적이다."""
+
+    local_marks: int = 5
+    """각 끝단 근처에서 국소 배율에 쓰는 마크 수. 많을수록 1/√N 로 좋아진다."""
 
     @property
     def mm_per_px(self) -> float:
@@ -191,24 +238,63 @@ def length_budget(
     random_terms: Dict[str, float] = {}
     bias_terms: Dict[str, float] = {}
 
-    # 끝단 검출: 양 끝 두 번 재므로 √2 배.
-    random_terms["끝단검출"] = math.sqrt(2.0) * s.edge_sigma_px * mmpx
+    # 끝단 검출: 양 끝 두 번 재므로 √2 배. 행 N개를 평균하면 1/√N.
+    rows = max(1, int(s.edge_average_rows))
+    random_terms["끝단검출"] = (
+        math.sqrt(2.0) * s.edge_sigma_px * mmpx / math.sqrt(rows)
+    )
 
     # 렌즈 왜곡 잔차: 끝단이 화면 가장자리에 있으므로 잔차가 그대로 먹힌다.
+    # 행 평균으로는 줄지 않는다 — 왜곡은 노이즈가 아니라 위치의 함수라서
+    # 같은 열의 모든 행이 같은 방향으로 틀린다.
     if s.distortion_residual_px > 0:
-        random_terms["왜곡잔차"] = math.sqrt(2.0) * s.distortion_residual_px * mmpx
+        d = math.sqrt(2.0) * s.distortion_residual_px * mmpx
+        if s.gauge_interpolated and s.sensor_px > 0:
+            # 기준자를 자로 읽으면 끝단 옆 마크 사이에서만 보간하므로, 천천히
+            # 변하는 잔차의 **선형 성분**이 지워진다. 남는 것은 보간 구간
+            # 길이에 비례하는 몫 — 보수적으로 1차(pitch/frame)로 둔다.
+            d *= s.gauge_pitch_px / s.sensor_px
+        random_terms["왜곡잔차"] = d
+
+    # 기준자를 자로 읽으면 마크 중심 검출 노이즈가 새 바닥이 된다.
+    if s.gauge_interpolated:
+        marks = max(1, int(s.local_marks))
+        random_terms["마크검출"] = (
+            2.0 * math.sqrt(2.0) * s.mark_sigma_px * mmpx / math.sqrt(marks)
+        )
 
     # 높이(깊이) 반복성 → 배율 변동. 닮은꼴에서 오차 = L × Δz / WD.
-    # 기준자를 같은 평면에 함께 찍으면 *평균* 높이차(bias)는 지워지지만,
-    # 매 측정마다 흔들리는 양(σ)은 지워지지 않는다. 여기 들어오는 건 후자다.
     if wd > 0:
-        random_terms["높이반복성"] = L * s.height_sigma_mm / wd
+        if s.per_frame_scale:
+            # 기준자가 제품과 같이 움직이므로 상쇄된다. 남는 것은 둘 사이의
+            # 평면 차이 변동뿐 — 이게 상수 스케일과의 결정적 차이다.
+            random_terms["평면차(기준자)"] = L * s.coplanarity_sigma_mm / wd
+        else:
+            random_terms["높이반복성"] = L * s.height_sigma_mm / wd
 
     # 열팽창: 알루미늄은 1m·1K 에 23µm 다. 250mm·3K 면 17µm — 무시 못 한다.
+    # 온도를 재서 환산하면(fiducial.to_reference_temperature) temp_sigma_k 는
+    # '온도계의 불확도'로 줄어든다.
     random_terms["열팽창"] = L * s.cte_per_k * s.temp_sigma_k
 
     # 기준자 길이 불확도는 길이에 비례해 그대로 옮겨온다.
     random_terms["기준자"] = L * s.scale_rel_sigma
+
+    # 기울기. 보정하면 각도 불확도만 남는다: d/dθ(L/cosθ) = L·tanθ·secθ ≈ L·θ.
+    tilt = math.radians(s.typical_tilt_deg)
+    if s.tilt_corrected:
+        sig_deg = (
+            s.tilt_sigma_deg
+            if s.tilt_sigma_deg is not None
+            else tilt_sigma_from_fit(
+                edge_sigma_px=s.edge_sigma_px,
+                n_rows=s.edge_average_rows,
+                span_px=s.edge_span_px if s.edge_span_px else s.edge_average_rows,
+            )
+        )
+        random_terms["기울기잔차"] = L * abs(tilt) * math.radians(sig_deg)
+    elif tilt:
+        bias_terms["기울기미보정"] = L * (1.0 / math.cos(tilt) - 1.0)
 
     # --- 계통 ---
     if wd > 0 and s.height_offset_mm:
@@ -231,6 +317,26 @@ def length_budget(
         random_terms=random_terms,
         bias_terms=bias_terms,
     )
+
+
+def tilt_sigma_from_fit(
+    *, edge_sigma_px: float, n_rows: int, span_px: float
+) -> float:
+    """직선 적합이 주는 기울기 각도의 1σ(도) — 추측이 아니라 기하.
+
+    기울기 b 의 최소제곱 분산은 σ²/Σ(y−ȳ)² 다. 행이 세로로 균일하게 span_px 에
+    걸쳐 N개 있으면 Σ(y−ȳ)² = N·span²/12 이므로
+
+        σ_b = σ_point / (span/√12 · √N)
+
+    OD 200px 에 200행이면 0.1px 짜리 점 노이즈가 0.007° 로 떨어진다. 처음에
+    0.1° 로 어림잡았던 것은 **14배 과대평가**였다.
+    """
+    n = max(1, int(n_rows))
+    if span_px <= 0 or edge_sigma_px <= 0:
+        return 0.0
+    sigma_b = edge_sigma_px / (span_px / math.sqrt(12.0) * math.sqrt(n))
+    return math.degrees(math.atan(sigma_b))
 
 
 def required_fov_mm(

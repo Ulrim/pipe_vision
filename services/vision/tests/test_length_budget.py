@@ -26,6 +26,7 @@ def _only(**over) -> OpticalSetup:
         working_distance_mm=500.0,
         edge_sigma_px=0.0, distortion_residual_px=0.0,
         height_sigma_mm=0.0, temp_sigma_k=0.0, scale_rel_sigma=0.0,
+        typical_tilt_deg=0.0,          # 기울기 항도 끈다
     )
     base.update(over)
     return OpticalSetup(**base)
@@ -145,6 +146,7 @@ def test_fixturing_and_temperature_dominate_not_the_camera():
         working_distance_mm=500.0,
         edge_sigma_px=0.0, distortion_residual_px=0.0,   # 완벽한 카메라
         height_sigma_mm=0.05, temp_sigma_k=3.0, scale_rel_sigma=0.0,
+        typical_tilt_deg=0.0,
     )
     r = length_budget(s, tol_plus_mm=0.1, tol_minus_mm=0.1)
     assert not r.passed
@@ -188,6 +190,7 @@ def test_required_fov_inverts_the_budget():
         working_distance_mm=1e9,            # 깊이 항 제거
         edge_sigma_px=0.1, distortion_residual_px=0.0,
         height_sigma_mm=0.0, temp_sigma_k=0.0, scale_rel_sigma=0.0,
+        typical_tilt_deg=0.0,
     )
     r = length_budget(s, tol_plus_mm=0.1, tol_minus_mm=0.1)
     assert r.pct_grr == pytest.approx(15.0, rel=1e-6)   # 30% 의 절반
