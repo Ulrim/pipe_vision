@@ -319,6 +319,52 @@ def length_budget(
     )
 
 
+@dataclass(frozen=True)
+class CameraOptics:
+    """카메라 1대의 광학 제원. 작업거리를 '권장' 이 아니라 **계산**하기 위한 것."""
+
+    name: str
+    sensor_w_mm: float
+    """측정축(긴 변) 방향 이미지 영역 크기."""
+    sensor_h_mm: float
+    px_w: int
+    px_h: int
+    focal_mm: Optional[float] = None
+    """고정렌즈의 초점거리. None = C/CS 마운트(렌즈를 고를 수 있다)."""
+    min_focus_mm: float = 100.0
+
+
+#: 2026-10-03 제원 확인. CM3 는 **렌즈가 고정**이라 작업거리를 고를 수 없다 —
+#: 이게 공차 ±0.1mm 에서 결정적인 제약이 된다(아래 working_distance_mm 참조).
+PI_CAMERAS = {
+    "cam3": CameraOptics("Camera Module 3 (IMX708)", 6.45, 3.63, 4608, 2592,
+                         focal_mm=4.74, min_focus_mm=100.0),
+    "hq": CameraOptics("HQ Camera (IMX477) + C/CS 렌즈", 6.287, 4.712,
+                       4056, 3040, focal_mm=None),
+    "gs": CameraOptics("Global Shutter (IMX296) + C/CS 렌즈", 6.3, 4.9,
+                       1456, 1088, focal_mm=None),
+}
+
+
+def working_distance_mm(*, fov_mm: float, sensor_mm: float, focal_mm: float
+                        ) -> float:
+    """시야를 그만큼 담으려면 렌즈가 피사체에서 얼마나 떨어져야 하는가.
+
+    배율 m = f/(d−f), 시야 = 센서/m 이므로  d = f·(시야/센서 + 1).
+    (d 는 렌즈 주점~피사체. 실무에선 렌즈 앞면 기준으로 몇 mm 차이가 나지만
+    수백 mm 규모에서는 무시할 수 있다.)
+    """
+    if focal_mm <= 0 or sensor_mm <= 0:
+        raise ValueError("초점거리·센서 크기는 양수")
+    return focal_mm * (fov_mm / sensor_mm + 1.0)
+
+
+def focal_for(*, fov_mm: float, sensor_mm: float, working_distance_mm_: float
+              ) -> float:
+    """거꾸로 — 그 거리에 두고 싶으면 어떤 렌즈를 사야 하는가."""
+    return working_distance_mm_ / (fov_mm / sensor_mm + 1.0)
+
+
 def tilt_sigma_from_fit(
     *, edge_sigma_px: float, n_rows: int, span_px: float
 ) -> float:

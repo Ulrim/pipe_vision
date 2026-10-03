@@ -201,3 +201,102 @@ def test_render_md_reports_the_verdict():
     md = render_md(r)
     assert "%GR&R" in md and r.verdict in md
     assert "끝단검출" in md
+
+
+# --- 광학: 카메라를 몇 cm 떨어뜨릴 것인가 ----------------------------------
+
+def test_working_distance_formula():
+    """배율 m = f/(d−f), 시야 = 센서/m  →  d = f·(시야/센서 + 1)."""
+    from vision.quality.budget import working_distance_mm
+
+    d = working_distance_mm(fov_mm=100.0, sensor_mm=10.0, focal_mm=5.0)
+    assert d == pytest.approx(5.0 * 11.0)
+    # 시야가 센서와 같으면 배율 1배 → 거리는 초점거리의 2배(1:1 결상).
+    assert working_distance_mm(fov_mm=10.0, sensor_mm=10.0,
+                               focal_mm=5.0) == pytest.approx(10.0)
+
+
+def test_focal_for_inverts_working_distance():
+    from vision.quality.budget import focal_for, working_distance_mm
+
+    f = focal_for(fov_mm=287.5, sensor_mm=6.287, working_distance_mm_=750.0)
+    back = working_distance_mm(fov_mm=287.5, sensor_mm=6.287, focal_mm=f)
+    assert back == pytest.approx(750.0)
+
+
+def test_camera_module_3_distance_is_forced_by_its_fixed_lens():
+    """CM3 는 렌즈가 고정이라 **작업거리를 고를 수 없다.** 이게 ±0.1mm 에서
+    결정적인 제약이다 — 거리를 못 늘리니 깊이 민감도를 못 줄인다."""
+    from vision.quality.budget import PI_CAMERAS, working_distance_mm
+
+    c = PI_CAMERAS["cam3"]
+    assert c.focal_mm == pytest.approx(4.74)
+    d = working_distance_mm(fov_mm=287.5, sensor_mm=c.sensor_w_mm,
+                            focal_mm=c.focal_mm)
+    assert d == pytest.approx(216.0, abs=3.0)
+    assert d > c.min_focus_mm, "최단 초점거리보다는 멀어야 초점이 맞는다"
+
+
+def _corrected(wd: float, fov: float = 287.5) -> float:
+    """보정을 다 적용한 상태의 %GR&R."""
+    s = OpticalSetup(
+        length_mm=250.0, fov_mm=fov, sensor_px=4056, working_distance_mm=wd,
+        edge_sigma_px=0.1, distortion_residual_px=0.3,
+        edge_average_rows=200, edge_span_px=200.0,
+        per_frame_scale=True, coplanarity_sigma_mm=0.02,
+        gauge_interpolated=True, scale_rel_sigma=0.0,
+        temp_sigma_k=1.0, tilt_corrected=True, typical_tilt_deg=1.5,
+    )
+    return length_budget(s, tol_plus_mm=0.1, tol_minus_mm=0.1).pct_grr
+
+
+def test_resolution_does_not_depend_on_working_distance():
+    """**시야가 같으면 mm/px 은 거리와 무관하다.**
+
+    이걸 놓치면 "멀리 두면 작게 찍혀 분해능이 나빠진다"고 잘못 판단해,
+    거리를 줄이는 쪽으로 설계하게 된다. 실제로는 거리가 깊이 민감도만
+    바꾸므로 **멀수록 유리하고 트레이드오프가 없다.**
+    """
+    near = OpticalSetup(length_mm=250.0, fov_mm=287.5, sensor_px=4056,
+                        working_distance_mm=200.0)
+    far = OpticalSetup(length_mm=250.0, fov_mm=287.5, sensor_px=4056,
+                       working_distance_mm=2000.0)
+    assert near.mm_per_px == pytest.approx(far.mm_per_px)
+
+
+def test_longer_working_distance_is_monotonically_better():
+    vals = [_corrected(wd) for wd in (200, 400, 800, 1600)]
+    assert vals == sorted(vals, reverse=True), "멀수록 좋아져야 한다"
+
+
+def test_point_one_mm_needs_about_eighty_centimetres():
+    """답의 회귀 방지: ±0.1mm 는 80cm 쯤부터 통과한다."""
+    assert _corrected(600.0) > 30.0, "60cm 로는 안 된다"
+    assert _corrected(800.0) <= 30.0, "80cm 면 통과(경계)"
+    assert _corrected(1200.0) < 27.0, "120cm 면 여유가 생긴다"
+
+
+def test_fixed_lens_cam3_cannot_reach_the_tolerance():
+    """CM3 로 ±0.1mm 가 안 되는 이유를 숫자로 고정한다."""
+    from vision.quality.budget import PI_CAMERAS, working_distance_mm
+
+    c = PI_CAMERAS["cam3"]
+    d = working_distance_mm(fov_mm=287.5, sensor_mm=c.sensor_w_mm,
+                            focal_mm=c.focal_mm)
+    assert _corrected(d) > 50.0, "CM3 의 강제 거리로는 공차의 배를 쓴다"
+
+
+def test_sensor_specs_match_the_datasheets():
+    """제원을 잘못 넣으면 거리 계산이 통째로 틀어진다(2026-10-03 확인)."""
+    from vision.quality.budget import PI_CAMERAS
+
+    c3 = PI_CAMERAS["cam3"]
+    assert (c3.px_w, c3.px_h) == (4608, 2592)
+    assert c3.sensor_w_mm == pytest.approx(6.45, abs=0.01)
+    # 1.4µm 화소 × 화소수 = 이미지 영역. 자기일관성 확인.
+    assert c3.px_w * 1.4e-3 == pytest.approx(c3.sensor_w_mm, abs=0.02)
+
+    hq = PI_CAMERAS["hq"]
+    assert (hq.px_w, hq.px_h) == (4056, 3040)
+    assert hq.px_w * 1.55e-3 == pytest.approx(hq.sensor_w_mm, abs=0.02)
+    assert hq.focal_mm is None, "HQ 는 C마운트 — 렌즈를 고를 수 있다"

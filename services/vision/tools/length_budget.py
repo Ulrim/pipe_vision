@@ -15,11 +15,14 @@ import sys
 from pathlib import Path
 
 from vision.quality.budget import (
+    PI_CAMERAS,
     OpticalSetup,
     fit_frame,
+    focal_for,
     length_budget,
     render_md,
     required_fov_mm,
+    working_distance_mm,
 )
 
 #: 길이 방향 유효 화소. 파이에서 실제로 살 수 있는 것만 둔다.
@@ -37,6 +40,80 @@ SENSOR_WH = {
     "v2": (3280, 2464),
     "gs": (1456, 1088),
 }
+
+
+def _optics(a: argparse.Namespace) -> int:
+    """카메라를 제품에서 몇 cm 떨어뜨려야 하는가.
+
+    핵심: **시야가 정해지면 mm/px 은 작업거리와 무관하다.** 거리는 깊이
+    민감도(길이×Δz/거리)만 바꾸므로 멀수록 유리하고 트레이드오프가 없다.
+    따라서 "적당한 거리"가 아니라 "공차가 허락하는 최소 거리"를 찾는 문제다.
+    """
+    a = _resolve(a, "optics")
+    tol, L = a.tol, a.length
+    fov = a.fov if a.fov else L * 1.15
+
+    def budget(wd: float, px: int):
+        s = OpticalSetup(
+            length_mm=L, fov_mm=fov, sensor_px=px, working_distance_mm=wd,
+            edge_sigma_px=a.edge_sigma, distortion_residual_px=a.distortion_px,
+            edge_average_rows=a.edge_rows, edge_span_px=float(a.edge_rows),
+            per_frame_scale=True, coplanarity_sigma_mm=a.height_sigma,
+            gauge_interpolated=True, scale_rel_sigma=0.0,
+            temp_sigma_k=a.temp_sigma, tilt_corrected=True,
+        )
+        return length_budget(s, tol_plus_mm=tol, tol_minus_mm=tol)
+
+    print(f"제품 {L:g}mm, 시야 {fov:g}mm, 공차 ±{tol:g}mm (폭 {2*tol:g}mm)")
+    print("전제 — 이 값이 안 맞으면 아래 거리도 안 맞는다:")
+    print(f"  기준자 프레임별 측정 + 자 보간 적용, 기울기 보정 적용")
+    print(f"  기준자-제품 평면차 1σ   {a.height_sigma:g} mm")
+    print(f"  제품 온도 1σ            {a.temp_sigma:g} K")
+    print(f"  끝단 적합 행 수          {a.edge_rows} (≈ 화면에서의 튜브 OD px)")
+    print(f"  렌즈보정 후 잔차         {a.distortion_px:g} px\n")
+
+    print("작업거리별:")
+    print(f"  {'거리':>8s} {'평면차항':>9s} {'합성σ':>8s} {'%GR&R':>7s}  판정")
+    need = None
+    for wd in (150, 200, 300, 400, 500, 600, 800, 1000, 1500, 2000):
+        r = budget(float(wd), PI_CAMERAS["hq"].px_w)
+        if need is None and r.passed:
+            need = wd
+        print(f"  {wd:6d}mm {r.random_terms.get('평면차(기준자)', 0):9.4f} "
+              f"{r.sigma_mm:8.4f} {r.pct_grr:7.1f}  {r.verdict}")
+    if need is None:
+        print("\n  2m 까지 가도 통과하지 못한다 — 거리 말고 다른 항이 범인이다.")
+    else:
+        print(f"\n  → 통과에 필요한 최소 작업거리 약 **{need}mm ({need/10:.0f}cm)**")
+
+    print("\n카메라·렌즈별 실현 가능한 거리:")
+    for key, cam in PI_CAMERAS.items():
+        cross = cam.sensor_h_mm / cam.sensor_w_mm * fov
+        if cam.focal_mm:
+            d = working_distance_mm(fov_mm=fov, sensor_mm=cam.sensor_w_mm,
+                                    focal_mm=cam.focal_mm)
+            r = budget(d, cam.px_w)
+            print(f"  {cam.name}")
+            print(f"    렌즈 고정 f={cam.focal_mm}mm → 거리가 "
+                  f"**{d:.0f}mm 로 강제됨** (고를 수 없다)")
+            print(f"    %GR&R {r.pct_grr:.0f}% {r.verdict}, "
+                  f"다발폭 {cross:.0f}mm, 최단초점 {cam.min_focus_mm:.0f}mm")
+            if d < cam.min_focus_mm:
+                print("    ⚠ 최단 초점거리보다 가깝다 — 초점이 안 맞는다")
+        else:
+            print(f"  {cam.name}  (다발폭 {cross:.0f}mm)")
+            for f in (6, 8, 12, 16, 25, 35, 50):
+                d = working_distance_mm(fov_mm=fov, sensor_mm=cam.sensor_w_mm,
+                                        focal_mm=float(f))
+                r = budget(d, cam.px_w)
+                mark = " ←권장" if r.pct_grr <= 26.0 else ""
+                print(f"    f={f:2d}mm → {d:6.0f}mm ({d/10:5.1f}cm)  "
+                      f"%GR&R {r.pct_grr:5.1f}  {r.verdict}{mark}")
+    if need:
+        f_need = focal_for(fov_mm=fov, sensor_mm=PI_CAMERAS["hq"].sensor_w_mm,
+                           working_distance_mm_=float(need))
+        print(f"\n  거리 {need}mm 를 만들려면 HQ 기준 f≈{f_need:.0f}mm 렌즈.")
+    return 0
 
 
 def _bundle(a: argparse.Namespace) -> int:
@@ -77,6 +154,23 @@ def _bundle(a: argparse.Namespace) -> int:
     print("※ '제한'=width 면 길이 분해능을 다발 폭이 정하고 있다는 뜻 —")
     print("  이때는 끝단만 좁게 보는 2카메라 구성도 소용이 없다(폭이 그대로 남으므로).")
     return 0 if worst_ok else 1
+
+
+#: 모드별 전제. --optics 는 "보정을 다 했다는 전제에서 거리가 얼마나
+#: 필요한가" 를 묻는 모드라, 보정 전 값을 쓰면 답이 통째로 달라진다.
+DEFAULTS = {
+    "plain":  {"height_sigma": 0.05, "temp_sigma": 3.0},
+    "optics": {"height_sigma": 0.02, "temp_sigma": 1.0},
+}
+
+
+def _resolve(a: argparse.Namespace, mode: str) -> argparse.Namespace:
+    d = DEFAULTS[mode]
+    if a.height_sigma is None:
+        a.height_sigma = d["height_sigma"]
+    if a.temp_sigma is None:
+        a.temp_sigma = d["temp_sigma"]
+    return a
 
 
 def _setup(a: argparse.Namespace) -> OpticalSetup:
@@ -163,26 +257,35 @@ def main(argv=None) -> int:
     ap.add_argument("--wd", type=float, default=500.0, help="작업거리 mm")
     ap.add_argument("--edge-sigma", type=float, default=0.1, help="끝단 검출 1σ px")
     ap.add_argument("--distortion-px", type=float, default=0.3, help="렌즈보정 후 잔차 1σ px")
-    ap.add_argument("--height-sigma", type=float, default=0.05, help="제품 상면 높이 1σ mm")
-    ap.add_argument("--temp-sigma", type=float, default=3.0, help="제품 온도 1σ K")
+    ap.add_argument("--height-sigma", type=float, default=None,
+                    help="제품 상면 높이 1σ mm (기본: 일반 0.05 / --optics 0.02)")
+    ap.add_argument("--temp-sigma", type=float, default=None,
+                    help="제품 온도 1σ K (기본: 일반 3.0 / --optics 1.0)")
     ap.add_argument("--scale-sigma", type=float, default=2e-5, help="기준자 상대 불확도 1σ")
     ap.add_argument("--height-offset", type=float, default=0.0, help="보정 대비 높이차 mm(계통)")
     ap.add_argument("--temp-offset", type=float, default=0.0, help="보정 대비 온도차 K(계통)")
     ap.add_argument("--speed", type=float, default=0.0, help="촬영 시 이송속도 mm/s")
     ap.add_argument("--readout", type=float, default=0.0, help="롤링셔터 프레임 읽기 s")
     ap.add_argument("--sweep", action="store_true", help="구성 비교표만 출력")
+    ap.add_argument("--optics", action="store_true",
+                    help="작업거리·렌즈 선택(카메라를 몇 cm 떨어뜨릴 것인가)")
+    ap.add_argument("--edge-rows", type=int, default=200,
+                    help="끝단 직선 적합에 쓰일 행 수 ≈ 화면에서의 튜브 OD(px)")
     ap.add_argument("--bundle-width", type=float, default=None,
                     help="다발 폭 mm. 주면 폭/길이가 센서를 나눠 쓰는 효과를 계산")
     ap.add_argument("--json", type=Path, default=None)
     ap.add_argument("--md", type=Path, default=None)
     a = ap.parse_args(argv)
 
+    if a.optics:
+        return _optics(a)
     if a.bundle_width:
-        return _bundle(a)
+        return _bundle(_resolve(a, "plain"))
     if a.sweep:
-        return _sweep(a)
+        return _sweep(_resolve(a, "plain"))
 
-    res = length_budget(_setup(a), tol_plus_mm=a.tol, tol_minus_mm=a.tol)
+    res = length_budget(_setup(_resolve(a, "plain")), tol_plus_mm=a.tol,
+                        tol_minus_mm=a.tol)
     md = render_md(res)
     print(md)
     if a.json:
