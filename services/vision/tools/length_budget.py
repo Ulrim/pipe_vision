@@ -14,6 +14,7 @@ import json
 import sys
 from pathlib import Path
 
+from vision.quality.screening import guard_band_for, screen_rates
 from vision.quality.budget import (
     PI_CAMERAS,
     OpticalSetup,
@@ -40,6 +41,46 @@ SENSOR_WH = {
     "v2": (3280, 2464),
     "gs": (1456, 1088),
 }
+
+
+def _screen(a: argparse.Namespace) -> int:
+    """선별 한계를 정한다 — %GR&R 이 아니라 **오검·미검**으로 본다.
+
+    %GR&R 은 "측정시스템을 특성화할 수 있는가"를 묻는 지표다. 인라인 선별에서
+    정작 중요한 것은 "멀쩡한 걸 몇 개 버리고 불량을 몇 개 내보내는가" 이고,
+    그 답은 **공정 산포에 달려 있다.** %GR&R 이 불합격이어도 공정이 좁으면
+    쓸 만할 수 있다.
+    """
+    sm = a.meas_sigma
+    if sm is None:
+        print("--meas-sigma (측정 1σ, mm) 가 필요합니다. "
+              "--optics 로 구한 합성 σ 를 넣으세요.", file=sys.stderr)
+        return 2
+    spec = a.tol
+    print(f"선별 ±{spec:g}mm, 측정 1σ = {sm*1000:.1f}µm\n")
+    print(f"{'공정산포1σ':>10s} {'진짜양품':>9s} {'오검':>7s} {'미검':>7s} "
+          f"{'검사불량률':>10s} {'출하불량':>10s}")
+    print("-" * 62)
+    for sp in a.process_sigmas:
+        r = screen_rates(spec_mm=spec, meas_sigma_mm=sm, process_sigma_mm=sp)
+        d = r.as_dict()
+        print(f"{sp*1000:7.0f}µm {d['true_good_pct']:8.2f}% "
+              f"{d['false_reject_pct']:6.2f}% {d['false_accept_pct']:6.2f}% "
+              f"{d['misjudge_pct']:9.2f}% {d['shipped_defect_ppm']:7.0f}ppm")
+    print("\n검사불량률 = 오검+미검 (CLAUDE.md §1.1, 목표 30% 이하)")
+    print("출하불량   = 통과분 중 불량 ppm (공정불량률 목표 600ppm 과 비교)\n")
+
+    print(f"미검을 {a.max_false_accept*100:g}% 이하로 누르는 선별 한계(가드밴드):")
+    for sp in a.process_sigmas:
+        g = guard_band_for(spec_mm=spec, meas_sigma_mm=sm, process_sigma_mm=sp,
+                           max_false_accept=a.max_false_accept)
+        if g is None:
+            print(f"  공정 1σ={sp*1000:3.0f}µm → 어떤 한계로도 보장 불가")
+        else:
+            d = g.as_dict()
+            print(f"  공정 1σ={sp*1000:3.0f}µm → ±{g.screen_mm:.3f}mm "
+                  f"(미검 {d['false_accept_pct']:.2f}%, 오검 {d['false_reject_pct']:.1f}%)")
+    return 0
 
 
 def _optics(a: argparse.Namespace) -> int:
@@ -267,6 +308,15 @@ def main(argv=None) -> int:
     ap.add_argument("--speed", type=float, default=0.0, help="촬영 시 이송속도 mm/s")
     ap.add_argument("--readout", type=float, default=0.0, help="롤링셔터 프레임 읽기 s")
     ap.add_argument("--sweep", action="store_true", help="구성 비교표만 출력")
+    ap.add_argument("--screen", action="store_true",
+                    help="선별 한계·오검/미검 (공정 산포가 필요)")
+    ap.add_argument("--meas-sigma", type=float, default=None,
+                    help="측정 1σ(mm). --optics 가 내주는 합성 σ 를 넣는다")
+    ap.add_argument("--process-sigmas", type=float, nargs="+",
+                    default=[0.02, 0.03, 0.05, 0.08],
+                    help="공정 산포 1σ(mm) 후보들")
+    ap.add_argument("--max-false-accept", type=float, default=0.001,
+                    help="가드밴드가 지켜야 할 미검 상한(비율)")
     ap.add_argument("--optics", action="store_true",
                     help="작업거리·렌즈 선택(카메라를 몇 cm 떨어뜨릴 것인가)")
     ap.add_argument("--edge-rows", type=int, default=200,
@@ -277,6 +327,8 @@ def main(argv=None) -> int:
     ap.add_argument("--md", type=Path, default=None)
     a = ap.parse_args(argv)
 
+    if a.screen:
+        return _screen(a)
     if a.optics:
         return _optics(a)
     if a.bundle_width:
