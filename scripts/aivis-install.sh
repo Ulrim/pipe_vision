@@ -354,15 +354,36 @@ else
   # 이 문제가 없다. 버전 고정을 잃지만, 그 때문에 났던 타입 오류는 tsconfig
   # 의 types 진입점을 명시해 버전과 무관하게 고쳤다.
   npm_fetch() {
+    # **lock 을 치우고 설치한다.** 이게 핵심이다.
+    #
+    # 이 저장소의 package-lock.json 은 x64 에서 만들어져, rollup 의 플랫폼
+    # 네이티브 바이너리가 x64 것만 들어 있다. lock 이 그 자리에 있으면
+    # npm install 조차 arm64 바이너리를 받지 않는다 — node_modules 만 지우고
+    # npm install 해도 똑같이 실패한다(현장에서 확인). npm 이 직접 안내하는
+    # 해법도 "package-lock.json 과 node_modules 를 **둘 다** 지우라" 다
+    # (npm/cli#4828). 그래서 설치 동안만 lock 을 옆으로 치운다.
+    #
+    # 설치가 끝나면 lock 파일을 **원래대로 되돌린다.** node_modules 는 이미
+    # 올바르게 깔려 있고, 추적 파일을 건드리지 않아야 다음 git checkout 이
+    # 막히지 않는다.
+    local lock="$REPO/package-lock.json" stash="" rc=0
+    if [ -f "$lock" ]; then
+      stash="$(mktemp)"
+      cp "$lock" "$stash" && rm -f "$lock" \
+        || { rm -f "$stash"; stash=""; }
+    fi
+
     info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
-    npm install --no-audit --no-fund || return 1
-    # npm install 이 lock 에 현재 플랫폼 항목을 써 넣으면 작업트리가 더러워져,
-    # 다음 업데이트의 git checkout 이 막힌다. 설치된 트리는 이미 올바르므로
-    # 추적 파일만 원래대로 돌려놓는다.
-    if command -v git >/dev/null 2>&1 && [ -d "$REPO/.git" ]; then
+    npm install --no-audit --no-fund || rc=$?
+
+    if [ -n "$stash" ]; then
+      cp "$stash" "$lock" 2>/dev/null || true
+      rm -f "$stash"
+    elif command -v git >/dev/null 2>&1 && [ -d "$REPO/.git" ]; then
       git -C "$REPO" diff --quiet -- package-lock.json 2>/dev/null \
         || git -C "$REPO" checkout -- package-lock.json 2>/dev/null || true
     fi
+    return $rc
   }
 
   if ! deps_ready; then
