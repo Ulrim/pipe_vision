@@ -336,22 +336,34 @@ else
   }
   deps_ready() { have_bin tsc && have_bin vite; }
 
-  # **npm ci 를 먼저 쓴다.** npm install 은 package.json 의 범위(^5.3.4 등)
-  # 안에서 최신을 다시 고르므로, 파이가 개발·CI 에서 검증한 것과 **다른
-  # 버전**을 받는다. 실제로 그래서 현장에서만 타입 오류가 났다
-  # (jest-dom 매처 타입이 안 잡힘). ci 는 package-lock.json 을 그대로
-  # 재현하므로 "여기선 되는데 파이에선 안 되는" 부류를 없앤다.
-  # lock 이 없거나 package.json 과 어긋나면 ci 가 거부하므로 install 로 떨어진다.
+  # **npm install 을 쓴다. npm ci 를 쓰면 안 된다.**
+  #
+  # 한 번 npm ci 로 바꿨다가 현장을 더 망가뜨렸다. 이유는 이렇다.
+  # rollup/esbuild 는 플랫폼별 네이티브 바이너리를 optionalDependencies 로
+  # 가진다(@rollup/rollup-linux-arm64-gnu 등 26종). 그런데 npm 은 lockfile 에
+  # **설치가 일어난 플랫폼의 것만** 기록한다. 이 저장소의 lock 은 x64 에서
+  # 만들어져 x64 항목만 들어 있다:
+  #     apps/hmi/node_modules/@rollup/rollup-linux-x64-gnu
+  # npm ci 는 lock 에 적힌 것만 설치하므로, 파이(arm64)에서는 네이티브
+  # 바이너리가 통째로 빠지고 빌드가 이렇게 죽는다:
+  #     Error: Cannot find module @rollup/rollup-linux-arm64-gnu
+  # (npm/cli#4828). npm 10 의 --cpu/--os 로 lock 을 다중 플랫폼으로 만들어
+  # 보려 했으나 --package-lock-only 로는 항목이 추가되지 않았다.
+  #
+  # npm install 은 설치 시점에 현재 플랫폼에 맞는 optional 의존을 고르므로
+  # 이 문제가 없다. 버전 고정을 잃지만, 그 때문에 났던 타입 오류는 tsconfig
+  # 의 types 진입점을 명시해 버전과 무관하게 고쳤다.
   npm_fetch() {
-    if [ -f package-lock.json ]; then
-      info "화면 재료 내려받는 중(lock 고정)… (파이에서 10분 이상 걸릴 수 있습니다)"
-      npm ci --no-audit --no-fund && return 0
-      warn "npm ci 실패(lock 과 package.json 불일치 가능) — npm install 로 재시도합니다."
-    fi
     info "화면 재료 내려받는 중… (파이에서 10분 이상 걸릴 수 있습니다)"
-    npm install --no-audit --no-fund
+    npm install --no-audit --no-fund || return 1
+    # npm install 이 lock 에 현재 플랫폼 항목을 써 넣으면 작업트리가 더러워져,
+    # 다음 업데이트의 git checkout 이 막힌다. 설치된 트리는 이미 올바르므로
+    # 추적 파일만 원래대로 돌려놓는다.
+    if command -v git >/dev/null 2>&1 && [ -d "$REPO/.git" ]; then
+      git -C "$REPO" diff --quiet -- package-lock.json 2>/dev/null \
+        || git -C "$REPO" checkout -- package-lock.json 2>/dev/null || true
+    fi
   }
-
 
   if ! deps_ready; then
     if [ -d node_modules ]; then
@@ -385,6 +397,20 @@ else
   # 정말로 **실행파일이 없을 때**만 참. 종전에는 "cannot find module" 까지
   # 묶어서, TypeScript 의 TS2307(소스에서 모듈 못 찾음)이나 번들러 오류를
   # 도구 문제로 오진했다. 그 둘은 전혀 다른 문제다.
+  # rollup/esbuild 의 플랫폼 네이티브 바이너리가 빠진 경우. 문구가 특징적이라
+  # 정확히 짚을 수 있다. 조치가 '의존성 재설치'로 같지만 **원인이 달라**
+  # 따로 둔다 — 사용자에게 설명할 말이 다르고, 재설치 방법도 다르다
+  # (이 경우는 node_modules 를 비우고 새로 받아야 한다).
+  missing_native_binary() {   # $1=출력파일
+    grep -qE "Cannot find module '?@(rollup/rollup-|esbuild/)" "$1"
+  }
+
+  wipe_node_modules() {
+    info "node_modules 를 비웁니다(플랫폼 바이너리를 새로 받기 위해)…"
+    rm -rf "$REPO/node_modules" "$REPO"/apps/*/node_modules \
+           "$REPO"/packages/shared-types/ts/node_modules 2>/dev/null || true
+  }
+
   missing_build_tool() {   # $1=출력파일 $2=종료코드
     grep -qE "error TS[0-9]+" "$1" && return 1   # 타입 오류면 도구 문제 아님
     [ "$2" -eq 127 ] && return 0
@@ -415,7 +441,17 @@ else
 
     # 실행파일이 없을 때만 한 번 복구한다. 재시도 출력도 같은 파일에 받아
     # 실패하면 그대로 보여준다.
-    if missing_build_tool "$out" "$rc"; then
+    if missing_native_binary "$out"; then
+      warn "이 CPU(아키텍처)용 네이티브 바이너리가 빠졌습니다(npm/cli#4828)."
+      warn "node_modules 를 비우고 다시 받습니다 — 이게 정해진 해법입니다."
+      wipe_node_modules
+      if npm_fetch; then
+        info "${label} 다시 만드는 중…"
+        npm run build --workspace "$ws" >"$out" 2>&1
+        rc=$?
+        [ $rc -eq 0 ] && { rm -f "$out"; return 0; }
+      fi
+    elif missing_build_tool "$out" "$rc"; then
       warn "빌드 도구(tsc/vite)가 없습니다(코드 $rc) — 의존성을 다시 설치합니다."
       if npm_fetch; then
         info "${label} 다시 만드는 중…"
@@ -432,6 +468,16 @@ else
     if [ $rc -eq 137 ] || [ $rc -eq 139 ]; then
       die "[4/6] ${label} 빌드가 메모리 부족으로 강제 종료됐습니다(코드 $rc).
     스왑을 늘린 뒤 다시 실행하세요. ${SWAP_HOWTO}
+    전체 출력: ${logpath}"
+    fi
+    if grep -qE "Cannot find module '?@(rollup/rollup-|esbuild/)" "/tmp/aivis-build-${label// /_}.log" 2>/dev/null; then
+      die "[4/6] ${label} 빌드 실패 — 이 CPU 용 네이티브 바이너리를 못 받았습니다.
+    자동 복구를 시도했지만 실패했습니다. 수동으로:
+      cd $REPO
+      rm -rf node_modules apps/*/node_modules packages/*/ts/node_modules
+      npm install --no-audit --no-fund
+      bash scripts/aivis-install.sh
+    인터넷이 막혀 있으면 내려받지 못합니다 — 연결을 먼저 확인하세요.
     전체 출력: ${logpath}"
     fi
     die "[4/6] ${label} 빌드 실패 (코드 $rc).
