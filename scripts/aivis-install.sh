@@ -383,6 +383,9 @@ else
       git -C "$REPO" diff --quiet -- package-lock.json 2>/dev/null \
         || git -C "$REPO" checkout -- package-lock.json 2>/dev/null || true
     fi
+
+    # 빌드가 깨지기를 기다리지 않고 **설치 직후에** 보강한다.
+    [ $rc -eq 0 ] && ensure_rollup_native
     return $rc
   }
 
@@ -426,6 +429,61 @@ else
     grep -qE "Cannot find module '?@(rollup/rollup-|esbuild/)" "$1"
   }
 
+  # rollup 네이티브 바이너리를 **직접** 설치한다.
+  #
+  # npm 의 optional 의존 버그(npm/cli#4828)는 lock 과 node_modules 를 둘 다
+  # 지워도 이 조합에서는 안 풀렸다(현장에서 확인). 더 우회하지 말고, 이
+  # CPU 에 필요한 패키지를 이름을 짚어 설치한다. 버전은 설치된 rollup 에서
+  # 읽어 맞추므로 rollup 이 올라가도 따라간다.
+  #
+  # 루트 node_modules 는 apps/*/node_modules/rollup 에서 위로 올라가며 찾는
+  # 경로에 있으므로, 루트에 깔면 두 앱 모두 쓴다.
+  rollup_native_pkg() {
+    case "$(uname -m)" in
+      aarch64|arm64) echo "@rollup/rollup-linux-arm64-gnu" ;;
+      x86_64|amd64)  echo "@rollup/rollup-linux-x64-gnu" ;;
+      armv7l|armv6l) echo "@rollup/rollup-linux-arm-gnueabihf" ;;
+      *)             echo "" ;;
+    esac
+  }
+
+  rollup_native_ok() {   # $1=패키지명
+    local from
+    for from in "$REPO/apps/hmi/node_modules/rollup" \
+                "$REPO/apps/dashboard/node_modules/rollup" \
+                "$REPO/node_modules/rollup"; do
+      [ -d "$from" ] || continue
+      node -e "require.resolve('$1',{paths:['$from']})" >/dev/null 2>&1 || return 1
+    done
+    return 0
+  }
+
+  ensure_rollup_native() {
+    local pkg ver
+    pkg="$(rollup_native_pkg)"
+    [ -n "$pkg" ] || return 0            # 모르는 아키텍처는 건드리지 않는다
+    rollup_native_ok "$pkg" && return 0  # 이미 되면 아무것도 하지 않는다
+
+    for cand in "$REPO/apps/hmi/node_modules/rollup" \
+                "$REPO/apps/dashboard/node_modules/rollup" \
+                "$REPO/node_modules/rollup"; do
+      [ -f "$cand/package.json" ] || continue
+      ver="$(node -p "require('$cand/package.json').version" 2>/dev/null)" && break
+    done
+    [ -n "${ver:-}" ] || return 0        # rollup 이 아직 없으면 나중 단계에서 처리
+
+    info "이 CPU($(uname -m))용 rollup 바이너리를 직접 설치합니다: ${pkg}@${ver}"
+    ( cd "$REPO" && npm install --no-save --no-audit --no-fund "${pkg}@${ver}" ) \
+      >/dev/null 2>&1 || true
+
+    if rollup_native_ok "$pkg"; then
+      ok "네이티브 바이너리 준비 완료(${pkg})"
+      return 0
+    fi
+    warn "${pkg} 설치를 시도했지만 여전히 찾지 못합니다."
+    return 1
+  }
+
   wipe_node_modules() {
     info "node_modules 를 비웁니다(플랫폼 바이너리를 새로 받기 위해)…"
     rm -rf "$REPO/node_modules" "$REPO"/apps/*/node_modules \
@@ -464,7 +522,15 @@ else
     # 실패하면 그대로 보여준다.
     if missing_native_binary "$out"; then
       warn "이 CPU(아키텍처)용 네이티브 바이너리가 빠졌습니다(npm/cli#4828)."
-      warn "node_modules 를 비우고 다시 받습니다 — 이게 정해진 해법입니다."
+      # 먼저 그 패키지만 콕 집어 설치해 본다 — 통째로 다시 받는 것보다
+      # 훨씬 빠르고, 현장에서 재설치로는 안 풀렸다.
+      if ensure_rollup_native; then
+        info "${label} 다시 만드는 중…"
+        npm run build --workspace "$ws" >"$out" 2>&1
+        rc=$?
+        [ $rc -eq 0 ] && { rm -f "$out"; return 0; }
+      fi
+      warn "그래도 안 되어 node_modules 를 비우고 전부 다시 받습니다."
       wipe_node_modules
       if npm_fetch; then
         info "${label} 다시 만드는 중…"
