@@ -39,6 +39,8 @@ export interface StatusData {
   /** ISO8601 워커 측 타임스탬프. */
   ts: string;
   error: string | null;
+  /** 지금 돌고 있는 검사 모드(InspectionStage 값). 첫 결과 전에도 헤더가 모드를 보여준다. */
+  stage?: string | null;
 }
 
 export interface StatusEvent {

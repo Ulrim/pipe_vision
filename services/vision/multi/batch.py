@@ -137,6 +137,7 @@ def inspect_batch(
     min_tubes: int = 1,
     max_tubes: Optional[int] = None,
     pipeline: Optional[InspectionPipeline] = None,
+    stage: Optional[str] = None,
 ) -> BatchResult:
     """다중 튜브 프레임 → 튜브별 검사 + 배치 판정.
 
@@ -195,7 +196,8 @@ def inspect_batch(
             # 세로 튜브 → 가로로 회전(measure_length 는 가로 튜브 가정).
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
         # 끝단 좌표(span)까지 받아 배치 오버레이 측정선 표기에 쓴다.
-        vr, crop_span = pipe.run_with_geometry(crop, item)
+        # 검사 단계(=모드)를 튜브마다 그대로 넘긴다 — 길이 모드면 길이만 판정.
+        vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage)
         frame_span = _tube_span_in_frame(crop_span, roi, axis)
         tubes.append(_tube_from_verdict(roi.index, roi, vr, frame_span))
 

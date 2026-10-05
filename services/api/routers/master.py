@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from aivis_types import (
     CalibrationRequest,
+    InspectionStage,
     ItemMaster as ItemMasterSchema,
     ItemMasterCreate,
     ItemMasterUpdate,
@@ -32,6 +33,23 @@ from db.serialize import item_to_schema
 
 router = APIRouter(prefix="/master/items", tags=["master"])
 
+#: 치수 사양(기준길이·공차)을 고칠 수 있는 최소 권한.
+#:
+#: **작업자(operator) 로 확정**(2026-10-03 도입기업 결정). 제품 길이가 주문마다
+#: 바뀌는 공정이라 오더 교체 때마다 품질관리자를 부르면 라인이 선다. 권한을
+#: 여는 대신 **바꿀 수 있는 항목을 기준길이·공차·개수로 좁히고**
+#: (ItemSpecUpdate), 변경은 version 증가와 감사 로그(이전값→새값)로 남긴다.
+#: px→mm 보정계수와 표면 임계값은 이 경로로 전송 자체가 불가능하다.
+#:
+#: AIVIS_SPEC_EDIT_MIN_ROLE 은 확정 정책을 뒤집는 스위치가 아니라, 현장 정책이
+#: 바뀌었을 때 재배포 없이 조일 수 있는 비상구다(quality|admin). 기본값을 코드에서
+#: 바꾸지 마라 — test_item_spec.py 가 operator 기본값을 못 박아 두었다.
+_SPEC_EDIT_MIN_ROLE = {
+    "operator": Role.OPERATOR,
+    "quality": Role.QUALITY,
+    "admin": Role.ADMIN,
+}.get(os.getenv("AIVIS_SPEC_EDIT_MIN_ROLE", "operator").strip().lower(), Role.OPERATOR)
+
 # /master/active 는 /master/items CRUD 와 prefix 가 달라 별도 라우터로 둔다
 # (같은 라우터에 넣으면 /master/items/active 가 되어 GET /master/items/{item_code}
 # 와 경로가 섞인다). main.py 에서 함께 등록한다.
@@ -44,6 +62,20 @@ class ActiveOrderIn(BaseModel):
     item_code: str
     lot: Optional[str] = None
     work_order: Optional[str] = None
+    #: 검사 단계(=모드) 덮어쓰기. None 이면 워커 env 기본값(스테이션 고정).
+    inspection_stage: Optional[InspectionStage] = None
+
+
+class ActiveStageIn(BaseModel):
+    """PUT /master/active/stage 본문 — **모드만** 바꾼다.
+
+    오더 전체(PUT /master/active)는 quality+ 인데, 모드 전환은 작업자가 라인에서
+    한다(길이 스테이션에서 개수 확인으로 카메라를 돌려 세우는 식). 그래서
+    바꿀 수 있는 것을 모드 하나로 좁히고 권한을 열었다 — /spec 과 같은 설계.
+    """
+
+    item_code: str
+    inspection_stage: InspectionStage
 
 
 class ActiveOrderOut(ActiveOrderIn):
@@ -58,6 +90,7 @@ def _active_out(row: ActiveOrder) -> ActiveOrderOut:
         item_code=row.item_code,
         lot=row.lot,
         work_order=row.work_order,
+        inspection_stage=row.inspection_stage,
         updated_by=row.updated_by,
         updated_at=row.updated_at,
     )
@@ -97,6 +130,8 @@ def put_active_order(
     row.item_code = body.item_code
     row.lot = body.lot
     row.work_order = body.work_order
+    stage = body.inspection_stage
+    row.inspection_stage = stage.value if stage is not None else None
     row.updated_by = user.username
     row.updated_at = datetime.now(timezone.utc)
     write_log(
@@ -104,8 +139,46 @@ def put_active_order(
         category=LogCategory.USER,
         message=(
             f"master.active {body.item_code} lot={body.lot} "
-            f"wo={body.work_order} by={user.username}"
+            f"wo={body.work_order} stage={row.inspection_stage} by={user.username}"
         ),
+        commit=False,
+    )
+    db.commit()
+    db.refresh(row)
+    return _active_out(row)
+
+
+@active_router.put("/active/stage", response_model=ActiveOrderOut)
+def put_active_stage(
+    body: ActiveStageIn,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_min_role(_SPEC_EDIT_MIN_ROLE)),
+):
+    """검사 모드(단계)만 바꾼다. 작업자 권한(= /spec 과 같은 정책).
+
+    활성 오더가 없으면 품목으로 새로 만든다(LOT/작업지시는 비움) — 모드를
+    바꾸려는데 "오더부터 설정하라" 고 막으면 벤치에서 아무것도 못 한다.
+    품목이 기준정보에 없으면 404. 워커가 15초 내 자동 전환한다.
+    """
+    if not db.get(ItemMaster, body.item_code):
+        raise HTTPException(status_code=404, detail="품목 없음(기준정보 먼저 등록)")
+    row = db.get(ActiveOrder, 1)
+    if not row:
+        row = ActiveOrder(id=1, item_code=body.item_code)
+        db.add(row)
+    before = row.inspection_stage
+    row.item_code = body.item_code
+    row.inspection_stage = body.inspection_stage.value
+    row.updated_by = user.username
+    row.updated_at = datetime.now(timezone.utc)
+    write_log(
+        db,
+        category=LogCategory.USER,
+        message=(
+            f"master.active.stage {body.item_code} {before}→{row.inspection_stage} "
+            f"by={user.username}"
+        ),
+        payload={"before": before, "after": row.inspection_stage},
         commit=False,
     )
     db.commit()
@@ -223,22 +296,6 @@ def update_item(
     return item_to_schema(row)
 
 
-#: 치수 사양(기준길이·공차)을 고칠 수 있는 최소 권한.
-#:
-#: **작업자(operator) 로 확정**(2026-10-03 도입기업 결정). 제품 길이가 주문마다
-#: 바뀌는 공정이라 오더 교체 때마다 품질관리자를 부르면 라인이 선다. 권한을
-#: 여는 대신 **바꿀 수 있는 항목을 기준길이·공차·개수로 좁히고**
-#: (ItemSpecUpdate), 변경은 version 증가와 감사 로그(이전값→새값)로 남긴다.
-#: px→mm 보정계수와 표면 임계값은 이 경로로 전송 자체가 불가능하다.
-#:
-#: AIVIS_SPEC_EDIT_MIN_ROLE 은 확정 정책을 뒤집는 스위치가 아니라, 현장 정책이
-#: 바뀌었을 때 재배포 없이 조일 수 있는 비상구다(quality|admin). 기본값을 코드에서
-#: 바꾸지 마라 — test_item_spec.py 가 operator 기본값을 못 박아 두었다.
-_SPEC_EDIT_MIN_ROLE = {
-    "operator": Role.OPERATOR,
-    "quality": Role.QUALITY,
-    "admin": Role.ADMIN,
-}.get(os.getenv("AIVIS_SPEC_EDIT_MIN_ROLE", "operator").strip().lower(), Role.OPERATOR)
 
 
 @router.put("/{item_code}/spec", response_model=ItemMasterSchema)

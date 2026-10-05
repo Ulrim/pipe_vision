@@ -184,6 +184,8 @@ aivis/
 
 ### M5. 종합 판정 모듈 — `services/vision/verdict`
 - 길이+표면 통합 룰 기반 최종 OK/NG, 제품 단위 판정, **재확인 대상 자동 분류**, 불량유형 코드 자동 부여(길이/유분기/변색/스크래치/**복합불량**).
+- **모드 게이팅(2026-10-05)**: `combine_verdict(..., stage=)` 는 §7.2 표의 코드만
+  NG 사유·재확인 판단에 쓴다. 파이프라인은 모드가 안 보는 항목을 계산하지 않는다.
 - DoD: 판정 로직 결정성(동일 입력→동일 출력), 불량유형 코드표(§7.2) 준수.
 
 ### M6. 알람 모듈 — `services/api/ws` + HMI
@@ -379,7 +381,23 @@ CREATE TABLE sys_log (
 ```
 
 ### 7.2 불량유형 코드표
-`LEN`(길이), `OIL`(유분기), `DIS`(변색), `SCR`(스크래치), `MULTI`(2종 이상 복합). `defect_codes`는 배열로 복합불량 표현.
+`LEN`(길이), `OIL`(유분기), `DIS`(변색), `SCR`(스크래치), `COUNT`(개수 불일치, 2026-10-05 추가), `MULTI`(2종 이상 복합). `defect_codes`는 배열로 복합불량 표현.
+
+**검사 단계(`InspectionStage`)가 곧 검사 모드다(2026-10-05).** 현장에서 "한 번에 다
+하려니 NG 가 어떻게 나는지 모르겠다"는 요구가 나와, 단계마다 **그 단계가 보는
+항목만** 판정에 넣는다. 안 보는 항목은 계산도 하지 않고 행에 `NULL` 로 남긴다.
+
+| 단계(모드) | 판정에 들어가는 코드 | HMI 표기 |
+|---|---|---|
+| `CUT_LENGTH` | `LEN` 만 | 길이 검사 |
+| `POST_WASH_SURFACE` | `OIL`/`DIS`/`SCR` 만 | 표면 검사 |
+| `CRATE_COUNT` | `COUNT` 만 (`count_bundle`, 행 1건) | 개수 확인 |
+
+한 모드 안에서는 `MULTI` 가 날 수 없다(길이 모드 LEN 하나뿐). 모드는 스테이션
+env `AIVIS_INSPECTION_STAGE` 가 기본이고, `active_order.inspection_stage` 가 있으면
+그것이 우선한다(HMI 오더 설정 → `PUT /master/active/stage`, 작업자 권한, 워커 15s
+폴링으로 재시작 없이 전환). HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
+(허용 −0.10)", "유분기 0.62 > 기준 0.40", "개수 18 / 기준 20 (−2)".
 
 ### 7.3 MES 연계 인터페이스 (`docs/MES_INTERFACE.md`)
 - **방식 우선순위**: ① DB 인터페이스 테이블(가장 안정) ② REST API. (OPC-UA/Modbus는 향후 확장)

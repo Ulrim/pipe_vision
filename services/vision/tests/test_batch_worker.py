@@ -246,7 +246,9 @@ def test_worker_batch_sends_status_with_detected_count(tmp_path):
     backend = _BatchBackend(expected_count=n)
     worker = Worker(_cfg(tmp_path), client=_client(backend))
     assert worker.startup() is True
-    img, _ = make_multi_image(n, defects={2: "SCR"})
+    # 워커 기본 모드는 길이(CUT_LENGTH)라 표면 결함(SCR)은 NG 사유가 아니다
+    # (2026-10-05 모드 분리). 하트비트 ng 집계를 보는 테스트이므로 길이 결함을 넣는다.
+    img, _ = make_multi_image(n, defects={2: "LEN_PLUS"})
     worker.acq = _StubAcq(img)
 
     worker.run_once()

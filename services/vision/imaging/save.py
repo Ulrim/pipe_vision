@@ -716,3 +716,79 @@ def save_batch_images(
         )
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")
+
+
+# --- 개수 확인 모드(CRATE_COUNT) ---------------------------------------------
+
+def render_count_overlay(frame: np.ndarray, bundle_result, *, expected=None) -> np.ndarray:
+    """크레이트 단면 개수 확인 결과 오버레이.
+
+    검출된 단면마다 원을 그리고, 좌상단에 '검출/기준' 을 크게 적는다. 색은
+    개수가 맞으면 무채색(흰), 틀리면 빨강 — 색 단독이 아니라 숫자·기호와 함께
+    (render_overlay 의 색약 규약과 동일).
+    """
+    if frame is None or getattr(frame, "ndim", 0) != 3:
+        raise ValueError("render_count_overlay: BGR 3채널 이미지가 필요하다")
+    out = frame.copy()
+    dets = list(getattr(bundle_result, "detections", []) or [])
+    count = int(getattr(bundle_result, "count", len(dets)))
+    mismatch = expected is not None and int(expected) != count
+    color = (0, 0, 220) if mismatch else (255, 255, 255)
+    h, w = out.shape[:2]
+    thick = max(1, int(round(min(h, w) / 600)))
+    for d in dets:
+        cx, cy, r = int(round(d.cx)), int(round(d.cy)), max(2, int(round(d.r)))
+        cv2.circle(out, (cx, cy), r, color, thick)
+        cv2.circle(out, (cx, cy), max(1, thick), color, -1)
+    label = f"{'NG' if mismatch else 'OK'} COUNT {count}" + (
+        f" / {int(expected)}" if expected is not None else ""
+    )
+    scale = max(0.8, min(h, w) / 500)
+    cv2.putText(out, label, (12, int(36 * scale)), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, (0, 0, 0), int(thick * 3) + 2, cv2.LINE_AA)
+    cv2.putText(out, label, (12, int(36 * scale)), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, color, thick + 1, cv2.LINE_AA)
+    return out
+
+
+def save_count_images(
+    frame: np.ndarray,
+    bundle_result,
+    *,
+    expected: Optional[int],
+    verdict: str,
+    images_dir: Optional[str] = None,
+    lot: str,
+    item_code: str,
+    inspected_at: Optional[datetime] = None,
+    storage: Optional[StorageBackend] = None,
+    pending_sink=None,
+) -> ImageSaveResult:
+    """개수 확인 1프레임의 raw + 개수 오버레이 result 를 1회 저장.
+
+    배치 저장(save_batch_images)과 같은 백엔드/스풀 경로를 탄다. I/O 실패는
+    삼켜 error 로 보고하고 경로 None — 검사결과 적재를 막지 않는다.
+    """
+    target_dir = images_dir or os.environ.get("AIVIS_IMAGES_DIR") or DEFAULT_IMAGES_DIR
+    ts = inspected_at or datetime.now(timezone.utc)
+    review = str(verdict) == "NG"   # 개수 불일치는 항상 사람이 다시 센다
+
+    backend = storage
+    if backend is None:
+        settings = StorageSettings.from_env(images_dir=target_dir)
+        if settings.is_supabase:
+            backend = build_backend(settings)
+
+    try:
+        overlay = render_count_overlay(frame, bundle_result, expected=expected)
+        if backend is not None:
+            return _save_pair_via_backend(
+                backend, frame, overlay, lot=lot, item_code=item_code, ts=ts,
+                verdict=str(verdict), review=review, pending_sink=pending_sink,
+            )
+        return _save_pair_local(
+            frame, overlay, target_dir, lot=lot, item_code=item_code, ts=ts,
+            verdict=str(verdict), review=review,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")

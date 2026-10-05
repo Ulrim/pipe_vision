@@ -19,7 +19,19 @@ export enum DefectCode {
   OIL = "OIL",
   DIS = "DIS",
   SCR = "SCR",
+  /** 개수 불일치(검출 ≠ expected_count) — 개수 확인 모드의 NG 사유. */
+  COUNT = "COUNT",
   MULTI = "MULTI",
+}
+
+/** 검사 단계 = 검사 모드 (enums.py InspectionStage). 단계마다 그 항목만 판정한다. */
+export enum InspectionStage {
+  /** 절단 후 길이 — LEN 만 */
+  CUT_LENGTH = "CUT_LENGTH",
+  /** 세척 후 표면 — OIL/DIS/SCR 만 */
+  POST_WASH_SURFACE = "POST_WASH_SURFACE",
+  /** 크레이트 단면 개수 — COUNT 만 */
+  CRATE_COUNT = "CRATE_COUNT",
 }
 
 /** 판정 결과 — 길이/표면/종합 공통. */
@@ -133,6 +145,8 @@ export interface InspectionResult {
   work_order?: string | null;
   item_code: string;
   cam_id: string;
+  /** 검사 단계(=모드). 어느 질문에 답한 행인지 — 없으면 단계 구분 이전 데이터. */
+  inspection_stage?: InspectionStage | string | null;
   inspected_at: string; // ISO datetime
   tube_index?: number; // 배치 내 튜브 순번(0=단일 튜브/현행, 서버 기본값). 자연키 구성요소(§7.1)
   shift?: string | null;

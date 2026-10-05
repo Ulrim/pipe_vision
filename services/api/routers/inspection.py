@@ -58,6 +58,7 @@ class BatchStatus(BaseModel):
     ng: int = 0  # 이번 사이클 NG 수
     mismatch: bool = False  # detected != expected
     proc_time_ms: int = 0
+    stage: Optional[str] = None  # 지금 돌고 있는 검사 모드(InspectionStage 값)
     error: Optional[str] = None  # 취득/검사 오류 요약(정상은 None)
 
 # write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.

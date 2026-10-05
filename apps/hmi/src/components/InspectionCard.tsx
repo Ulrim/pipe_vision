@@ -30,11 +30,12 @@
  * 지금은 편차를 크게, 측정을 보조로 두고, 그 아래 공차 밴드를 그려 암산 없이
  * 벗어난 정도가 보이게 한다.
  */
-import type { InspectionResult } from "@aivis/shared-types";
+import type { InspectionResult, ItemMaster } from "@aivis/shared-types";
 import { Verdict } from "@aivis/shared-types";
 import { DefectBadges } from "./DefectBadges";
 import { ImageView } from "./ImageView";
 import { ToleranceGauge } from "./ToleranceGauge";
+import { isCountStage, ngReason, stageLabel, type CountInfo } from "@/lib/stage";
 
 function fmtMm(v: number | null | undefined): string {
   return v === null || v === undefined ? "—" : v.toFixed(2);
@@ -53,6 +54,12 @@ export interface InspectionCardProps {
   tolMinusMm?: number | null;
   /** 판정 이미지를 크게 보기(작은 화면에서는 눌러야 결함이 보인다). */
   onZoomImage?: (r: InspectionResult) => void;
+  /** 기준정보 — NG 사유에 기준값(공차·임계)을 함께 적기 위해. */
+  item?: ItemMaster | null;
+  /** 지금 모드. 결과의 inspection_stage 가 비어 있을 때(옛 행) 보조로 쓴다. */
+  stage?: string | null;
+  /** 개수 모드: 이번 사이클 검출/기준(하트비트에서). */
+  count?: CountInfo | null;
 }
 
 export function InspectionCard({
@@ -61,6 +68,9 @@ export function InspectionCard({
   tolPlusMm,
   tolMinusMm,
   onZoomImage,
+  item,
+  stage,
+  count,
 }: InspectionCardProps) {
   if (!result) {
     return (
@@ -76,12 +86,16 @@ export function InspectionCard({
   }
 
   const isNg = result.final_verdict === Verdict.NG;
+  const curStage = result.inspection_stage ?? stage ?? null;
+  const countMode = isCountStage(curStage);
+  const reason = ngReason(result, item, count);
 
   return (
     <section
       className="flex min-h-0 flex-1 gap-2"
       data-testid="inspection-card"
       data-verdict={result.final_verdict}
+      data-stage={curStage ?? ""}
       aria-label={`검사결과 ${result.item_code} ${isNg ? "불량" : "정상"}`}
     >
       {/* 좌: 판정 — 화면의 주인공. */}
@@ -110,11 +124,41 @@ export function InspectionCard({
           </span>
         </div>
 
+        {/* NG 사유 — 뱃지만으로는 "얼마나" 벗어났는지 모른다. 숫자로 적는다. */}
+        {isNg && reason && (
+          <div
+            className="rounded-xl border-2 border-ng bg-white px-3 py-2 text-hmi-body font-black text-ng-fg"
+            data-testid="ng-reason"
+          >
+            {reason}
+          </div>
+        )}
+
+        {/* 개수 모드: 길이 수치 대신 검출/기준을 크게. */}
+        {countMode ? (
+          <div className="flex items-end gap-3" data-testid="count-metrics">
+            <Metric
+              label="검출"
+              value={count ? String(count.detected) : "—"}
+              unit="개"
+              warn={isNg}
+              big
+            />
+            <div className="min-w-0 pb-1 text-hmi-cap font-semibold text-gray-500">
+              <div className="whitespace-nowrap tabular-nums">
+                기준 {count ? count.expected : "—"}개
+              </div>
+              <div className="whitespace-nowrap">{stageLabel(curStage)}</div>
+            </div>
+          </div>
+        ) : null}
+
         {/* 길이 수치. 좌측 패널은 화면의 절반뿐이라 3칸이면 타일당 130px 이
             안 나와 단위(mm)가 잘린다(800x480 실측). 작업자가 실제로 보는
             **측정값과 편차** 두 칸만 크게 두고, 기준값은 편차 옆 캡션으로
             접는다(품목이 바뀌지 않는 한 고정값이라 매번 볼 필요가 없다). */}
         {/* 편차가 판단의 근거이므로 크게, 측정·기준은 보조로 접는다. */}
+        {!countMode && (
         <div className="flex items-end gap-3">
           <Metric
             label="편차"
@@ -133,11 +177,15 @@ export function InspectionCard({
           </div>
         </div>
 
-        <ToleranceGauge
-          deviationMm={result.deviation_mm}
-          tolPlusMm={tolPlusMm}
-          tolMinusMm={tolMinusMm}
-        />
+        )}
+
+        {!countMode && (
+          <ToleranceGauge
+            deviationMm={result.deviation_mm}
+            tolPlusMm={tolPlusMm}
+            tolMinusMm={tolMinusMm}
+          />
+        )}
 
         {isNg ? (
           <div className="flex flex-col gap-2">

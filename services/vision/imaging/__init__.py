@@ -21,6 +21,8 @@ from .save import (
     render_batch_overlay,
     render_overlay,
     save_batch_images,
+    save_count_images,
+    render_count_overlay,
     save_inspection_images,
     save_raw,
     save_result,

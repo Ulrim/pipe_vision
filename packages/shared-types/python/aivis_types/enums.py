@@ -15,6 +15,7 @@ class DefectCode(str, Enum):
     OIL  : 유분기
     DIS  : 변색
     SCR  : 스크래치
+    COUNT: 개수 불일치 (검출 개수 ≠ expected_count) — 개수 확인 모드의 NG 사유
     MULTI: 2종 이상 복합 불량
     """
 
@@ -22,6 +23,7 @@ class DefectCode(str, Enum):
     OIL = "OIL"
     DIS = "DIS"
     SCR = "SCR"
+    COUNT = "COUNT"
     MULTI = "MULTI"
 
 
@@ -72,7 +74,17 @@ class InspectionStage(str, Enum):
     달라지므로, 이미지·라벨·판정 레코드 전부에 이 값을 싣는다.
 
     단일 스테이션 운영이면 워커 설정(AIVIS_INSPECTION_STAGE)으로 하나를 고정한다.
+    테스트 벤치처럼 한 대로 번갈아 볼 때는 active_order.inspection_stage 로
+    재시작 없이 바꾼다(HMI 오더 설정).
+
+    **단계는 곧 검사 모드다(2026-10-05).** 종전에는 세 가지를 한꺼번에 돌리고
+    판정도 합쳐 냈는데, 현장에서 "NG 가 왜 났는지 모르겠다" 는 말이 나왔다.
+    그래서 단계마다 **그 단계가 보는 항목만** 판정에 넣는다:
+      CUT_LENGTH         → 길이(LEN)만
+      POST_WASH_SURFACE  → 표면(OIL/DIS/SCR)만
+      CRATE_COUNT        → 개수(COUNT)만
     """
 
     CUT_LENGTH = "CUT_LENGTH"                # 절단 후 길이 검사
     POST_WASH_SURFACE = "POST_WASH_SURFACE"  # 세척 후 표면 검사
+    CRATE_COUNT = "CRATE_COUNT"              # 크레이트 단면 개수 확인

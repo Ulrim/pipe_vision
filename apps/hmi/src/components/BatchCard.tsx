@@ -19,6 +19,7 @@
  * 만들어 정작 NG 를 놓치게 하기 때문이다.
  */
 import type { InspectionResult } from "@aivis/shared-types";
+import { tallyCodes } from "@/lib/stage";
 import { Verdict } from "@aivis/shared-types";
 
 /** 전량 타일을 보여줄 수 있는 최대 개수.
@@ -39,6 +40,7 @@ export interface BatchCardProps {
 
 export function BatchCard({ batch, onReview }: BatchCardProps) {
   const isNg = batch.verdict === Verdict.NG;
+  const tally = tallyCodes(batch.tubes);
 
   // 다발이 크면 전량 타일이 화면을 넘긴다 → NG 번호만 추린다.
   const compact = batch.tubes.length > ALL_TILES_LIMIT;
@@ -84,6 +86,15 @@ export function BatchCard({ batch, onReview }: BatchCardProps) {
             >
               총 {batch.total}개 검사 · 양품 {batch.okCount}개
             </div>
+            {/* 무엇 때문에 NG 인가 — 번호만으로는 모른다. 유형별 개수를 적는다. */}
+            {isNg && tally && (
+              <div
+                className="mt-1 text-hmi-body font-black text-white"
+                data-testid="batch-ng-tally"
+              >
+                불량 사유: {tally}
+              </div>
+            )}
           </div>
         </div>
 

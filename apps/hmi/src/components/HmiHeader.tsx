@@ -15,6 +15,7 @@
 import { useEffect, useState } from "react";
 import { useLiveStore } from "@/store/liveStore";
 import { useAuthStore } from "@/store/authStore";
+import { stageLabel } from "@/lib/stage";
 
 /** 이 시간(ms) 넘게 하트비트가 없으면 워커가 멈춘 것으로 본다. */
 const STALE_MS = 6000;
@@ -87,14 +88,25 @@ export function HmiHeader() {
   // 품목/LOT: 최신 검사결과 우선, 없으면 워커 하트비트(오더 전환 즉시 반영).
   const itemCode = latest?.item_code ?? status?.item_code ?? "—";
   const lot = latest?.lot;
+  // 검사 모드: 하트비트가 가장 최신(모드 전환 직후, 첫 결과 전에도 보인다).
+  const stage = status?.stage ?? latest?.inspection_stage ?? null;
 
   return (
     <header
       className="flex flex-none items-center gap-3 border-b-2 border-gray-300 bg-white px-3 py-2"
       data-testid="hmi-header"
     >
-      {/* 현재 무엇을 검사 중인가 — 작업자가 가장 먼저 확인하는 정보. */}
+      {/* 현재 무엇을 검사 중인가 — 작업자가 가장 먼저 확인하는 정보.
+          모드를 품목보다 앞에 둔다: 같은 품목이라도 길이/표면/개수 중 무엇을
+          보는지에 따라 NG 의 뜻이 다르다(현장 요구 2026-10-05). */}
       <div className="flex min-w-0 items-baseline gap-2">
+        <span
+          className="whitespace-nowrap rounded-lg border-2 border-gray-800 bg-gray-800 px-2 py-0.5 text-hmi-body font-black text-white"
+          data-testid="header-stage"
+          data-stage={stage ?? ""}
+        >
+          {stageLabel(stage)}
+        </span>
         <span
           className="truncate text-hmi-num font-black text-gray-900"
           data-testid="header-item"

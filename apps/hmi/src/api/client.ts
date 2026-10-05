@@ -141,6 +141,36 @@ export function submitReview(
  * 임계값은 서버가 받지 않는다 — 라인에서 급히 고치다 엉뚱한 값을 흔드는
  * 사고를 구조적으로 막기 위함이다.
  */
+/** 현재 검사 오더(모드 포함). 미설정이면 null. */
+export interface ActiveOrderView {
+  item_code: string;
+  lot?: string | null;
+  work_order?: string | null;
+  inspection_stage?: string | null;
+}
+
+export function fetchActiveOrder(): Promise<ActiveOrderView | null> {
+  return request<ActiveOrderView | null>("/master/active", undefined, { auth: true });
+}
+
+/**
+ * 검사 모드만 바꾼다 — PUT /master/active/stage (작업자 권한).
+ * 길이→표면→개수를 한 대로 번갈아 보는 벤치에서 재시작 없이 전환한다.
+ */
+export function setActiveStage(
+  itemCode: string,
+  stage: string,
+): Promise<ActiveOrderView> {
+  return request<ActiveOrderView>(
+    "/master/active/stage",
+    {
+      method: "PUT",
+      body: JSON.stringify({ item_code: itemCode, inspection_stage: stage }),
+    },
+    { auth: true },
+  );
+}
+
 export function updateItemSpec(
   itemCode: string,
   body: ItemSpecUpdate,

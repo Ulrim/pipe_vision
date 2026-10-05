@@ -9,6 +9,7 @@ const LABELS: Record<string, string> = {
   OIL: "유분기",
   DIS: "변색",
   SCR: "스크래치",
+  COUNT: "개수",
   MULTI: "복합",
 };
 

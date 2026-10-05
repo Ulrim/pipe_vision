@@ -67,6 +67,9 @@ class ActiveOrder(Base):
     )
     lot: Mapped[str | None] = mapped_column(Text)
     work_order: Mapped[str | None] = mapped_column(Text)
+    #: 검사 단계(=모드) 덮어쓰기. NULL 이면 워커 env(AIVIS_INSPECTION_STAGE).
+    #: 한 대로 길이→표면→개수를 번갈아 보는 벤치에서 재시작 없이 바꾸는 용도.
+    inspection_stage: Mapped[str | None] = mapped_column(Text)
     updated_by: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

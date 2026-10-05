@@ -54,6 +54,7 @@ function AppShell() {
   // feed 를 배치 키(lot+inspected_at)로 그룹핑. 최신 배치가 맨 앞.
   const batches = useBatches();
   const latestBatch = batches[0] ?? null;
+  const status = useLiveStore((s) => s.status);
   const [reviewing, setReviewing] = useState<InspectionResult | null>(null);
   const [zoomed, setZoomed] = useState<InspectionResult | null>(null);
   // 오더 교체 — 제품 길이가 주문마다 바뀌므로 라인에서 직접 바꿔야 한다.
@@ -94,6 +95,13 @@ function AppShell() {
             onZoomImage={setZoomed}
             tolPlusMm={item?.tol_plus_mm}
             tolMinusMm={item?.tol_minus_mm}
+            item={item}
+            stage={status?.stage ?? null}
+            count={
+              status
+                ? { detected: status.detected, expected: status.expected }
+                : null
+            }
           />
         )}
       </main>
@@ -116,7 +124,11 @@ function AppShell() {
       {zoomed && <ImageZoom result={zoomed} onClose={() => setZoomed(null)} />}
 
       {setupOpen && item && (
-        <OrderSetup item={item} onClose={() => setSetupOpen(false)} />
+        <OrderSetup
+          item={item}
+          onClose={() => setSetupOpen(false)}
+          currentStage={status?.stage ?? null}
+        />
       )}
     </div>
   );

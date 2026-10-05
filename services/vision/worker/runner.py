@@ -43,6 +43,10 @@ from vision.multi import (  # noqa: E402
     tube_to_inspection,
 )
 
+from vision.imaging.save import save_count_images  # noqa: E402
+from vision.multi.bundle import count_bundle  # noqa: E402
+from aivis_types import DefectCode, InspectionResult, InspectionStage, Verdict  # noqa: E402
+
 from .client import ApiClient
 from .config import WorkerConfig
 from .dataset import ensure_dataset
@@ -126,6 +130,9 @@ class Worker:
         # 구분할 수 없으므로 전환은 항상 "새 오더 설정"으로만 일어난다(안전).
         self._active_lot: Optional[str] = None
         self._active_work_order: Optional[str] = None
+        # 활성 오더의 검사 단계(=모드). None 이면 env(AIVIS_INSPECTION_STAGE).
+        # 테스트 벤치처럼 한 대로 길이→표면→개수를 번갈아 볼 때 HMI 에서 바꾼다.
+        self._active_stage: Optional[str] = None
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -287,7 +294,8 @@ class Worker:
         self._reapply_recipe_if_changed(old, fresh)
 
     def _apply_active_meta(self, active: dict) -> None:
-        """활성 오더의 LOT/작업지시를 결과 라벨에 반영(변경 시에만 로그)."""
+        """활성 오더의 LOT/작업지시/검사 단계를 반영(변경 시에만 로그)."""
+        self._apply_active_stage(active.get("inspection_stage"))
         new_lot = active.get("lot") or None
         new_wo = active.get("work_order") or None
         if new_lot != self._active_lot or new_wo != self._active_work_order:
@@ -298,7 +306,23 @@ class Worker:
             self._active_lot = new_lot
             self._active_work_order = new_wo
 
+    def _apply_active_stage(self, raw) -> None:
+        """활성 오더의 inspection_stage. 모르는 값은 무시하고 경고 — 오타 하나로
+        스테이션 전체가 엉뚱한 모드로 돌면 안 된다."""
+        new = (str(raw).upper() if raw else None) or None
+        valid = {st.value for st in InspectionStage}
+        if new is not None and new not in valid:
+            log.warning("활성 오더의 inspection_stage 가 올바르지 않음(%r) — 무시", raw)
+            return
+        if new != self._active_stage:
+            log.info("검사 모드 전환: %s → %s", self._cur_stage(), new or self.cfg.inspection_stage)
+            self._active_stage = new
+
     # --- 현재 오더 기준 식별자(발주 전환 반영) ---
+    def _cur_stage(self) -> str:
+        """지금 돌아야 할 검사 단계(=모드). 활성 오더 > env."""
+        return self._active_stage or self.cfg.inspection_stage
+
     def _cur_item_code(self) -> str:
         """검사 결과에 쓸 품목코드 — 전환된 self.item 이 항상 우선."""
         return self.item.item_code if self.item is not None else self.cfg.item_code
@@ -414,6 +438,7 @@ class Worker:
                 {
                     "cam_id": self.cfg.cam_id,
                     "item_code": self._cur_item_code(),
+                    "stage": self._cur_stage(),
                     "expected": int(expected),
                     "detected": int(detected),
                     "ng": int(ng),
@@ -436,6 +461,8 @@ class Worker:
 
         반환: 이 사이클의 (모든) 적재가 성공하면 True. raise 금지.
         """
+        if self._cur_stage() == InspectionStage.CRATE_COUNT.value:
+            return self._run_once_count()
         expected = int(getattr(self.item, "expected_count", 1) or 1)
         if expected > 1:
             return self._run_once_batch()
@@ -479,7 +506,7 @@ class Worker:
             # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를
             # 그린다(계측 이후 데이터라 처리속도 KPI 영향 없음 — 사용자 피드백②).
             verdict, length_span = self.pipeline.run_with_geometry(
-                grab.frame, self.item
+                grab.frame, self.item, stage=self._cur_stage()
             )
             saved = save_inspection_images(
                 grab.frame,
@@ -500,7 +527,7 @@ class Worker:
                 lot=self._cur_lot(),
                 item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
-                inspection_stage=self.cfg.inspection_stage,
+                inspection_stage=self._cur_stage(),
                 inspected_at=inspected_at,
                 work_order=self._cur_work_order(),
                 shift=self.cfg.shift,
@@ -621,7 +648,7 @@ class Worker:
             # 판정(proc_time KPI)을 먼저 끝낸 뒤 이미지 저장(§4).
             batch = inspect_batch(
                 grab.frame, self.item, expected_count=expected,
-                axis=self._orientation(),
+                axis=self._orientation(), stage=self._cur_stage(),
             )
             saved = save_batch_images(
                 grab.frame,
@@ -639,7 +666,7 @@ class Worker:
                 lot=self._cur_lot(),
                 item_code=self._cur_item_code(),
                 cam_id=self.cfg.cam_id,
-                inspection_stage=self.cfg.inspection_stage,
+                inspection_stage=self._cur_stage(),
                 inspected_at=inspected_at,
                 ref_length_mm=float(self.item.ref_length_mm),
                 work_order=self._cur_work_order(),
@@ -698,6 +725,88 @@ class Worker:
             return all_ok and len(results) > 0
         except Exception as exc:  # noqa: BLE001
             log.exception("배치 검사 사이클 예외: %s", exc)
+            self.failure += 1
+            return False
+        finally:
+            self.processed += 1
+
+    # --- 개수 확인(크레이트 단면) 사이클 ---
+    def _run_once_count(self) -> bool:
+        """트리거 1회 → 단면 개수 세기 → 1건 POST. raise 금지.
+
+        크레이트에 세워 담긴 제품을 위에서 찍어 단면(구멍)을 센다(count_bundle).
+        길이·표면은 보지 않는다 — 이 모드의 질문은 "몇 개인가" 하나다.
+        결과는 배치가 아니라 **행 1건**(tube_index=0): 검출 N 과 기준
+        expected_count 가 다르면 NG + COUNT. 개수 불일치는 늘 사람이 다시 세야
+        하므로 review_flag=True 로 올린다.
+        """
+        assert self.item is not None and self.acq is not None
+        expected = int(getattr(self.item, "expected_count", 1) or 1)
+        try:
+            grab = self.acq.grab_with_retry()
+            if not grab.ok:
+                log.warning("프레임 취득 실패(개수): %s", grab.error)
+                self.failure += 1
+                self._send_status(expected=expected, detected=0, ng=0, mismatch=True,
+                                  proc_time_ms=0,
+                                  ts=datetime.now(timezone.utc).isoformat(),
+                                  error=grab.error)
+                return False
+            inspected_at = datetime.now(timezone.utc)
+            bundle = count_bundle(grab.frame)
+            detected = int(bundle.count)
+            mismatch = detected != expected
+            verdict = Verdict.NG.value if mismatch else Verdict.OK.value
+            codes = [DefectCode.COUNT.value] if mismatch else []
+            # 신뢰도: 기준 대비 얼마나 벗어났나(0 개 검출이면 0).
+            conf = 0.0 if expected <= 0 else max(0.0, 1.0 - abs(detected - expected) / expected)
+
+            saved = save_count_images(
+                grab.frame, bundle, expected=expected, verdict=verdict,
+                images_dir=self.cfg.images_dir, lot=self._cur_lot(),
+                item_code=self._cur_item_code(), inspected_at=inspected_at,
+                pending_sink=self.spool.save_image,
+            )
+            if saved.error:
+                log.warning("개수 이미지 저장 실패(계속 진행): %s", saved.error)
+
+            result = InspectionResult(
+                lot=self._cur_lot(),
+                work_order=self._cur_work_order(),
+                item_code=self._cur_item_code(),
+                cam_id=self.cfg.cam_id,
+                inspection_stage=InspectionStage.CRATE_COUNT.value,
+                inspected_at=inspected_at,
+                tube_index=0,
+                shift=self.cfg.shift,
+                operator=self.cfg.operator,
+                ref_length_mm=float(self.item.ref_length_mm),
+                final_verdict=verdict,
+                defect_codes=codes,
+                confidence=round(conf, 4),
+                raw_image_path=saved.raw_image_path,
+                result_image_path=saved.result_image_path,
+                proc_time_ms=int(bundle.proc_time_ms),
+                review_flag=mismatch,
+            )
+            log.info("개수 확인: detected=%d expected=%d → %s", detected, expected, verdict)
+
+            pending_images = list(getattr(saved, "pending_images", ()) or ())
+            if pending_images:
+                self.spool.enqueue(result, pending_images=pending_images)
+                self.spooled += 1
+                log.warning("개수 이미지 업로드 실패 → 결과 스풀 적재(pending=%d)",
+                            len(pending_images))
+                ok = False
+            else:
+                ok = self._post_or_classify(result)
+            self._send_status(expected=expected, detected=detected,
+                              ng=1 if mismatch else 0, mismatch=mismatch,
+                              proc_time_ms=int(bundle.proc_time_ms),
+                              ts=inspected_at.isoformat(), error=None)
+            return ok
+        except Exception as exc:  # noqa: BLE001
+            log.exception("개수 확인 사이클 예외: %s", exc)
             self.failure += 1
             return False
         finally:

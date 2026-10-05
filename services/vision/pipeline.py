@@ -38,6 +38,7 @@ from .preprocess import preprocess
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
 from .verdict import combine_verdict
+from .verdict.combine import codes_for_stage
 
 
 def _to_item(item: Union[ItemMaster, Dict[str, Any]]) -> ItemMaster:
@@ -86,6 +87,34 @@ def _error_verdict(
     )
 
 
+class _Skipped(Exception):
+    """이 모드에서는 이 단계를 보지 않는다 — 오류가 아니라 의도된 건너뜀."""
+
+
+def _length_not_evaluated(item: ItemMaster) -> LengthResult:
+    """길이를 보지 않는 모드의 중립 결과. edge_detected=True 로 두어 '검출 실패'
+    로 오인되지 않게 하고, 판정은 OK 로 둔다(모드 게이팅이 어차피 무시한다)."""
+    return LengthResult(
+        ref_length_mm=float(item.ref_length_mm),
+        meas_length_mm=None,
+        deviation_mm=None,
+        length_verdict=Verdict.OK,
+        edge_detected=True,
+        proc_time_ms=0,
+    )
+
+
+def _surface_not_evaluated() -> SurfaceResult:
+    return SurfaceResult(
+        oil_score=None,
+        discolor_score=None,
+        scratch_score=None,
+        surface_verdict=Verdict.OK,
+        defect_codes=[],
+        proc_time_ms=0,
+    )
+
+
 @dataclass
 class StageTimings:
     """단계별 처리시간(ms) 분해 — 처리속도 KPI 회귀/병목 분석용."""
@@ -120,6 +149,9 @@ class InspectionPipeline:
     #: 제품 높이·초점이 흔들려도 상쇄된다(calib/fiducial.py). 미설정이면
     #: item_master.px_to_mm_scale(저장된 상수)로 동작한다.
     fiducial: Optional[FiducialConfig] = None
+    #: 기본 검사 단계(=모드). 호출마다 stage= 로 덮어쓸 수 있다. None 이면
+    #: 종전처럼 길이·표면을 모두 판정한다(옛 호출자·테스트 호환).
+    stage: Optional[str] = None
     _model_cache: Dict[tuple, SurfaceModel] = field(
         default_factory=dict, repr=False, compare=False
     )
@@ -163,27 +195,34 @@ class InspectionPipeline:
         self,
         frame_bgr: np.ndarray,
         item: Union[ItemMaster, Dict[str, Any]],
+        *,
+        stage: Optional[str] = None,
     ) -> VerdictResult:
         """프레임 1장 → VerdictResult. 결정적, 전체 proc_time_ms 계측.
 
         어떤 입력/예외에도 미판정 없이 VerdictResult 를 반환한다(자동검사율 100%).
+        stage: 검사 단계(=모드). 그 모드의 항목만 판정한다. None 이면 self.stage.
         """
-        result, _, _, _ = self._run_core(frame_bgr, item)
+        result, _, _, _ = self._run_core(frame_bgr, item, stage=stage)
         return result
 
     def run_with_timings(
         self,
         frame_bgr: np.ndarray,
         item: Union[ItemMaster, Dict[str, Any]],
+        *,
+        stage: Optional[str] = None,
     ) -> tuple[VerdictResult, StageTimings]:
         """run() 과 동일하나 단계별 타이밍 분해를 함께 반환."""
-        result, timings, _, _ = self._run_core(frame_bgr, item)
+        result, timings, _, _ = self._run_core(frame_bgr, item, stage=stage)
         return result, timings
 
     def run_with_geometry(
         self,
         frame_bgr: np.ndarray,
         item: Union[ItemMaster, Dict[str, Any]],
+        *,
+        stage: Optional[str] = None,
     ) -> tuple[VerdictResult, Optional[LengthSpan]]:
         """run() + 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 결과 오버레이가
         측정 근거(끝단/측정선)를 그리도록 워커가 이 값을 save 로 넘긴다.
@@ -192,13 +231,15 @@ class InspectionPipeline:
         끝단 미검출/ROI 미검출 시 None. shared-types(VerdictResult)는 바꾸지 않고
         별도 채널로 반환한다(오케스트레이터 승인 정책 준수).
         """
-        result, _, _, span = self._run_core(frame_bgr, item)
+        result, _, _, span = self._run_core(frame_bgr, item, stage=stage)
         return result, span
 
     def run_safe(
         self,
         frame_bgr: np.ndarray,
         item: Union[ItemMaster, Dict[str, Any]],
+        *,
+        stage: Optional[str] = None,
     ) -> tuple[VerdictResult, Optional[str]]:
         """run() + 오류 사유. 결코 raise 하지 않는다.
 
@@ -206,7 +247,7 @@ class InspectionPipeline:
         shared-types 스키마(VerdictResult)는 변경하지 않으므로, 사유는 별도
         채널로 반환한다(상위에서 sys_log/HMI 알람에 연결).
         """
-        result, _, err, _ = self._run_core(frame_bgr, item)
+        result, _, err, _ = self._run_core(frame_bgr, item, stage=stage)
         return result, err
 
     # --- 내부: 단계별 예외 격리 + 결정적 NG 폴백 ---
@@ -214,10 +255,19 @@ class InspectionPipeline:
         self,
         frame_bgr: np.ndarray,
         item: Union[ItemMaster, Dict[str, Any]],
+        *,
+        stage: Optional[str] = None,
     ) -> tuple[VerdictResult, StageTimings, Optional[str], Optional[LengthSpan]]:
         t0 = time.perf_counter()
         # ItemMaster 변환 실패는 호출자 오류이므로 그대로 raise(검사 불가).
         master = _to_item(item)
+        stage = stage if stage is not None else self.stage
+        # 모드가 보지 않는 항목은 **계산도 하지 않는다.** 계산해 두고 판정에서만
+        # 빼면 저장된 행에 길이 NG 가 남아 작업자가 또 헷갈린다. 점수는 None
+        # 으로 남겨 "안 봤다" 가 그대로 드러나게 한다.
+        allowed = codes_for_stage(stage)
+        see_length = DefectCode.LEN in allowed
+        see_surface = bool(allowed & {DefectCode.OIL, DefectCode.DIS, DefectCode.SCR})
 
         # ①' 렌즈 왜곡 보정 — 전처리보다 먼저. 광각 렌즈는 가장자리가 눌려
         # 보이는데 길이는 하필 양 끝단을 쓴다. 보정 없이는 왜곡만으로 공차를
@@ -247,6 +297,8 @@ class InspectionPipeline:
         #    결과 오버레이 측정선 표기용으로 함께 받아 프레임 좌표 span 을 만든다.
         length_span: Optional[LengthSpan] = None
         try:
+            if not see_length:
+                raise _Skipped()
             if pre.length_roi is not None:
                 gray_roi = pre.length_roi.crop(pre.gray_corrected)
             else:
@@ -279,6 +331,10 @@ class InspectionPipeline:
                     y_top=r.y0,
                     y_bottom=r.y1,
                 )
+        except _Skipped:
+            # 이 모드는 길이를 보지 않는다. 판정에 영향 없는 중립값.
+            length = _length_not_evaluated(master)
+            length_span = None
         except Exception as exc:  # noqa: BLE001
             errors.append(f"length 실패: {type(exc).__name__}: {exc}")
             length = LengthResult(
@@ -292,9 +348,11 @@ class InspectionPipeline:
             length_span = None
 
         # ③ 표면 판정 — 추론 실패 시 NG(표면 불명) 로 격리.
-        surface_model = self._select_surface_model(master)
         anomaly_review = False
         try:
+            if not see_surface:
+                raise _Skipped()
+            surface_model = self._select_surface_model(master)
             if pre.surface_roi is not None:
                 region = pre.surface_roi.crop(frame_bgr)
                 region_mask = pre.surface_roi.crop(pre.mask)
@@ -307,6 +365,8 @@ class InspectionPipeline:
             rep = getattr(surface_model, "last_report", None)
             if rep is not None and getattr(rep, "review_flag", False):
                 anomaly_review = True
+        except _Skipped:
+            surface = _surface_not_evaluated()
         except Exception as exc:  # noqa: BLE001
             errors.append(f"surface 실패: {type(exc).__name__}: {exc}")
             # 표면 불명: 특정 결함을 단정하지 않는다(MULTI 날조 금지).
@@ -323,7 +383,9 @@ class InspectionPipeline:
         # ④ 종합 판정 — combine 실패도 NG 폴백으로 보장.
         total = int(round((time.perf_counter() - t0) * 1000))
         try:
-            result = combine_verdict(length, surface, master, proc_time_ms=total)
+            result = combine_verdict(
+                length, surface, master, proc_time_ms=total, stage=stage
+            )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"verdict 실패: {type(exc).__name__}: {exc}")
             result = _error_verdict(master, proc_time_ms=total)
@@ -381,6 +443,12 @@ def to_inspection_result(
     """
     length = verdict.length
     surface = verdict.surface
+    # 모드가 보지 않은 항목은 **None 으로 저장**한다. 길이 모드에서 표면 점수가,
+    # 표면 모드에서 길이 판정 'OK' 가 행에 남으면 이력 화면에서 "그때 봤나?"
+    # 를 알 수 없고, 단계별 정확도 집계가 오염된다.
+    allowed = codes_for_stage(inspection_stage)
+    see_length = DefectCode.LEN in allowed
+    see_surface = bool(allowed & {DefectCode.OIL, DefectCode.DIS, DefectCode.SCR})
     return InspectionResult(
         lot=lot,
         work_order=work_order,
@@ -391,12 +459,12 @@ def to_inspection_result(
         shift=shift,
         operator=operator,
         ref_length_mm=length.ref_length_mm,
-        meas_length_mm=length.meas_length_mm,
-        deviation_mm=length.deviation_mm,
-        length_verdict=length.length_verdict,
-        oil_score=surface.oil_score,
-        discolor_score=surface.discolor_score,
-        scratch_score=surface.scratch_score,
+        meas_length_mm=length.meas_length_mm if see_length else None,
+        deviation_mm=length.deviation_mm if see_length else None,
+        length_verdict=length.length_verdict if see_length else None,
+        oil_score=surface.oil_score if see_surface else None,
+        discolor_score=surface.discolor_score if see_surface else None,
+        scratch_score=surface.scratch_score if see_surface else None,
         final_verdict=verdict.final_verdict,
         defect_codes=list(verdict.defect_codes),
         confidence=verdict.confidence,
