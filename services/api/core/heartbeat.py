@@ -19,9 +19,9 @@ cam_id → (시각, 모드) 사전으로 둔다. `last_seen()`/`last_cam_id()` �
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -29,12 +29,25 @@ class Beat:
     cam_id: str
     seen: datetime
     stage: Optional[str] = None
+    #: 마지막 사이클 요약(item_code/expected/detected/ng/mismatch/proc_time_ms/error).
+    #: 파이 여러 대를 한 화면에서 볼 때(2026-10-09) "지금 그 라인이 무엇을 몇 개
+    #: 보고 있나" 를 DB 를 거치지 않고 바로 보여주려고 함께 둔다.
+    cycle: Dict[str, Any] = field(default_factory=dict)
+    #: 그 파이 자신의 상태(온도·CPU·메모리·디스크·전원). 워커가 안 보내면 None.
+    host: Optional[Dict[str, Any]] = None
 
 
 _beats: Dict[str, Beat] = {}
 
 
-def record(cam_id: str, ts: Optional[datetime] = None, *, stage: Optional[str] = None) -> None:
+def record(
+    cam_id: str,
+    ts: Optional[datetime] = None,
+    *,
+    stage: Optional[str] = None,
+    cycle: Optional[Dict[str, Any]] = None,
+    host: Optional[Dict[str, Any]] = None,
+) -> None:
     """하트비트 수신을 기록한다.
 
     ts 미지정 시 현재 UTC 시각. ts 를 명시할 수 있게 둔 이유는 테스트에서
@@ -43,7 +56,13 @@ def record(cam_id: str, ts: Optional[datetime] = None, *, stage: Optional[str] =
     when = ts or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    _beats[cam_id] = Beat(cam_id=cam_id, seen=when, stage=stage)
+    _beats[cam_id] = Beat(cam_id=cam_id, seen=when, stage=stage,
+                          cycle=dict(cycle or {}), host=dict(host) if host else None)
+
+
+def get(cam_id: str) -> Optional[Beat]:
+    """한 스테이션의 마지막 하트비트. 없으면 None."""
+    return _beats.get(cam_id)
 
 
 def _latest() -> Optional[Beat]:

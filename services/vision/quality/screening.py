@@ -141,7 +141,9 @@ def screen_rates(
             false_accept=gap if screen > spec_mm else 0.0,
         )
 
-    pdf = lambda d: math.exp(-0.5 * (d / sp) ** 2) / (sp * math.sqrt(2 * math.pi))
+    def pdf(d: float) -> float:
+        return math.exp(-0.5 * (d / sp) ** 2) / (sp * math.sqrt(2 * math.pi))
+
     lim = _SPAN_SIGMA * sp
 
     true_good = _simpson(pdf, -spec_mm, spec_mm)

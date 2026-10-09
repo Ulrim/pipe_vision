@@ -9,7 +9,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -154,10 +154,11 @@ def test_inspection_windows_and_boundaries(client, auth):
     assert after["last_hour"]["total"] - before["last_hour"]["total"] == 3
     assert after["last_hour"]["ng"] - before["last_hour"]["ng"] == 1
 
-    # 오늘(UTC 0시 이후): 2시간 전 건이 오늘이면 4건, 자정을 넘겼으면 3건.
-    today_start = datetime.combine(now.date(), dtime.min, tzinfo=timezone.utc)
-    expected_today = 4 if old >= today_start else 3
-    expected_today_ng = 2 if old >= today_start else 1
+    # 오늘(KST 0시 이후): 넣은 4건 중 KST 자정 이후 것만 센다(자정 직후 실행 대비).
+    start = system.today_start(now)
+    posted = [(recent[0], "OK"), (recent[1], "NG"), (recent[2], "OK"), (old, "NG")]
+    expected_today = sum(1 for t, _ in posted if t >= start)
+    expected_today_ng = sum(1 for t, v in posted if t >= start and v == "NG")
     assert after["today"]["total"] - before["today"]["total"] == expected_today
     assert after["today"]["ng"] - before["today"]["ng"] == expected_today_ng
 
@@ -353,3 +354,14 @@ def test_db_failure_degrades_without_500(client, auth, monkeypatch):
     assert body["inspection"]["last_inspected_at"] is None
     assert body["active_order"] is None
     assert body["recent_errors"] == []
+
+
+def test_today_starts_at_korean_midnight_not_utc():
+    """공장은 한국 시각으로 하루를 센다. UTC 0시(=한국 09시)로 자르면 아침 8시에
+    보는 '오늘' 에 어제 오후·야간 실적이 섞인다."""
+    # 한국 10-09 08:00 = UTC 10-08 23:00
+    now = datetime(2026, 10, 8, 23, 0, tzinfo=timezone.utc)
+    assert system.today_start(now) == datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)
+    # 한국 10-09 23:30 = UTC 10-09 14:30 → 같은 한국 날짜의 0시
+    now2 = datetime(2026, 10, 9, 14, 30, tzinfo=timezone.utc)
+    assert system.today_start(now2) == datetime(2026, 10, 8, 15, 0, tzinfo=timezone.utc)

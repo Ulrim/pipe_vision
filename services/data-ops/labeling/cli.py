@@ -24,7 +24,6 @@ from labeling.points import (
     auto_path,
     gt_path,
     iter_images,
-    load_points,
     save_points,
     score_dir,
 )

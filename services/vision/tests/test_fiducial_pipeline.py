@@ -49,7 +49,6 @@ def test_pipeline_resolves_env_only_once(monkeypatch):
 
 def test_unreadable_gauge_degrades_to_stored_scale_but_is_recorded(monkeypatch):
     """기준자를 못 읽어도 검사는 계속하되, 이유가 기록에 남아야 한다."""
-    import numpy as np
     from aivis_types import ItemMaster
 
     from vision.tools.gen_synthetic import make_multi_image
@@ -66,3 +65,4 @@ def test_unreadable_gauge_degrades_to_stored_scale_but_is_recorded(monkeypatch):
     )
     # 실패 사유가 어딘가에 남는다(reason 또는 로그 경로).
     assert reason is None or "기준자" in reason or isinstance(reason, str)
+    assert isinstance(text, str)

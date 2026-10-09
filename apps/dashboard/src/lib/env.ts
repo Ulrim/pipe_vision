@@ -32,3 +32,30 @@ export function resolveApiBase(
 }
 
 export const API_BASE: string = resolveApiBase();
+
+/** 독립형 작업자 화면(HMI) 포트(런처 HMI_PORT 기본과 동일). */
+const DEFAULT_HMI_PORT = 5173;
+
+/**
+ * 작업자 화면(HMI) 주소 — 실시간 현황에서 "이 라인 작업자 화면" 으로 넘어갈 때.
+ *
+ * 1) VITE_HMI_URL 이 있으면 그대로(클라우드 배포: 다른 도메인).
+ * 2) 독립형(:5174 등 SPA 포트)이면 같은 호스트의 :5173.
+ * 3) 80/443 프록시 배포인데 명시가 없으면 **모른다** → null(링크를 숨긴다).
+ *    틀린 링크를 보여주는 것보다 없는 편이 낫다.
+ */
+export function resolveHmiBase(
+  raw: string | undefined = import.meta.env?.VITE_HMI_URL as string | undefined,
+  loc: { protocol: string; hostname: string; port: string } | undefined =
+    typeof window !== "undefined" ? window.location : undefined,
+): string | null {
+  if (raw) return raw.replace(/\/$/, "");
+  if (!loc?.hostname) return null;
+  if (loc.port === "" || loc.port === "80" || loc.port === "443") return null;
+  return `${loc.protocol}//${loc.hostname}:${DEFAULT_HMI_PORT}`;
+}
+
+/** 특정 스테이션에 고정된 작업자 화면 주소(?cam=). HMI 주소를 모르면 null. */
+export function hmiUrlFor(camId: string, base: string | null = resolveHmiBase()): string | null {
+  return base ? `${base}/?cam=${encodeURIComponent(camId)}` : null;
+}

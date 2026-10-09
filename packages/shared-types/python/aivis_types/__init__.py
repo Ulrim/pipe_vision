@@ -48,6 +48,7 @@ from .auth import (
 
 __all__ = [
     "InspectionStage",
+    "ItemSpecUpdate",
     "LabelIn",
     "LabelOut",
     "LabelProgress",

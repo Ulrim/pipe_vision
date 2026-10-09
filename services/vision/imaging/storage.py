@@ -17,6 +17,13 @@
 
 두 백엔드 모두 **반환하는 상대경로(키)는 동일**하다. 업로드 실패는 호출자가
 graceful 처리할 수 있도록 예외를 던진다(검사결과 적재는 절대 막지 않는다).
+
+**api 백엔드(2026-10-09, 다중 스테이션 허브 구성)**: 파이가 여러 대이고 API·DB 는
+1호기(허브)에만 있을 때, 2호기의 사진이 2호기 디스크에만 남으면 대시보드가 열 수
+없다. `AIVIS_STORAGE_BACKEND=api` 면 워커가 허브 API 에 직접 올린다.
+- 업로드: PUT {AIVIS_API_URL}/inspection/images/{key}
+  headers: Content-Type: image/jpeg, (토큰 있으면) X-Service-Token + Bearer
+- 키 규칙·실패 시 스풀 보존은 supabase 와 똑같다(같은 _put_or_spool 경로).
 """
 from __future__ import annotations
 
@@ -34,6 +41,9 @@ log = logging.getLogger("aivis.vision.storage")
 
 LOCAL = "local"
 SUPABASE = "supabase"
+API = "api"
+#: 원격(워커 디스크 밖)으로 올리는 백엔드. 스풀 pending 재전송 대상이다.
+REMOTE_BACKENDS = (SUPABASE, API)
 DEFAULT_BACKEND = LOCAL
 DEFAULT_BUCKET = "inspection-images"
 
@@ -128,6 +138,55 @@ class SupabaseStorage(StorageBackend):
                 pass
 
 
+class ApiStorage(StorageBackend):
+    """허브 API 로 업로드(PUT /inspection/images/{key}). 키 = 상대경로 그대로.
+
+    허브가 자기 images_dir 의 같은 키 경로에 쓰므로, 허브의 대시보드·HMI 가
+    로컬 사진과 똑같이 연다. 네트워크/4xx/5xx 는 OSError 로 올려 호출자가
+    스풀에 보존하게 한다(허브가 잠깐 꺼져도 사진을 잃지 않는다).
+    """
+
+    def __init__(
+        self,
+        api_url: str,
+        service_token: Optional[str] = None,
+        *,
+        client=None,
+        timeout_s: float = _HTTP_TIMEOUT_S,
+    ) -> None:
+        import httpx  # 지연 import — local 모드는 httpx 불필요.
+
+        self._httpx = httpx
+        self.api_url = api_url.rstrip("/")
+        self.token = service_token
+        self._owns_client = client is None
+        self._client = client or httpx.Client(timeout=timeout_s)
+
+    def put(self, key: str, jpeg: bytes) -> str:
+        headers = {"Content-Type": "image/jpeg"}
+        if self.token:
+            headers["X-Service-Token"] = self.token
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            resp = self._client.put(
+                f"{self.api_url}/inspection/images/{key}", content=jpeg, headers=headers
+            )
+        except self._httpx.HTTPError as exc:
+            raise OSError(f"허브 API 업로드 전송 실패: {key}: {exc}") from exc
+        if resp.status_code >= 400:
+            raise OSError(
+                f"허브 API 업로드 실패 {resp.status_code}: {key} {resp.text[:200]}"
+            )
+        return key
+
+    def close(self) -> None:
+        if self._owns_client:
+            try:
+                self._client.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 @dataclass(frozen=True)
 class StorageSettings:
     """스토리지 백엔드 설정 스냅샷(환경변수 1회 로드)."""
@@ -137,15 +196,26 @@ class StorageSettings:
     supabase_url: Optional[str] = None
     supabase_key: Optional[str] = None
     supabase_bucket: str = DEFAULT_BUCKET
+    api_url: Optional[str] = None
+    service_token: Optional[str] = None
 
     @property
     def is_supabase(self) -> bool:
         return self.backend == SUPABASE
 
+    @property
+    def is_api(self) -> bool:
+        return self.backend == API
+
+    @property
+    def is_remote(self) -> bool:
+        """워커 디스크 밖으로 올리는가(supabase|api). 저장 헬퍼가 백엔드를 만든다."""
+        return self.backend in REMOTE_BACKENDS
+
     @classmethod
     def from_env(cls, *, images_dir: Optional[str] = None) -> "StorageSettings":
         backend = (os.environ.get("AIVIS_STORAGE_BACKEND") or DEFAULT_BACKEND).strip().lower()
-        if backend not in (LOCAL, SUPABASE):
+        if backend not in (LOCAL, SUPABASE, API):
             log.warning(
                 "알 수 없는 AIVIS_STORAGE_BACKEND=%r → local 로 폴백", backend
             )
@@ -156,17 +226,28 @@ class StorageSettings:
             os.environ.get("SUPABASE_STORAGE_BUCKET") or DEFAULT_BUCKET
         ).strip() or DEFAULT_BUCKET
         idir = images_dir or os.environ.get("AIVIS_IMAGES_DIR") or "/data/images"
+        api_url = (os.environ.get("AIVIS_API_URL") or "").strip() or None
+        token = (os.environ.get("AIVIS_SERVICE_TOKEN") or "").strip() or None
         return cls(
             backend=backend,
             images_dir=idir,
             supabase_url=url,
             supabase_key=key,
             supabase_bucket=bucket,
+            api_url=api_url,
+            service_token=token,
         )
 
 
 def build_backend(settings: StorageSettings, *, client=None) -> StorageBackend:
-    """설정으로 백엔드를 만든다. supabase 설정 누락이면 경고 후 local 폴백."""
+    """설정으로 백엔드를 만든다. 원격 설정 누락이면 경고 후 local 폴백."""
+    if settings.is_api:
+        if not settings.api_url:
+            log.warning(
+                "AIVIS_STORAGE_BACKEND=api 이지만 AIVIS_API_URL 미설정 → local 디스크로 폴백"
+            )
+            return LocalStorage(settings.images_dir)
+        return ApiStorage(settings.api_url, settings.service_token, client=client)
     if settings.is_supabase:
         if not settings.supabase_url or not settings.supabase_key:
             log.warning(

@@ -303,6 +303,86 @@ export interface SystemStatus {
   recent_errors: SystemError[];
 }
 
+/* ---------------- 실시간 현황: 파이 여러 대 (GET /system/stations) ---------------- */
+
+export interface StationWindow {
+  total: number;
+  ng: number;
+  ng_rate_pct: number;
+}
+
+/** NG 사유를 수치로 적기 위한 그 품목의 기준. */
+export interface StationLimits {
+  ref_length_mm: number | null;
+  tol_plus_mm: number | null;
+  tol_minus_mm: number | null;
+  oil_threshold: number | null;
+  discolor_threshold: number | null;
+  scratch_threshold: number | null;
+  expected_count: number | null;
+}
+
+/** 스테이션의 마지막 검사 1건(다발이면 NG 튜브가 대표). */
+export interface StationLatest {
+  id: number;
+  inspected_at: string;
+  lot: string;
+  item_code: string | null;
+  inspection_stage: string | null;
+  final_verdict: string;
+  defect_codes: string[];
+  meas_length_mm: number | null;
+  deviation_mm: number | null;
+  length_verdict: string | null;
+  oil_score: number | null;
+  discolor_score: number | null;
+  scratch_score: number | null;
+  review_flag: boolean;
+  has_result_image: boolean;
+  has_raw_image: boolean;
+  frame_total: number;
+  frame_ng: number;
+  limits: StationLimits | null;
+}
+
+/** 그 파이 자신의 상태(하트비트). 구 워커면 null. */
+export interface StationHost {
+  cpu_temp_c: number | null;
+  cpu_percent: number | null;
+  load_1m: number | null;
+  mem_percent: number | null;
+  disk_percent: number | null;
+  disk_free_gb: number | null;
+  throttled: boolean | null;
+}
+
+export interface StationLive {
+  cam_id: string;
+  state: WorkerState;
+  last_seen_s: number | null;
+  stage: string | null;
+  item_code: string | null;
+  expected: number | null;
+  detected: number | null;
+  mismatch: boolean | null;
+  error: string | null;
+  proc_time_ms: number | null;
+  host: StationHost | null;
+  last_hour: StationWindow;
+  today: StationWindow;
+  latest: StationLatest | null;
+}
+
+export interface StationsResponse {
+  ts: string;
+  stations: StationLive[];
+}
+
+/** GET /system/stations — 스테이션별 실시간 현황(operator+). */
+export function fetchStations(): Promise<StationsResponse> {
+  return requestJson<StationsResponse>("/system/stations");
+}
+
 /** GET /system/status — 현장 장비 상태 스냅샷(5초 주기 폴링용). */
 export function fetchSystemStatus(): Promise<SystemStatus> {
   return requestJson<SystemStatus>("/system/status");

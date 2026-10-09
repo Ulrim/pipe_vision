@@ -108,16 +108,19 @@
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
 | POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
-| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
+| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
 | GET | `/inspection?…&cam_id=&stage=` | operator+ | 이력 조회 필터에 스테이션(`cam_id`)·검사 모드(`stage`, 대소문자 무관) 추가. KPI `/kpi/summary` 는 `CRATE_COUNT` 행(크레이트 1판 = 제품 아님)을 공정불량률·검사수량에서 **제외**하고 저장·연계율에는 포함한다 |
 | WS | `/ws/live?token=<JWT>` | 로그인 | 검사결과/알람 실시간 푸시. `token` 쿼리에 JWT 필요(무효/누락 시 accept 전 `1008` close). 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |
+| GET | `/system/status` | operator+ | 현장 상태 스냅샷(API 가 도는 호스트 자원·워커·검사 집계·오류). "오늘" 은 **KST 0시** 기준(2026-10-09, 종전 UTC 0시 = 한국 09시) |
+| GET | `/system/stations` | operator+ | **실시간 현황**(파이 여러 대, 2026-10-09). `{ts, stations[]}`, 스테이션 = 하트비트 ∪ station_config ∪ 최근 24h 결과의 cam_id(재기동 직후에도 죽은 파이가 `down` 으로 남는다). 각 항목: `cam_id, state(up\|stale\|down), last_seen_s, stage`(하트비트 > 스테이션 설정 > 마지막 결과), 마지막 사이클 `item_code/expected/detected/mismatch/error/proc_time_ms`, 그 파이 자신의 `host{cpu_temp_c, cpu_percent, load_1m, mem_percent, disk_percent, disk_free_gb, throttled}`(구 워커는 null), `last_hour`/`today{total, ng, ng_rate_pct}`, `latest{id, inspected_at, lot, item_code, inspection_stage, final_verdict, defect_codes, meas_length_mm, deviation_mm, length_verdict, oil/discolor/scratch_score, review_flag, has_result_image, has_raw_image, frame_total, frame_ng, limits{ref_length_mm, tol_plus/minus_mm, oil/discolor/scratch_threshold, expected_count}}`(다발이면 NG 튜브가 대표). DB 가 죽어도 200(하트비트만으로 채움) |
+| PUT | `/inspection/images/{key}` | 내부 | **워커 → 허브 사진 업로드**(2026-10-09, `AIVIS_STORAGE_BACKEND=api` 워커). 본문 = JPEG 바이트(FF D8 시작), 키 = `raw\|result\|review/<파일명>.jpg`(하위 폴더·`..`·다른 확장자 400), 25MB 상한(413). 허브 `AIVIS_IMAGES_DIR` 의 같은 경로에 임시파일→rename 으로 저장(같은 키 재전송은 덮어씀 = 멱등). 디스크 오류 507(워커가 스풀에 보존 후 재전송). 서버가 `supabase` 백엔드면 409. 응답 201 `{key, bytes}` |
 
 ## 배포 환경변수 (클라우드 데모)
 - `ALLOWED_ORIGINS`: CORS 허용 출처 콤마 목록(예 `https://aivis-hmi.vercel.app,https://aivis-dashboard.vercel.app`). 미설정 시 `*`(모든 출처, credentials 불가). 명시 목록이면 `allow_credentials=True`.
 - `AIVIS_SEED_DEMO_ITEM`(기본 `false`): 데모 배포에서 `true`로 켜면 `item_master`에 데모 품목 1건을 멱등 시드(워커 검사결과 FK 충족).
 - `AIVIS_DEMO_ITEM_CODE`(기본 `HP12`): 데모 시드 품목코드.
-- 이미지 스토리지 백엔드: `AIVIS_STORAGE_BACKEND`(기본 `local`=공유 볼륨 FileResponse, `supabase`=Supabase Storage 오브젝트를 JWT 가드 뒤에서 프록시). `supabase` 모드는 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`(기본 `inspection-images`)을 사용하며, DB 상대경로(raw/...\|result/...)를 오브젝트 키로 서빙한다.
+- 이미지 스토리지 백엔드: `AIVIS_STORAGE_BACKEND`(기본 `local`=공유 볼륨 FileResponse, `supabase`=Supabase Storage 오브젝트를 JWT 가드 뒤에서 프록시). 워커 쪽에는 `api` 값이 하나 더 있다 — 파이 여러 대 허브 구성에서 2호기 이상이 `PUT /inspection/images/{key}` 로 허브에 올린다(허브 API 는 `local`). `supabase` 모드는 `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_STORAGE_BUCKET`(기본 `inspection-images`)을 사용하며, DB 상대경로(raw/...\|result/...)를 오브젝트 키로 서빙한다.
 
 ## 공용 스키마 (packages/shared-types)
 `InspectionResult`, `ItemMaster(+Create/Update)`, `ReviewUpdate`, `InspectionImages`,

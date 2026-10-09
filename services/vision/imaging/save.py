@@ -79,11 +79,24 @@ def build_filename(
     item: str,
     ts: datetime,
     verdict: str,
+    cam_id: Optional[str] = None,
 ) -> str:
-    """§6.4 규칙: {LOT}_{Item}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg (ms 3자리)."""
+    """§6.4 규칙: {LOT}_{Item}_{CamID}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg (ms 3자리).
+
+    cam_id 가 없으면 종전 형식 {LOT}_{Item}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg.
+
+    카메라를 넣는 이유(2026-10-09, 다중 스테이션): 두 대가 **같은 오더**(LOT·품목
+    공통)를 같은 밀리초에 찍으면 이름이 같아진다. 사진을 한곳(허브 API, Supabase
+    버킷, 공유 폴더)에 모으는 순간 서로 덮어쓰고, 대시보드는 **다른 라인의 사진**을
+    아무 경고 없이 보여준다. 카메라당 사이클 0.67회/s 두 대면 시간당 1건꼴이다.
+    폴더를 카메라별로 나누지 않는 이유: 보관기한 정리(retention)가 raw/ result/
+    review/ 바로 아래만 보므로 하위 폴더는 영원히 안 지워져 디스크가 찬다.
+    끝이 `_{verdict}.jpg` 인 것은 그대로라 정리 규칙(OK/NG 보관기간)도 그대로다.
+    """
     stamp = f"{ts:%Y%m%d%H%M%S}{ts.microsecond // 1000:03d}"
+    cam = f"_{_safe_token(cam_id)}" if cam_id else ""
     return (
-        f"{_safe_token(lot)}_{_safe_token(item)}_{stamp}_{_safe_verdict(verdict)}.jpg"
+        f"{_safe_token(lot)}_{_safe_token(item)}{cam}_{stamp}_{_safe_verdict(verdict)}.jpg"
     )
 
 
@@ -108,10 +121,12 @@ def save_raw(
     item: str,
     ts: datetime,
     verdict: str,
+    *,
+    cam_id: Optional[str] = None,
 ) -> str:
     """원본 프레임을 raw/ 에 저장하고 images_dir 기준 상대경로를 반환한다."""
     base = _ensure_dirs(images_dir)
-    fname = build_filename(lot, item, ts, verdict)
+    fname = build_filename(lot, item, ts, verdict, cam_id)
     _imwrite(base / _RAW / fname, frame)
     return f"{_RAW}/{fname}"
 
@@ -160,6 +175,58 @@ def _draw_length_span_on(canvas: np.ndarray, length, length_span) -> None:
         label=_length_span_label(length),
         txt_scale=txt_scale,
     )
+
+
+#: 모드가 보지 않은 항목의 표기. OpenCV 기본 글꼴은 한글을 못 그려 영문으로 쓴다.
+NOT_INSPECTED = "not inspected in this mode"
+
+
+def overlay_lines(result, item=None) -> List[str]:
+    """결과 사진 좌하단 패널의 글자 줄.
+
+    **모드가 보지 않은 항목은 "안 봤다" 고 적는다(2026-10-09).** 표면 모드에서
+    길이를 계산하지 않으면 길이 판정이 중립값 OK 로 채워지는데, 그걸 그대로
+    "LEN OK" 로 찍으면 사진만 본 사람은 길이도 합격이라고 읽는다 — 재지도 않았는데.
+    판별: 길이는 측정값·편차가 없고 끝단 실패도 아님, 표면은 세 점수가 모두 없음.
+    """
+    length = getattr(result, "length", None)
+    surface = getattr(result, "surface", None)
+    codes: Sequence = getattr(result, "defect_codes", []) or []
+    code_str = ",".join(str(c) for c in codes) if codes else "-"
+
+    oil_t = getattr(item, "oil_threshold", None) if item is not None else None
+    dis_t = getattr(item, "discolor_threshold", None) if item is not None else None
+    scr_t = getattr(item, "scratch_threshold", None) if item is not None else None
+
+    lines: List[str] = []
+    if length is not None:
+        meas = getattr(length, "meas_length_mm", None)
+        ref = getattr(length, "ref_length_mm", None)
+        dev = getattr(length, "deviation_mm", None)
+        lv = str(getattr(length, "length_verdict", "")).upper()
+        edge = getattr(length, "edge_detected", True)
+        if meas is None and dev is None and edge:
+            lines.append(f"LEN: {NOT_INSPECTED}")
+        else:
+            edge_txt = "" if edge else " (no-edge)"
+            lines.append(
+                f"LEN {lv}: meas {_fmt_num(meas)} ref {_fmt_num(ref)} "
+                f"dev {_fmt_num(dev)}{edge_txt}"
+            )
+    if surface is not None:
+        scores = (
+            getattr(surface, "oil_score", None),
+            getattr(surface, "discolor_score", None),
+            getattr(surface, "scratch_score", None),
+        )
+        if all(v is None for v in scores):
+            lines.append(f"SURFACE: {NOT_INSPECTED}")
+        else:
+            lines.append(_score_line("OIL", scores[0], oil_t))
+            lines.append(_score_line("DIS", scores[1], dis_t))
+            lines.append(_score_line("SCR", scores[2], scr_t))
+    lines.append(f"DEFECTS: {code_str}")
+    return lines
 
 
 def render_overlay(
@@ -226,36 +293,7 @@ def render_overlay(
         )
 
     # 3) 좌하단 상세 패널(반투명 배경에 텍스트 줄).
-    length = getattr(result, "length", None)
-    surface = getattr(result, "surface", None)
-    codes: Sequence = getattr(result, "defect_codes", []) or []
-    code_str = ",".join(str(c) for c in codes) if codes else "-"
-
-    oil_t = getattr(item, "oil_threshold", None) if item is not None else None
-    dis_t = getattr(item, "discolor_threshold", None) if item is not None else None
-    scr_t = getattr(item, "scratch_threshold", None) if item is not None else None
-
-    lines: List[str] = []
-    if length is not None:
-        meas = getattr(length, "meas_length_mm", None)
-        ref = getattr(length, "ref_length_mm", None)
-        dev = getattr(length, "deviation_mm", None)
-        lv = str(getattr(length, "length_verdict", "")).upper()
-        edge = getattr(length, "edge_detected", True)
-        edge_txt = "" if edge else " (no-edge)"
-        lines.append(
-            f"LEN {lv}: meas {_fmt_num(meas)} ref {_fmt_num(ref)} "
-            f"dev {_fmt_num(dev)}{edge_txt}"
-        )
-    if surface is not None:
-        lines.append(_score_line("OIL", getattr(surface, "oil_score", None), oil_t))
-        lines.append(
-            _score_line("DIS", getattr(surface, "discolor_score", None), dis_t)
-        )
-        lines.append(
-            _score_line("SCR", getattr(surface, "scratch_score", None), scr_t)
-        )
-    lines.append(f"DEFECTS: {code_str}")
+    lines = overlay_lines(result, item)
 
     txt_scale = max(0.45, w / 1400.0)
     line_h = int(26 * txt_scale) + 6
@@ -303,7 +341,7 @@ def render_overlay(
 
     # 5) 길이 측정 근거(끝단 2점 + 측정선 + 라벨). 판정 계측 이후 데이터라
     #    처리속도 KPI 에 영향 없음. span 없으면(끝단 미검출) 생략.
-    _draw_length_span_on(canvas, length, length_span)
+    _draw_length_span_on(canvas, getattr(result, "length", None), length_span)
 
     return canvas
 
@@ -431,6 +469,7 @@ def save_result(
     verdict: str,
     *,
     review_flag: bool = False,
+    cam_id: Optional[str] = None,
 ) -> str:
     """결과 오버레이를 result/ 에 저장(필요시 review/ 사본).
 
@@ -438,7 +477,7 @@ def save_result(
     기록한다(오검·미검 분리 — §6.4). review 사본 실패는 무시한다(주 경로 우선).
     """
     base = _ensure_dirs(images_dir)
-    fname = build_filename(lot, item, ts, verdict)
+    fname = build_filename(lot, item, ts, verdict, cam_id)
     _imwrite(base / _RESULT / fname, overlay)
     if review_flag:
         try:
@@ -499,6 +538,7 @@ def _save_pair_via_backend(
     verdict: str,
     review: bool,
     pending_sink=None,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """이미 렌더된 (frame, overlay) 쌍을 스토리지 백엔드에 업로드.
 
@@ -508,7 +548,7 @@ def _save_pair_via_backend(
     pending_sink((key, jpeg) -> str|None)가 있으면 업로드 실패 시 바이트를
     스풀에 보존하고 키를 pending_images 로 보고한다(경로는 그대로 유지).
     """
-    fname = build_filename(lot, item_code, ts, verdict)
+    fname = build_filename(lot, item_code, ts, verdict, cam_id)
     raw_key = f"{_RAW}/{fname}"
     result_key = f"{_RESULT}/{fname}"
 
@@ -543,11 +583,13 @@ def _save_pair_local(
     ts: datetime,
     verdict: str,
     review: bool,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """이미 렌더된 (frame, overlay) 쌍을 로컬 디스크에 저장(raw/ + result/)."""
-    raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict)
+    raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
     result_path = save_result(
-        overlay, target_dir, lot, item_code, ts, verdict, review_flag=review
+        overlay, target_dir, lot, item_code, ts, verdict, review_flag=review,
+        cam_id=cam_id,
     )
     return ImageSaveResult(raw_image_path=raw_path, result_image_path=result_path)
 
@@ -565,6 +607,7 @@ def _save_via_backend(
     item,
     pending_sink=None,
     length_span: Optional[LengthSpan] = None,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """단일 검사 결과를 렌더(render_overlay) 후 백엔드에 업로드(호환 래퍼)."""
     overlay = render_overlay(frame, result, item=item, length_span=length_span)
@@ -578,6 +621,7 @@ def _save_via_backend(
         verdict=verdict,
         review=review,
         pending_sink=pending_sink,
+        cam_id=cam_id,
     )
 
 
@@ -593,6 +637,7 @@ def save_inspection_images(
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
     length_span: Optional[LengthSpan] = None,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
 
@@ -615,7 +660,7 @@ def save_inspection_images(
     backend = storage
     if backend is None:
         settings = StorageSettings.from_env(images_dir=target_dir)
-        if settings.is_supabase:
+        if settings.is_remote:
             backend = build_backend(settings)
 
     raw_path: Optional[str] = None
@@ -634,9 +679,10 @@ def save_inspection_images(
                 item=item,
                 pending_sink=pending_sink,
                 length_span=length_span,
+                cam_id=cam_id,
             )
         # local 디스크 경로(기존 동작 그대로).
-        raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict)
+        raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
         overlay = render_overlay(frame, result, item=item, length_span=length_span)
         result_path = save_result(
             overlay,
@@ -646,6 +692,7 @@ def save_inspection_images(
             ts,
             verdict,
             review_flag=review,
+            cam_id=cam_id,
         )
         return ImageSaveResult(raw_image_path=raw_path, result_image_path=result_path)
     except Exception as exc:  # noqa: BLE001
@@ -666,6 +713,7 @@ def save_batch_images(
     inspected_at: Optional[datetime] = None,
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """배치(다중 튜브) 1프레임의 raw + 배치 오버레이 result 를 **1회** 저장.
 
@@ -687,7 +735,7 @@ def save_batch_images(
     backend = storage
     if backend is None:
         settings = StorageSettings.from_env(images_dir=target_dir)
-        if settings.is_supabase:
+        if settings.is_remote:
             backend = build_backend(settings)
 
     try:
@@ -703,6 +751,7 @@ def save_batch_images(
                 verdict=verdict,
                 review=review,
                 pending_sink=pending_sink,
+                cam_id=cam_id,
             )
         return _save_pair_local(
             frame,
@@ -713,6 +762,7 @@ def save_batch_images(
             ts=ts,
             verdict=verdict,
             review=review,
+            cam_id=cam_id,
         )
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")
@@ -763,6 +813,7 @@ def save_count_images(
     inspected_at: Optional[datetime] = None,
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
+    cam_id: Optional[str] = None,
 ) -> ImageSaveResult:
     """개수 확인 1프레임의 raw + 개수 오버레이 result 를 1회 저장.
 
@@ -776,7 +827,7 @@ def save_count_images(
     backend = storage
     if backend is None:
         settings = StorageSettings.from_env(images_dir=target_dir)
-        if settings.is_supabase:
+        if settings.is_remote:
             backend = build_backend(settings)
 
     try:
@@ -785,10 +836,11 @@ def save_count_images(
             return _save_pair_via_backend(
                 backend, frame, overlay, lot=lot, item_code=item_code, ts=ts,
                 verdict=str(verdict), review=review, pending_sink=pending_sink,
+                cam_id=cam_id,
             )
         return _save_pair_local(
             frame, overlay, target_dir, lot=lot, item_code=item_code, ts=ts,
-            verdict=str(verdict), review=review,
+            verdict=str(verdict), review=review, cam_id=cam_id,
         )
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")

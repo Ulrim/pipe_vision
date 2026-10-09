@@ -107,7 +107,7 @@ def _optics(a: argparse.Namespace) -> int:
 
     print(f"제품 {L:g}mm, 시야 {fov:g}mm, 공차 ±{tol:g}mm (폭 {2*tol:g}mm)")
     print("전제 — 이 값이 안 맞으면 아래 거리도 안 맞는다:")
-    print(f"  기준자 프레임별 측정 + 자 보간 적용, 기울기 보정 적용")
+    print("  기준자 프레임별 측정 + 자 보간 적용, 기울기 보정 적용")
     print(f"  기준자-제품 평면차 1σ   {a.height_sigma:g} mm")
     print(f"  제품 온도 1σ            {a.temp_sigma:g} K")
     print(f"  끝단 적합 행 수          {a.edge_rows} (≈ 화면에서의 튜브 OD px)")

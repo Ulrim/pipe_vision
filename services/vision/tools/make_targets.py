@@ -36,7 +36,7 @@ import argparse
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Literal, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 #: 1 pt = 1/72 inch (PDF 정의). 근사가 아니다.
 MM_PER_INCH = 25.4

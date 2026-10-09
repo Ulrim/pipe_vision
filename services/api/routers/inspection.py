@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import tempfile
 from datetime import datetime
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -41,6 +43,22 @@ from ws.hub import hub, make_event
 router = APIRouter(prefix="/inspection", tags=["inspection"])
 
 
+class WorkerHost(BaseModel):
+    """워커(파이) 자신의 상태 — 하트비트에 실려 온다(2026-10-09, 다중 스테이션).
+
+    API 의 /system/status.system 은 API 가 도는 파이 한 대만 보여준다. 2호기 이상의
+    과열·디스크·전원 문제는 이 값으로만 보인다. 모르는 값은 None.
+    """
+
+    cpu_temp_c: Optional[float] = None
+    cpu_percent: Optional[float] = None
+    load_1m: Optional[float] = None
+    mem_percent: Optional[float] = None
+    disk_percent: Optional[float] = None
+    disk_free_gb: Optional[float] = None
+    throttled: Optional[bool] = None
+
+
 class BatchStatus(BaseModel):
     """워커 라이브니스 하트비트(검사결과 아님). 매 검사 사이클 워커가 취득/검출
     상태를 요약해 보내면 API 가 WS 로만 브로드캐스트한다(DB 미기록).
@@ -60,6 +78,7 @@ class BatchStatus(BaseModel):
     proc_time_ms: int = 0
     stage: Optional[str] = None  # 지금 돌고 있는 검사 모드(InspectionStage 값)
     error: Optional[str] = None  # 취득/검사 오류 요약(정상은 None)
+    host: Optional[WorkerHost] = None  # 그 파이 자신의 상태(구 워커는 안 보냄)
 
 # write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.
 # 디스크 동시 소진 등으로 두 경로가 함께 실패하면(§M7 DoD 위반: 검사결과 완전
@@ -218,7 +237,20 @@ async def broadcast_status(
     생존(up/stale/down)을 판정한다. 기록은 메모리 전용(DB 미기록)이라 고빈도
     하트비트가 로그/테이블을 오염시키지 않는다.
     """
-    heartbeat.record(body.cam_id, stage=body.stage)
+    heartbeat.record(
+        body.cam_id,
+        stage=body.stage,
+        cycle={
+            "item_code": body.item_code,
+            "expected": body.expected,
+            "detected": body.detected,
+            "ng": body.ng,
+            "mismatch": body.mismatch,
+            "proc_time_ms": body.proc_time_ms,
+            "error": body.error,
+        },
+        host=body.host.model_dump() if body.host else None,
+    )
     await hub.broadcast(make_event("status", body.model_dump(mode="json")))
     return {"status": "broadcast"}
 
@@ -325,6 +357,72 @@ def _safe_image_path(rel: str) -> str:
     if target != base and not target.startswith(base + os.sep):
         return ""
     return target
+
+
+# ---- 다중 스테이션: 워커 → 허브 사진 업로드 (2026-10-09) ----------------------
+#
+# 파이가 여러 대이고 API 는 1호기(허브)에만 있을 때, 2호기의 사진이 2호기 디스크에만
+# 남으면 대시보드에서 열 수 없다. 워커가 AIVIS_STORAGE_BACKEND=api 면 이리로 올린다.
+# 키는 워커가 DB 에 싣는 상대경로 그대로(raw|result|review/<파일명>.jpg) — 그래서
+# 업로드된 파일은 허브 자기 사진과 똑같이 GET /inspection/{id}/images/{kind} 로 열린다.
+
+#: 허용 키. 하위 폴더 금지(보관기한 정리가 바로 아래만 본다), 파일명은 워커의
+#: _safe_token 규칙(영숫자 . _ -)과 같다.
+_IMAGE_KEY_RE = re.compile(r"^(raw|result|review)/[A-Za-z0-9][A-Za-z0-9._-]{0,200}\.jpg$")
+#: 한 장 상한. HQ 카메라 4056x3040 JPEG q95 가 5MB 안팎 — 넉넉히 25MB.
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@router.put("/images/{key:path}", status_code=status.HTTP_201_CREATED)
+async def upload_inspection_image(
+    key: str,
+    request: Request,
+    _internal: None = Depends(require_internal),
+):
+    """워커가 찍은 JPEG 를 허브 images_dir 의 같은 키 경로에 저장(내부 전용).
+
+    - 인증: POST /inspection 과 같은 내부 가드(require_internal).
+    - 키 검증: `raw|result|review/<파일명>.jpg` 만. `..`·하위 폴더·다른 확장자는 400.
+    - 본문은 JPEG(FF D8 로 시작)만. 크기 상한 25MB(413).
+    - 같은 키를 다시 올리면 덮어쓴다(스풀 재전송이 같은 사진을 또 보낼 수 있다 — 멱등).
+    - 임시파일에 쓴 뒤 rename — 반쯤 쓴 파일을 대시보드가 여는 일이 없다.
+    - API 가 supabase 백엔드면 409: 그 구성에선 워커가 Supabase 에 직접 올린다.
+    """
+    settings = get_settings()
+    if settings.storage_backend == "supabase":
+        raise HTTPException(
+            status_code=409,
+            detail="이 서버는 Supabase 저장 구성입니다 — 워커를 AIVIS_STORAGE_BACKEND=supabase 로",
+        )
+    if not _IMAGE_KEY_RE.match(key) or ".." in key:
+        raise HTTPException(status_code=400, detail="허용되지 않는 이미지 키")
+    body = await request.body()
+    if len(body) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="이미지가 너무 큽니다")
+    if len(body) < 4 or body[:2] != b"\xff\xd8":
+        raise HTTPException(status_code=400, detail="JPEG 가 아닙니다")
+    abs_path = _safe_image_path(key)
+    if not abs_path:
+        raise HTTPException(status_code=400, detail="허용되지 않는 이미지 키")
+    folder = os.path.dirname(abs_path)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=folder, prefix=".upload-", suffix=".part")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(body)
+            os.replace(tmp, abs_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        # 디스크 가득 등 — 워커가 스풀에 보존하고 다시 보낸다(사진 유실 없음).
+        log.error("이미지 업로드 저장 실패 %s: %s", key, exc)
+        raise HTTPException(status_code=507, detail="허브 디스크에 저장하지 못했습니다")
+    return {"key": key, "bytes": len(body)}
 
 
 @router.get("/{insp_id}/images/{kind}")

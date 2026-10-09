@@ -32,7 +32,7 @@ export type Severity = "ok" | "warn" | "danger" | "unknown";
  * unknown(측정 불가/미설정)은 정상이 아니다. 상태를 모른다는 뜻이므로 눈에
  * 들어와야 한다 — 평상시 무채색보다 분명하게, 경고보다는 약하게.
  */
-const SEV_BADGE: Record<Severity, string> = {
+export const SEV_BADGE: Record<Severity, string> = {
   ok: "text-slate-700",
   warn: "bg-amber-100 text-amber-900",
   danger: "bg-ng-bg text-ng-fg",

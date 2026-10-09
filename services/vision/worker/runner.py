@@ -33,6 +33,7 @@ from vision.imaging import (  # noqa: E402
     save_inspection_images,
 )
 from vision.imaging.storage import (  # noqa: E402
+    API,
     SUPABASE,
     StorageSettings,
     build_backend,
@@ -48,6 +49,7 @@ from vision.multi.bundle import count_bundle  # noqa: E402
 from aivis_types import DefectCode, InspectionResult, InspectionStage, Verdict  # noqa: E402
 
 from .client import ApiClient
+from .hostinfo import HostInfo
 from .config import WorkerConfig
 from .dataset import ensure_dataset
 from .spool import SpoolQueue
@@ -121,6 +123,9 @@ class Worker:
         # supabase 설정이 있을 때 lazily 구성한다.
         self._image_uploader = image_uploader
         self._uploader_built = image_uploader is not None
+        # 이 파이 자신의 상태(온도·디스크 등)를 하트비트에 싣는다 — 파이가 여러
+        # 대면 사무실 화면이 각 대의 건강을 따로 봐야 한다(5s 캐시).
+        self._host = HostInfo(config.images_dir)
         self.item: Optional[ItemMaster] = None
         # 마지막 기준정보 리로드 시각(UTC). startup 성공 시 now 로 세팅되어 이후
         # item_reload_s 주기로 재조회한다(핫리로드 — 재시작 없이 캘리브레이션 반영).
@@ -384,12 +389,22 @@ class Worker:
     def _spool_uploader(self):
         """flush 용 pending 이미지 업로더((key, jpeg) -> None). 없으면 None.
 
-        supabase 스토리지가 설정된 경우에만 원격 업로더를 lazily 만든다
-        (pending 이미지는 supabase 업로드 실패에서만 생기므로 충분).
+        원격 스토리지(supabase|api)가 설정된 경우에만 업로더를 lazily 만든다
+        (pending 이미지는 원격 업로드 실패에서만 생기므로 충분).
         """
         if not self._uploader_built:
             self._uploader_built = True
-            if self.cfg.storage_backend == SUPABASE and self.cfg.supabase_configured:
+            if self.cfg.storage_backend == API and self.cfg.api_url:
+                backend = build_backend(
+                    StorageSettings(
+                        backend=API,
+                        images_dir=self.cfg.images_dir,
+                        api_url=self.cfg.api_url,
+                        service_token=self.cfg.service_token,
+                    )
+                )
+                self._image_uploader = backend.put
+            elif self.cfg.storage_backend == SUPABASE and self.cfg.supabase_configured:
                 backend = build_backend(
                     StorageSettings(
                         backend=SUPABASE,
@@ -446,6 +461,7 @@ class Worker:
                     "proc_time_ms": int(proc_time_ms),
                     "ts": ts,
                     "error": error,
+                    "host": self._host.snapshot(),
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -517,6 +533,7 @@ class Worker:
                 inspected_at=inspected_at,
                 item=self.item,
                 pending_sink=self.spool.save_image,
+                cam_id=self.cfg.cam_id,
                 length_span=length_span,
             )
             if saved.error:
@@ -658,6 +675,7 @@ class Worker:
                 item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
+                cam_id=self.cfg.cam_id,
             )
             if saved.error:
                 log.warning("배치 이미지 저장 실패(계속 진행): %s", saved.error)
@@ -766,6 +784,7 @@ class Worker:
                 images_dir=self.cfg.images_dir, lot=self._cur_lot(),
                 item_code=self._cur_item_code(), inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
+                cam_id=self.cfg.cam_id,
             )
             if saved.error:
                 log.warning("개수 이미지 저장 실패(계속 진행): %s", saved.error)

@@ -8,6 +8,7 @@ export interface NavItem {
 
 /** 대시보드 화면 목록(M11~M13 + 현장 장비 모니터링/업데이트). App.tsx 라우트와 1:1 대응. */
 export const NAV: NavItem[] = [
+  { to: "/live", label: "실시간 현황" },
   { to: "/kpi", label: "KPI" },
   { to: "/inspections", label: "검사이력" },
   { to: "/statistics", label: "불량통계" },

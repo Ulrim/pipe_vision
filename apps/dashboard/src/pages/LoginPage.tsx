@@ -20,7 +20,7 @@ export function LoginPage(): JSX.Element {
     try {
       const res = await login({ username, password });
       setAuth({ token: res.access_token, username: res.username, role: res.role });
-      navigate("/kpi");
+      navigate("/live");
     } catch (e2) {
       setErr(e2 instanceof ApiError ? e2.message : (e2 as Error).message);
     } finally {

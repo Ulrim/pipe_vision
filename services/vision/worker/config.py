@@ -112,8 +112,10 @@ class WorkerConfig:
     max_iterations: int = 0
     # 검사 이미지 저장 루트(§6.4). 하위 raw/ result/ review/ 자동 생성.
     images_dir: str = "/data/images"
-    # 이미지 스토리지 백엔드(local|supabase, 기본 local). 클라우드(Render)
+    # 이미지 스토리지 백엔드(local|supabase|api, 기본 local). 클라우드(Render)
     # 분리 배포에서는 supabase 로 두어 api 가 동일 키로 이미지를 읽는다.
+    # 파이 여러 대 + 1호기 허브 구성에서 2호기 이상은 api 로 두어 허브 API 에
+    # 직접 올린다(PUT /inspection/images/{key}) — 그래야 대시보드가 연다.
     # 실제 분기/업로드는 vision.imaging.save 가 env(StorageSettings)로 처리하며,
     # 워커는 여기서 설정을 스냅샷·검증(미설정 경고)만 한다.
     storage_backend: str = "local"
@@ -186,6 +188,11 @@ class WorkerConfig:
         local 폴백하지만, 운영자가 의도와 다른 동작을 즉시 인지하도록 워커
         기동 시점에 한 번 경고를 남긴다.
         """
+        if self.storage_backend == "api" and not self.api_url:
+            log.warning(
+                "AIVIS_STORAGE_BACKEND=api 이지만 AIVIS_API_URL 미설정 → 이미지는 "
+                "이 파이의 local 디스크에만 남는다(허브 대시보드에서 안 보임)"
+            )
         if self.storage_backend == "supabase" and not self.supabase_configured:
             log.warning(
                 "AIVIS_STORAGE_BACKEND=supabase 이지만 SUPABASE_URL/"

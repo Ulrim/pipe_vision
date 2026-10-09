@@ -288,10 +288,15 @@ class GenICamCamera(CameraAdapter):
 - 데이터 부족 초기에는 **고전 CV 폴백 + 휴리스틱**으로 동작 보장 후, 데이터 축적되면 모델 교체(전략: "동작하는 폴백 → 점진 고도화").
 
 ### 6.4 파일명/이미지 저장 규칙 (사업계획서 데이터 품질관리 반영)
-- **운영 디스크 파일명**: `{LOT}_{Item}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg`
+- **운영 디스크 파일명**: `{LOT}_{Item}_{CamID}_{YYYYMMDDHHmmssSSS}_{verdict}.jpg`
   - 저장 시점에는 `inspection_id` 가 아직 없다(워커가 이미지를 저장한 뒤 POST 하고,
     그때 DB 가 채번한다). 그래서 운영본은 판정을 이름에 넣어 사람이 폴더에서
     바로 구분할 수 있게 한다.
+  - **`CamID` 는 2026-10-09 추가**(파이 여러 대). 오더(LOT·품목)가 공통이라 두 대가
+    같은 ms 에 찍으면 이름이 같아지고, 사진을 한곳(허브·Supabase)에 모으는 순간
+    다른 라인 사진을 덮어쓴다. 카메라별 하위 폴더로 나누지 않는 이유는 보관기한
+    정리가 `raw/ result/ review/` 바로 아래만 보기 때문이다. 끝의 `_{verdict}.jpg`
+    는 그대로라 정리 규칙도 그대로다. (CamID 없이 부르면 종전 형식.)
 - **제출 데이터셋 파일명**(전남TP 데이터 정의서 3-2/5-2, `services/data-ops/portal`):
   - 원본 `{LOT}_{품목}_{STAGE}_{YYYYMMDDHHmmssSSS}_{inspection_id}.jpg` — **판정 미포함**.
     학습 입력이 될 원본 이름에 정답이 박히면 파일명으로 정렬·분할하는 순간 라벨이 샌다.
@@ -403,7 +408,14 @@ CREATE TABLE sys_log (
 같이 바꾼다 — 그래서 스테이션 단위를 둔다. HMI 는 `?cam=` 로 자기 카메라의
 결과·알람·하트비트만 받고, 하트비트는 카메라별로 기록되어 모니터에 스테이션마다
 한 줄씩 나온다. KPI 는 `CRATE_COUNT` 행(크레이트 1판)을 제품 수에서 뺀다. 절차는
-`docs/OPERATIONS_PI.md` §10. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
+`docs/OPERATIONS_PI.md` §10.
+**여러 대를 웹 한 화면에서(2026-10-09 도입기업 요구)**: 대시보드 첫 화면 `/live`
+(실시간 현황)가 `GET /system/stations` 를 2초마다 읽어 카메라마다 카드(상태·모드·
+마지막 판정·NG 사유 수치·사진·1시간/오늘 실적·**그 파이의** 온도/디스크/전원)를
+나란히 띄운다. 파이 상태는 워커가 하트비트(`host`)로 보낸다 — `/system/status` 의
+자원은 API 가 도는 1호기 것뿐이다. 허브 구성에서 2호기 이상은
+`AIVIS_STORAGE_BACKEND=api` 로 사진을 1호기에 올린다(`PUT /inspection/images/{key}`,
+실패 시 스풀 보존 후 재전송). 하루 경계("오늘")는 KST 0시. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
 (허용 −0.10)", "유분기 0.62 > 기준 0.40", "개수 18 / 기준 20 (−2)".
 
 ### 7.3 MES 연계 인터페이스 (`docs/MES_INTERFACE.md`)
@@ -426,6 +438,8 @@ POST   /auth/login  /auth/users
 GET    /logs?category=
 POST   /mes/quality             # MES 연계(또는 DB-table 모드)
 WS     /ws/live                 # 실시간 검사결과/알람 푸시
+GET    /system/stations         # 카메라별 실시간 현황(파이 여러 대, 대시보드 /live)
+PUT    /inspection/images/{key} # 워커→허브 사진 업로드(서버 내부, 2호기 이상)
 ```
 
 ---

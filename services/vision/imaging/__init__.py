@@ -29,6 +29,8 @@ from .save import (
 )
 
 __all__ = [
+    "save_count_images",
+    "render_count_overlay",
     "DEFAULT_IMAGES_DIR",
     "ImageSaveResult",
     "build_filename",

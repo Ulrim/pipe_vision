@@ -31,11 +31,12 @@ from aivis_types import LogCategory, Role
 from core import updater
 from core.config import get_settings
 from core.heartbeat import all_beats as heartbeat_all_beats
+from core.heartbeat import get as heartbeat_get
 from core.heartbeat import last_seen as heartbeat_last_seen
 from core.report import proc_time_percentiles
 from core.security import CurrentUser, require_min_role
 from db.base import get_db
-from db.models import ActiveOrder, Inspection, SysLog
+from db.models import ActiveOrder, Inspection, ItemMaster, StationConfig, SysLog
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -57,6 +58,18 @@ THROTTLED_PATH = "/sys/devices/platform/soc/soc:firmware/get_throttled"
 # - 60s 초과: down(카메라 취득 블로킹/프로세스 사망/네트워크 단절).
 WORKER_UP_MAX_S = 15.0
 WORKER_STALE_MAX_S = 60.0
+
+# ---- "오늘" 은 공장 시각(KST) 기준 ------------------------------------------
+# 종전에는 UTC 0시였다 → 한국 오전 9시. 그러면 아침 8시에 보는 "오늘" 에 어제
+# 오후·야간 실적이 섞인다. 한국은 서머타임이 없으므로 고정 +9 로 충분하다
+# (tzdata 패키지를 파이에 따로 깔 필요가 없다).
+KST = timezone(timedelta(hours=9))
+
+
+def today_start(now: datetime) -> datetime:
+    """now 가 속한 KST 날짜의 0시(UTC aware 로 반환 — DB 비교용)."""
+    local = now.astimezone(KST)
+    return datetime.combine(local.date(), dtime.min, tzinfo=KST).astimezone(timezone.utc)
 
 
 # ---- 응답 스키마(라우터 내부 계약 — shared-types 미변경, BatchStatus 전례) --
@@ -349,7 +362,6 @@ def _window_stats(db: Session, since: datetime) -> WindowStats:
 def _inspection_stats(db: Session, now: datetime) -> InspectionStats:
     """검사 라인 요약(최근 1시간 / 오늘 0시(UTC) 이후 + 처리속도 + MES 백로그)."""
     hour_ago = now - timedelta(hours=1)
-    today_start = datetime.combine(now.date(), dtime.min, tzinfo=timezone.utc)
 
     # 처리속도: 최근 1시간 표본만, proc_time_ms 컬럼만 select(행 전체 로드 금지).
     # 백분위는 리포트와 동일한 core.report.proc_time_percentiles 를 재사용한다
@@ -383,7 +395,7 @@ def _inspection_stats(db: Session, now: datetime) -> InspectionStats:
 
     return InspectionStats(
         last_hour=_window_stats(db, hour_ago),
-        today=_window_stats(db, today_start),
+        today=_window_stats(db, today_start(now)),
         avg_proc_time_ms=avg,
         p95_proc_time_ms=pct["p95"],
         last_inspected_at=_as_utc(last_at),
@@ -452,7 +464,7 @@ def system_status(
       `worker_last_seen_s`(마지막 하트비트 경과 초, 기동 후 미수신이면 null).
       임계는 WORKER_UP_MAX_S=15s / WORKER_STALE_MAX_S=60s (워커 기본 사이클 1.5s,
       기준정보 핫리로드 15s 기준).
-    - `inspection`: 최근 1시간/오늘(UTC 0시 이후) 검사·NG 수와 NG율(검사 0건이면 0.0),
+    - `inspection`: 최근 1시간/오늘(KST 0시 이후) 검사·NG 수와 NG율(검사 0건이면 0.0),
       최근 1시간 처리속도 평균/p95(표본 없으면 null), 마지막 검사시각(null 가능),
       MES 미연계 누적 건수.
     - `active_order`: 현재 검사 오더. 미설정이면 **null**.
@@ -498,6 +510,259 @@ def system_status(
         active_order=active,
         recent_errors=errors,
     )
+
+
+# ---- 실시간 현황: 파이 여러 대를 한 화면에 (2026-10-09) ----------------------
+#
+# 도입기업: "동시에 여러 개의 라즈베리파이 + 카메라가 작동한다. 이것을 웹페이지에서
+# 확인하고 싶다." /system/status 는 한 호스트(API 가 도는 파이)의 상태와 라인 전체
+# 합계라, 스테이션마다 "지금 무엇을 보고 있고 마지막 판정이 무엇인가" 는 없다.
+# 이 엔드포인트가 스테이션 카드 한 장에 필요한 것을 한 번에 준다(대시보드 2초 폴링).
+
+
+class StationWindow(BaseModel):
+    total: int
+    ng: int
+    ng_rate_pct: float
+
+
+class StationLimits(BaseModel):
+    """NG 사유를 수치로 적기 위한 기준(그 행의 품목 기준정보)."""
+
+    ref_length_mm: Optional[float] = None
+    tol_plus_mm: Optional[float] = None
+    tol_minus_mm: Optional[float] = None
+    oil_threshold: Optional[float] = None
+    discolor_threshold: Optional[float] = None
+    scratch_threshold: Optional[float] = None
+    expected_count: Optional[int] = None
+
+
+class StationLatest(BaseModel):
+    """그 스테이션의 마지막 검사 1건(다발이면 같은 사진의 튜브 중 대표 1행)."""
+
+    id: int
+    inspected_at: datetime
+    lot: str
+    item_code: Optional[str] = None
+    inspection_stage: Optional[str] = None
+    final_verdict: str
+    defect_codes: list[str] = []
+    meas_length_mm: Optional[float] = None
+    deviation_mm: Optional[float] = None
+    length_verdict: Optional[str] = None
+    oil_score: Optional[float] = None
+    discolor_score: Optional[float] = None
+    scratch_score: Optional[float] = None
+    review_flag: bool = False
+    has_result_image: bool = False
+    has_raw_image: bool = False
+    #: 같은 프레임(같은 cam·시각)의 행 수와 그중 NG — 다발 N개를 한 번에 볼 때.
+    frame_total: int = 1
+    frame_ng: int = 0
+    limits: Optional[StationLimits] = None
+
+
+class StationHost(BaseModel):
+    """그 파이 자신의 상태(하트비트). 구 워커이거나 하트비트가 없으면 null."""
+
+    cpu_temp_c: Optional[float] = None
+    cpu_percent: Optional[float] = None
+    load_1m: Optional[float] = None
+    mem_percent: Optional[float] = None
+    disk_percent: Optional[float] = None
+    disk_free_gb: Optional[float] = None
+    throttled: Optional[bool] = None
+
+
+class StationLive(BaseModel):
+    cam_id: str
+    state: str  # up|stale|down
+    last_seen_s: Optional[float] = None
+    #: 지금 모드. 하트비트 > 스테이션 설정 > 마지막 결과 순으로 채운다.
+    stage: Optional[str] = None
+    item_code: Optional[str] = None
+    # 마지막 사이클(하트비트) — DB 를 거치지 않은 "지금".
+    expected: Optional[int] = None
+    detected: Optional[int] = None
+    mismatch: Optional[bool] = None
+    error: Optional[str] = None
+    proc_time_ms: Optional[int] = None
+    host: Optional[StationHost] = None
+    last_hour: StationWindow
+    today: StationWindow
+    latest: Optional[StationLatest] = None
+
+
+class StationsOut(BaseModel):
+    ts: datetime
+    stations: list[StationLive]
+
+
+#: 하트비트가 없어도(API 재기동 직후) 최근에 결과를 낸 카메라는 목록에 남긴다 —
+#: 죽은 파이가 화면에서 **사라지면** 아무도 모른다. "정지" 로 남아 있어야 한다.
+STATION_RECENT_H = 24
+
+
+def _f(v) -> Optional[float]:
+    return None if v is None else float(v)
+
+
+def _known_cams(db: Session, now: datetime) -> list[str]:
+    cams = {b.cam_id for b in heartbeat_all_beats()}
+    cams |= {c for (c,) in db.execute(select(StationConfig.cam_id)).all() if c}
+    since = now - timedelta(hours=STATION_RECENT_H)
+    until = now + timedelta(minutes=10)  # 시계가 약간 앞선 파이 허용, 미래 행은 제외
+    cams |= {
+        c
+        for (c,) in db.execute(
+            select(Inspection.cam_id)
+            .where(Inspection.inspected_at >= since, Inspection.inspected_at <= until)
+            .distinct()
+        ).all()
+        if c
+    }
+    return sorted(cams)
+
+
+def _windows_by_cam(db: Session, since: datetime) -> dict[str, StationWindow]:
+    rows = db.execute(
+        select(
+            Inspection.cam_id,
+            func.count(Inspection.id),
+            func.sum(case((Inspection.final_verdict == "NG", 1), else_=0)),
+        )
+        .where(Inspection.inspected_at >= since)
+        .group_by(Inspection.cam_id)
+    ).all()
+    out: dict[str, StationWindow] = {}
+    for cam, total, ng in rows:
+        total, ng = int(total or 0), int(ng or 0)
+        out[cam] = StationWindow(total=total, ng=ng, ng_rate_pct=_rate_pct(ng, total))
+    return out
+
+
+def _latest_for(db: Session, cam_id: str, now: datetime) -> Optional[StationLatest]:
+    until = now + timedelta(minutes=10)
+    row = db.execute(
+        select(Inspection)
+        .where(Inspection.cam_id == cam_id, Inspection.inspected_at <= until)
+        .order_by(Inspection.inspected_at.desc(), Inspection.id.desc())
+        .limit(1)
+    ).scalar()
+    if row is None:
+        return None
+    # 같은 프레임(다발 N개) — 대표 행은 NG 가 있으면 NG 를 보여준다(그게 봐야 할 것).
+    frame_rows = db.execute(
+        select(Inspection)
+        .where(Inspection.cam_id == cam_id, Inspection.inspected_at == row.inspected_at)
+        .order_by(Inspection.tube_index)
+    ).scalars().all() or [row]
+    ng_rows = [r for r in frame_rows if r.final_verdict == "NG"]
+    rep_row = ng_rows[0] if ng_rows else row
+    item = db.get(ItemMaster, rep_row.item_code) if rep_row.item_code else None
+    limits = (
+        StationLimits(
+            ref_length_mm=_f(item.ref_length_mm),
+            tol_plus_mm=_f(item.tol_plus_mm),
+            tol_minus_mm=_f(item.tol_minus_mm),
+            oil_threshold=_f(item.oil_threshold),
+            discolor_threshold=_f(item.discolor_threshold),
+            scratch_threshold=_f(item.scratch_threshold),
+            expected_count=item.expected_count,
+        )
+        if item
+        else None
+    )
+    return StationLatest(
+        id=rep_row.id,
+        inspected_at=_as_utc(rep_row.inspected_at),
+        lot=rep_row.lot,
+        item_code=rep_row.item_code,
+        inspection_stage=rep_row.inspection_stage,
+        final_verdict=rep_row.final_verdict,
+        defect_codes=list(rep_row.defect_codes or []),
+        meas_length_mm=_f(rep_row.meas_length_mm),
+        deviation_mm=_f(rep_row.deviation_mm),
+        length_verdict=rep_row.length_verdict,
+        oil_score=_f(rep_row.oil_score),
+        discolor_score=_f(rep_row.discolor_score),
+        scratch_score=_f(rep_row.scratch_score),
+        review_flag=bool(rep_row.review_flag),
+        has_result_image=bool(rep_row.result_image_path),
+        has_raw_image=bool(rep_row.raw_image_path),
+        frame_total=len(frame_rows),
+        frame_ng=len(ng_rows),
+        limits=limits,
+    )
+
+
+@router.get("/stations", response_model=StationsOut)
+def system_stations(
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """스테이션(카메라)별 실시간 현황 — 대시보드 '실시간 현황' 화면용.
+
+    스테이션 = 하트비트를 보낸 카메라 ∪ 스테이션 설정이 있는 카메라 ∪ 최근 24시간
+    결과를 낸 카메라. 하트비트가 끊긴 파이도 "정지" 로 남는다(사라지지 않는다).
+
+    각 스테이션: 생존 상태·경과초, 지금 모드, 마지막 사이클(검출/기준/오류/처리ms),
+    그 파이의 온도·CPU·메모리·디스크·전원, 최근 1시간/오늘(KST) 판정 수·NG,
+    마지막 검사 1건(NG 사유를 수치로 적을 기준 포함).
+
+    DB 가 죽어도 200 — 하트비트로 아는 것만 채운다(모니터가 함께 죽지 않게).
+    """
+    now = datetime.now(timezone.utc)
+    zero = StationWindow(total=0, ng=0, ng_rate_pct=0.0)
+    try:
+        cams = _known_cams(db, now)
+        hour = _windows_by_cam(db, now - timedelta(hours=1))
+        today = _windows_by_cam(db, today_start(now))
+        configs = {
+            c.cam_id: c.inspection_stage
+            for c in db.execute(select(StationConfig)).scalars().all()
+        }
+        db_ok = True
+    except Exception:
+        cams = sorted({b.cam_id for b in heartbeat_all_beats()})
+        hour, today, configs, db_ok = {}, {}, {}, False
+
+    out: list[StationLive] = []
+    for cam in cams:
+        beat = heartbeat_get(cam)
+        state, elapsed = _worker_state(now, beat.seen if beat else None, use_latest=False)
+        latest = None
+        if db_ok:
+            try:
+                latest = _latest_for(db, cam, now)
+            except Exception:
+                latest = None
+        cycle = beat.cycle if beat else {}
+        stage = (
+            (beat.stage if beat else None)
+            or configs.get(cam)
+            or (latest.inspection_stage if latest else None)
+        )
+        out.append(
+            StationLive(
+                cam_id=cam,
+                state=state,
+                last_seen_s=elapsed,
+                stage=stage,
+                item_code=cycle.get("item_code") or (latest.item_code if latest else None),
+                expected=cycle.get("expected"),
+                detected=cycle.get("detected"),
+                mismatch=cycle.get("mismatch"),
+                error=cycle.get("error"),
+                proc_time_ms=cycle.get("proc_time_ms"),
+                host=StationHost(**beat.host) if beat and beat.host else None,
+                last_hour=hour.get(cam, zero),
+                today=today.get(cam, zero),
+                latest=latest,
+            )
+        )
+    return StationsOut(ts=now, stations=out)
 
 
 # ---- 프로그램 자체 업데이트 (현장 사용자용) --------------------------------

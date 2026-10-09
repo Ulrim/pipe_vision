@@ -4,6 +4,7 @@ import { useAuthStore, canEdit } from "@/store/auth";
 import { InspectionsPage } from "@/pages/InspectionsPage";
 import { StatisticsPage } from "@/pages/StatisticsPage";
 import { KpiPage } from "@/pages/KpiPage";
+import { LivePage } from "@/pages/LivePage";
 import { ReportPage } from "@/pages/ReportPage";
 import { LabelingPage } from "@/pages/LabelingPage";
 import { MasterPage } from "@/pages/MasterPage";
@@ -29,21 +30,27 @@ function ProtectedRoute({ children }: { children: ReactElement }): ReactElement 
 export default function App(): JSX.Element {
   const { username, role, clear } = useAuthStore();
   const currentLabel = useCurrentNavLabel();
+  // 실시간 현황은 벽걸이 모니터(15.6" FHD 이상)에 띄워 두는 화면이라 폭 제한을
+  // 풀어 사진을 크게 쓴다. 나머지 화면은 읽기 좋은 폭(7xl)을 유지한다.
+  const wide = useLocation().pathname.startsWith("/live");
 
   return (
     <div className="flex min-h-full flex-col">
-      <header className="flex items-center gap-4 border-b border-slate-200 bg-white px-5 py-3">
+      <header className="flex items-center gap-3 border-b border-slate-200 bg-white px-4 py-3 sm:gap-4 sm:px-5">
         <NavMenu />
-        <div className="flex items-baseline gap-2">
+        {/* 좁은 화면에서 제목이 글자 단위로 꺾이지 않게 한 줄 고정 + 말줄임. */}
+        <div className="flex min-w-0 items-baseline gap-2">
           <span className="text-sm font-bold text-brand">AIVIS</span>
           {currentLabel && (
-            <h1 className="text-lg font-bold text-slate-800">{currentLabel}</h1>
+            <h1 className="truncate whitespace-nowrap text-lg font-bold text-slate-800">
+              {currentLabel}
+            </h1>
           )}
         </div>
-        <div className="ml-auto flex items-center gap-3 text-sm">
+        <div className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap text-sm">
           {username ? (
             <>
-              <span className="text-slate-500">
+              <span className="hidden text-slate-500 sm:inline">
                 {username}
                 <span className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                   {role}
@@ -64,9 +71,18 @@ export default function App(): JSX.Element {
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-7xl flex-1 p-5">
+      <main className={`mx-auto w-full flex-1 p-4 sm:p-5 ${wide ? "max-w-none" : "max-w-7xl"}`}>
         <Routes>
-          <Route path="/" element={<Navigate to="/kpi" replace />} />
+          {/* 첫 화면은 실시간 현황 — 파이 여러 대가 지금 어떤지가 가장 먼저 궁금하다. */}
+          <Route path="/" element={<Navigate to="/live" replace />} />
+          <Route
+            path="/live"
+            element={
+              <ProtectedRoute>
+                <LivePage />
+              </ProtectedRoute>
+            }
+          />
           <Route
             path="/kpi"
             element={
@@ -132,7 +148,7 @@ export default function App(): JSX.Element {
             }
           />
           <Route path="/login" element={<LoginPage />} />
-          <Route path="*" element={<Navigate to="/kpi" replace />} />
+          <Route path="*" element={<Navigate to="/live" replace />} />
         </Routes>
       </main>
     </div>

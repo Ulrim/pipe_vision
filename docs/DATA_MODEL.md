@@ -61,6 +61,17 @@ CHECK in operator/quality/admin), `active`(BOOL d.true).
 `id`(BIGSERIAL PK), `ts`(TIMESTAMPTZ d.now()), `level`, `category`
 (inspect/db/mes/error/user), `message`, `payload`(JSONB).
 
+### station_config — 스테이션(카메라)별 설정 (2026-10-08, 마이그레이션 0010)
+`cam_id`(TEXT PK), `inspection_stage`(TEXT, CUT_LENGTH|POST_WASH_SURFACE|CRATE_COUNT),
+`updated_by`, `updated_at`(TIMESTAMPTZ). 파이가 여러 대면 라인마다 모드가 다르다 —
+모드 우선순위는 `station_config` > `active_order.inspection_stage` > 워커 env.
+행이 없으면 그 카메라는 전역을 따른다(`DELETE /master/stations/{cam_id}` 로 해제).
+
+> 카메라별 실시간 상태(마지막 하트비트·그 파이의 온도/디스크)는 **DB 에 두지 않는다**
+> — 1.5초마다 오는 신호라 테이블을 오염시킨다. API 프로세스 메모리에만 있다
+> (`core/heartbeat.py`). 재기동 직후엔 비어 있으므로 `/system/stations` 는 최근 24시간
+> 결과의 `cam_id` 를 합쳐 죽은 파이도 목록에 남긴다.
+
 ### mes_quality_if — MES 연계 스테이징 (§7.3)
 DB 인터페이스 테이블 방식. 검사결과의 식별자+판정 핵심값을 적재하면 MES 가 폴링/트리거로 소비.
 `id`(BIGSERIAL PK), `inspection_id`(FK→inspection), `lot`, `item_code`, `inspected_at`,
