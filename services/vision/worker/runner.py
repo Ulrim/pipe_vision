@@ -262,7 +262,7 @@ class Worker:
           - lot/work_order 는 이후 검사 결과에 즉시 반영.
           - 미설정(null)/요청 실패는 "정보 없음" — 아무 것도 바꾸지 않는다.
         """
-        active = self.client.get_active_order()
+        active = self.client.get_active_order(cam_id=self.cfg.cam_id)
         if not active:
             return
         target = str(active.get("item_code") or "")

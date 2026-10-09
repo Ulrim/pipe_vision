@@ -50,3 +50,24 @@ export function withWsToken(baseUrl: string, token: string | null): string {
   const sep = baseUrl.includes("?") ? "&" : "?";
   return `${baseUrl}${sep}token=${encodeURIComponent(token)}`;
 }
+
+/**
+ * 이 화면이 보는 스테이션(카메라) — 2대 구성(2026-10-08).
+ *
+ * 파이가 2대면 하나의 API 에 두 워커가 붙고 WS 에는 두 스테이션의 결과가
+ * 섞여 온다. 길이 스테이션 앞 화면에 크레이트 개수 결과가 번갈아 뜨면
+ * 작업자는 어느 판정이 자기 라인 것인지 알 수 없다. 그래서 화면마다 보는
+ * 카메라를 고정한다. 우선순위: URL `?cam=PI-CAM1` → `VITE_CAM_ID` → null(전부).
+ * URL 을 우선하는 이유: 같은 빌드를 두 파이의 키오스크가 쓰면서 주소만
+ * 다르게 적으면 되기 때문이다(재빌드 없음).
+ */
+export function resolveCamId(
+  search: string = typeof window !== "undefined" ? window.location.search : "",
+  envCam: string | undefined = import.meta.env.VITE_CAM_ID,
+): string | null {
+  const fromUrl = new URLSearchParams(search).get("cam");
+  const v = (fromUrl ?? envCam ?? "").trim();
+  return v ? v : null;
+}
+
+export const CAM_ID: string | null = resolveCamId();

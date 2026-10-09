@@ -25,6 +25,7 @@
 import { useState } from "react";
 import type { InspectionResult } from "@aivis/shared-types";
 import { useLiveSocket } from "@/hooks/useLiveSocket";
+import { CAM_ID } from "@/lib/config";
 import { useLiveStore } from "@/store/liveStore";
 import { useItemMaster } from "@/hooks/useItemMaster";
 import { useBatches } from "@/hooks/useBatches";
@@ -128,6 +129,7 @@ function AppShell() {
           item={item}
           onClose={() => setSetupOpen(false)}
           currentStage={status?.stage ?? null}
+          camId={CAM_ID}
         />
       )}
     </div>

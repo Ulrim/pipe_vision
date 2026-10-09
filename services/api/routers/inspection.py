@@ -218,7 +218,7 @@ async def broadcast_status(
     생존(up/stale/down)을 판정한다. 기록은 메모리 전용(DB 미기록)이라 고빈도
     하트비트가 로그/테이블을 오염시키지 않는다.
     """
-    heartbeat.record(body.cam_id)
+    heartbeat.record(body.cam_id, stage=body.stage)
     await hub.broadcast(make_event("status", body.model_dump(mode="json")))
     return {"status": "broadcast"}
 
@@ -249,11 +249,19 @@ def list_inspections(
     verdict: Optional[Verdict] = Query(None, description="final_verdict OK/NG"),
     from_: Optional[datetime] = Query(None, alias="from"),
     to: Optional[datetime] = Query(None),
+    cam_id: Optional[str] = Query(None, description="스테이션(카메라) ID"),
+    stage: Optional[str] = Query(
+        None, description="검사 단계(모드): CUT_LENGTH|POST_WASH_SURFACE|CRATE_COUNT"
+    ),
     limit: int = Query(200, ge=1, le=2000),
     offset: int = Query(0, ge=0),
     _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
 ):
-    """LOT/품목/기간/판정 필터 조회 (M8). 서버 페이지네이션. 로그인 필요(operator+)."""
+    """LOT/품목/기간/판정/스테이션/단계 필터 조회 (M8). 서버 페이지네이션.
+
+    스테이션이 2대 이상이면 길이 행과 개수 행이 한 표에 섞인다(2026-10-08).
+    cam_id·stage 로 갈라 볼 수 있어야 "어느 스테이션의 NG 인가" 를 읽는다.
+    """
     stmt = select(Inspection)
     if lot:
         stmt = stmt.where(Inspection.lot == lot)
@@ -261,6 +269,10 @@ def list_inspections(
         stmt = stmt.where(Inspection.item_code == item)
     if verdict:
         stmt = stmt.where(Inspection.final_verdict == verdict.value)
+    if cam_id:
+        stmt = stmt.where(Inspection.cam_id == cam_id)
+    if stage:
+        stmt = stmt.where(Inspection.inspection_stage == stage.upper())
     if from_:
         stmt = stmt.where(Inspection.inspected_at >= from_)
     if to:

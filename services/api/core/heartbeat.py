@@ -2,53 +2,73 @@
 
 워커는 매 검사 사이클(기본 1.5s, AIVIS_WORKER_INTERVAL_MS)마다
 `POST /inspection/status` 로 취득/검출 상태를 보낸다. 이 모듈은 그 하트비트의
-**마지막 수신 시각**만 프로세스 메모리에 기록해 `GET /system/status` 가
+**마지막 수신 시각**을 프로세스 메모리에 기록해 `GET /system/status` 가
 "워커가 지금 살아있는가"를 판정할 수 있게 한다.
+
+**카메라(스테이션)별로 기록한다(2026-10-08).** 파이+카메라가 2대 이상이면 한
+슬롯으로는 마지막에 말한 워커만 보이고 다른 쪽이 죽어도 모른다. 그래서
+cam_id → (시각, 모드) 사전으로 둔다. `last_seen()`/`last_cam_id()` 는 종전
+호출자를 위해 **가장 최근 하트비트** 를 그대로 돌려준다.
 
 설계 메모:
 - DB 에 남기지 않는다. 하트비트는 1.5s 마다 오는 고빈도 신호라 sys_log 에
   적재하면 로그 테이블이 순식간에 오염된다(하트비트는 검사결과가 아니다).
-- 단일 프로세스(단일 호스트 §4) 가정 — 락 없이 단순 대입만 한다.
-  (GIL 하에서 참조 대입은 원자적이라 스레드 안전 장치가 필요 없다.)
+- 단일 프로세스 가정 — 락 없이 사전 대입만 한다(GIL 하에서 원자적).
 - 프로세스 재시작 시 값이 사라진다 = "기동 후 하트비트 없음"(worker=down)
   으로 보이는 것이 의도된 동작이다.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Optional
-
-_last_seen: Optional[datetime] = None
-_last_cam_id: Optional[str] = None
+from typing import Dict, Optional
 
 
-def record(cam_id: str, ts: Optional[datetime] = None) -> None:
+@dataclass(frozen=True)
+class Beat:
+    cam_id: str
+    seen: datetime
+    stage: Optional[str] = None
+
+
+_beats: Dict[str, Beat] = {}
+
+
+def record(cam_id: str, ts: Optional[datetime] = None, *, stage: Optional[str] = None) -> None:
     """하트비트 수신을 기록한다.
 
     ts 미지정 시 현재 UTC 시각. ts 를 명시할 수 있게 둔 이유는 테스트에서
-    "N초 전 하트비트" 상태를 결정적으로 재현하기 위해서다(모듈 전역을 직접
-    건드리지 않게 한다).
+    "N초 전 하트비트" 상태를 결정적으로 재현하기 위해서다.
     """
-    global _last_seen, _last_cam_id
     when = ts or datetime.now(timezone.utc)
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    _last_seen = when
-    _last_cam_id = cam_id
+    _beats[cam_id] = Beat(cam_id=cam_id, seen=when, stage=stage)
+
+
+def _latest() -> Optional[Beat]:
+    if not _beats:
+        return None
+    return max(_beats.values(), key=lambda b: b.seen)
 
 
 def last_seen() -> Optional[datetime]:
-    """마지막 하트비트 시각(UTC, tz-aware). 기동 후 수신 없으면 None."""
-    return _last_seen
+    """가장 최근 하트비트 시각(UTC, tz-aware). 기동 후 수신 없으면 None."""
+    b = _latest()
+    return b.seen if b else None
 
 
 def last_cam_id() -> Optional[str]:
-    """마지막 하트비트를 보낸 카메라 ID. 수신 없으면 None."""
-    return _last_cam_id
+    """가장 최근 하트비트를 보낸 카메라 ID. 수신 없으면 None."""
+    b = _latest()
+    return b.cam_id if b else None
+
+
+def all_beats() -> list[Beat]:
+    """스테이션별 마지막 하트비트. cam_id 순으로 정렬(화면 표시가 흔들리지 않게)."""
+    return sorted(_beats.values(), key=lambda b: b.cam_id)
 
 
 def reset() -> None:
     """기록 초기화(테스트/재기동 시뮬레이션 전용)."""
-    global _last_seen, _last_cam_id
-    _last_seen = None
-    _last_cam_id = None
+    _beats.clear()

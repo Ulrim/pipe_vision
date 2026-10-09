@@ -74,6 +74,25 @@ class ActiveOrder(Base):
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class StationConfig(Base):
+    """스테이션(카메라)별 설정 — 현재는 검사 모드 하나 (station_config).
+
+    2026-10-08: 파이+카메라가 **2대 이상** 설치된다. 오더(품목/LOT)는 두 스테이션이
+    같은 것을 보지만 **모드는 스테이션마다 다르다**(컨베이어=길이, 크레이트=개수).
+    active_order.inspection_stage 하나로는 한 화면에서 모드를 바꾸면 두 대가
+    같이 바뀐다. 그래서 모드만 cam_id 로 분리한다.
+
+    해석 순서(워커): station_config[cam_id] > active_order.inspection_stage > env.
+    """
+
+    __tablename__ = "station_config"
+
+    cam_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    inspection_stage: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Inspection(Base):
     """검사 결과 (inspection, 제품 1개 = 1행)."""
 

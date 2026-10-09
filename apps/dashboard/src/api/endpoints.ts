@@ -30,6 +30,10 @@ export interface InspectionQuery {
   from?: string;
   to?: string;
   verdict?: string;
+  /** 스테이션(카메라) — 2대 구성에서 라인별로 본다. */
+  cam_id?: string;
+  /** 검사 모드(CUT_LENGTH|POST_WASH_SURFACE|CRATE_COUNT). */
+  stage?: string;
   limit?: number;
   offset?: number;
 }
@@ -244,11 +248,25 @@ export interface SystemResources {
   throttled: boolean | null;
 }
 
+export type WorkerState = "up" | "stale" | "down";
+
+/** 스테이션(카메라) 하나의 워커 상태 — 2대 구성에서 한 대만 죽어도 보이게. */
+export interface WorkerStatus {
+  cam_id: string;
+  state: WorkerState;
+  last_seen_s: number | null;
+  /** 그 스테이션이 지금 도는 검사 모드(하트비트). 모르면 null. */
+  stage: string | null;
+}
+
 /** 워커는 하트비트 지연을 stale 로 구분(정지와 다름). */
 export interface SystemServices {
   db: "up" | "down";
-  worker: "up" | "stale" | "down";
+  /** 가장 최근에 응답한 스테이션 기준(단일 구성 호환). 2대 이상이면 workers 를 본다. */
+  worker: WorkerState;
   worker_last_seen_s: number | null;
+  /** 스테이션별 상태(cam_id 순). 하트비트가 한 번도 없으면 빈 배열. */
+  workers: WorkerStatus[];
 }
 
 export interface SystemInspectionWindow {

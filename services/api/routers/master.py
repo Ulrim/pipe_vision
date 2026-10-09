@@ -28,7 +28,7 @@ from aivis_types import (
 from core.logging import write_log
 from core.security import CurrentUser, require_min_role
 from db.base import get_db
-from db.models import ActiveOrder, ItemMaster
+from db.models import ActiveOrder, ItemMaster, StationConfig
 from db.serialize import item_to_schema
 
 router = APIRouter(prefix="/master/items", tags=["master"])
@@ -76,29 +76,55 @@ class ActiveStageIn(BaseModel):
 
     item_code: str
     inspection_stage: InspectionStage
+    #: 주면 **그 스테이션만** 바꾼다(station_config). 비우면 전역(active_order).
+    #: 2대 이상이면 반드시 줘야 한다 — 전역을 바꾸면 두 대가 같이 바뀐다.
+    cam_id: Optional[str] = None
 
 
 class ActiveOrderOut(ActiveOrderIn):
-    """현재 검사 오더 응답. 미설정 시 엔드포인트가 JSON null 을 반환한다."""
+    """현재 검사 오더 응답. 미설정 시 엔드포인트가 JSON null 을 반환한다.
 
+    `?cam_id=` 로 조회하면 `inspection_stage` 는 **그 스테이션에 적용될 모드**
+    (station_config > active_order)이고 `stage_source` 가 어디서 왔는지 말한다.
+    """
+
+    updated_by: Optional[str] = None
+    updated_at: Optional[datetime] = None
+    stage_source: Optional[str] = None  # "station" | "order" | None
+
+
+class StationOut(BaseModel):
+    cam_id: str
+    inspection_stage: Optional[str] = None
     updated_by: Optional[str] = None
     updated_at: Optional[datetime] = None
 
 
-def _active_out(row: ActiveOrder) -> ActiveOrderOut:
+def _active_out(row: ActiveOrder, station: Optional[StationConfig] = None) -> ActiveOrderOut:
+    stage = row.inspection_stage
+    source = "order" if stage else None
+    if station is not None and station.inspection_stage:
+        stage, source = station.inspection_stage, "station"
     return ActiveOrderOut(
         item_code=row.item_code,
         lot=row.lot,
         work_order=row.work_order,
-        inspection_stage=row.inspection_stage,
+        inspection_stage=stage,
+        stage_source=source,
         updated_by=row.updated_by,
         updated_at=row.updated_at,
     )
 
 
+def _station_out(row: StationConfig) -> StationOut:
+    return StationOut(cam_id=row.cam_id, inspection_stage=row.inspection_stage,
+                      updated_by=row.updated_by, updated_at=row.updated_at)
+
+
 @active_router.get("/active", response_model=Optional[ActiveOrderOut])
 def get_active_order(
     db: Session = Depends(get_db),
+    cam_id: Optional[str] = None,
     _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
 ):
     """현재 검사 오더 조회. 미설정이면 200 + JSON null (404 아님 — 분기 단순화).
@@ -108,7 +134,58 @@ def get_active_order(
     미설정이면 워커는 기존 env(AIVIS_ITEM_CODE/AIVIS_LOT) 동작을 유지한다.
     """
     row = db.get(ActiveOrder, 1)
-    return _active_out(row) if row else None
+    if not row:
+        # 오더가 없으면 스테이션 모드만 있어도 null — 품목 없는 오더 응답은 만들지
+        # 않는다. 모드만 필요한 쪽은 /master/stations/{cam_id} 를 본다.
+        return None
+    station = db.get(StationConfig, cam_id) if cam_id else None
+    return _active_out(row, station)
+
+
+@active_router.get("/stations", response_model=list[StationOut])
+def list_stations(
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """스테이션별 설정(현재는 모드). 모니터·HMI 가 2대 이상을 구분해 보여줄 때."""
+    rows = db.execute(select(StationConfig).order_by(StationConfig.cam_id)).scalars().all()
+    return [_station_out(r) for r in rows]
+
+
+@active_router.get("/stations/{cam_id}", response_model=Optional[StationOut])
+def get_station(
+    cam_id: str,
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """한 스테이션의 모드. 미설정이면 200 + null(워커는 전역/env 로 떨어진다)."""
+    row = db.get(StationConfig, cam_id)
+    return _station_out(row) if row else None
+
+
+@active_router.delete("/stations/{cam_id}", status_code=status.HTTP_204_NO_CONTENT)
+def clear_station(
+    cam_id: str,
+    db: Session = Depends(get_db),
+    user: CurrentUser = Depends(require_min_role(_SPEC_EDIT_MIN_ROLE)),
+):
+    """스테이션별 모드 해제 → 그 스테이션은 다시 전역(오더) 모드/env 를 따른다.
+
+    없는 스테이션이어도 204(멱등). 작업자 권한(= 모드 변경과 같은 정책).
+    """
+    row = db.get(StationConfig, cam_id)
+    if row:
+        before = row.inspection_stage
+        db.delete(row)
+        write_log(
+            db,
+            category=LogCategory.USER,
+            message=f"master.active.stage clear [station={cam_id}] {before}→(global) by={user.username}",
+            payload={"scope": f"station={cam_id}", "cam_id": cam_id,
+                     "before": before, "after": None},
+            commit=False,
+        )
+        db.commit()
 
 
 @active_router.put("/active", response_model=ActiveOrderOut)
@@ -166,24 +243,45 @@ def put_active_stage(
     if not row:
         row = ActiveOrder(id=1, item_code=body.item_code)
         db.add(row)
-    before = row.inspection_stage
+    now = datetime.now(timezone.utc)
+    station: Optional[StationConfig] = None
+
+    if body.cam_id:
+        # 스테이션 하나만. 전역(active_order.inspection_stage)은 건드리지 않는다.
+        station = db.get(StationConfig, body.cam_id)
+        if station is None:
+            station = StationConfig(cam_id=body.cam_id)
+            db.add(station)
+        before = station.inspection_stage
+        station.inspection_stage = body.inspection_stage.value
+        station.updated_by = user.username
+        station.updated_at = now
+        scope = f"station={body.cam_id}"
+        after = station.inspection_stage
+    else:
+        before = row.inspection_stage
+        row.inspection_stage = body.inspection_stage.value
+        scope = "global"
+        after = row.inspection_stage
+
     row.item_code = body.item_code
-    row.inspection_stage = body.inspection_stage.value
     row.updated_by = user.username
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = now
     write_log(
         db,
         category=LogCategory.USER,
         message=(
-            f"master.active.stage {body.item_code} {before}→{row.inspection_stage} "
+            f"master.active.stage {body.item_code} [{scope}] {before}→{after} "
             f"by={user.username}"
         ),
-        payload={"before": before, "after": row.inspection_stage},
+        payload={"scope": scope, "cam_id": body.cam_id, "before": before, "after": after},
         commit=False,
     )
     db.commit()
     db.refresh(row)
-    return _active_out(row)
+    if station is not None:
+        db.refresh(station)
+    return _active_out(row, station)
 
 
 @active_router.delete("/active", status_code=status.HTTP_204_NO_CONTENT)

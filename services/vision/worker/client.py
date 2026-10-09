@@ -175,7 +175,7 @@ class ApiClient:
         log.error("ItemMaster 확보 타임아웃: %s", item_code)
         return None
 
-    def _get_active_once(self) -> tuple[Optional[dict], int]:
+    def _get_active_once(self, cam_id: Optional[str] = None) -> tuple[Optional[dict], int]:
         """GET /master/active 1회. (dict|None, status_code).
 
         200 + JSON null(미설정)도 (None, 200) — 호출자는 "정보 없음"으로
@@ -188,7 +188,10 @@ class ApiClient:
             headers["Authorization"] = f"Bearer {self.service_token}"
             headers["X-Service-Token"] = self.service_token
         try:
-            resp = self._http.get("/master/active", headers=headers)
+            # cam_id 를 주면 서버가 **이 스테이션의** 모드로 해석해 준다
+            # (station_config > active_order). 2대 구성에서 필수.
+            params = {"cam_id": cam_id} if cam_id else None
+            resp = self._http.get("/master/active", headers=headers, params=params)
         except httpx.HTTPError as exc:
             log.debug("active GET 실패: %s", exc)
             return None, 0
@@ -200,7 +203,7 @@ class ApiClient:
             return (body if isinstance(body, dict) else None), 200
         return None, resp.status_code
 
-    def get_active_order(self) -> Optional[dict]:
+    def get_active_order(self, cam_id: Optional[str] = None) -> Optional[dict]:
         """현재 검사 오더 **단발** 조회(핫리로드 주기용, 재시도/슬립 없음).
 
         발주 기반 오더 전환: 웹에서 PUT /master/active 로 설정한
@@ -208,11 +211,11 @@ class ApiClient:
         인증 불가는 모두 None — 워커는 전환하지 않고 현행을 유지한다
         (베스트에포트, 라이브 검사 루프 절대 방해 금지).
         """
-        active, code = self._get_active_once()
+        active, code = self._get_active_once(cam_id)
         if active is not None:
             return active
         if code in (401, 403) and self.login():
-            active, _ = self._get_active_once()
+            active, _ = self._get_active_once(cam_id)
             return active
         return None
 

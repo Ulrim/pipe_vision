@@ -16,6 +16,7 @@ import { useEffect, useState } from "react";
 import { useLiveStore } from "@/store/liveStore";
 import { useAuthStore } from "@/store/authStore";
 import { stageLabel } from "@/lib/stage";
+import { CAM_ID } from "@/lib/config";
 
 /** 이 시간(ms) 넘게 하트비트가 없으면 워커가 멈춘 것으로 본다. */
 const STALE_MS = 6000;
@@ -90,6 +91,9 @@ export function HmiHeader() {
   const lot = latest?.lot;
   // 검사 모드: 하트비트가 가장 최신(모드 전환 직후, 첫 결과 전에도 보인다).
   const stage = status?.stage ?? latest?.inspection_stage ?? null;
+  // 스테이션: 화면이 고정된 카메라(?cam=)가 있으면 그것, 아니면 지금 들어온 것.
+  // 2대 구성에서 "이 화면이 어느 라인인가" 를 한 번에 알게 한다.
+  const camId = CAM_ID ?? status?.cam_id ?? latest?.cam_id ?? null;
 
   return (
     <header
@@ -119,6 +123,18 @@ export function HmiHeader() {
             data-testid="header-lot"
           >
             {lot}
+          </span>
+        )}
+        {camId && (
+          <span
+            className={`whitespace-nowrap rounded-md border px-1.5 text-hmi-cap font-bold ${
+              CAM_ID ? "border-gray-700 text-gray-700" : "border-gray-300 text-gray-400"
+            }`}
+            data-testid="header-cam"
+            data-locked={CAM_ID ? "yes" : "no"}
+            title={CAM_ID ? "이 화면은 이 카메라만 봅니다(?cam=)" : "마지막으로 들어온 스테이션"}
+          >
+            {camId}
           </span>
         )}
       </div>

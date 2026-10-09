@@ -9,12 +9,13 @@
  * WebSocket 은 테스트에서 모킹한다(전역 WebSocket 주입 가능).
  */
 import { useEffect, useRef } from "react";
-import { WS_URL, withWsToken } from "@/lib/config";
+import { CAM_ID, WS_URL, withWsToken } from "@/lib/config";
 import {
   parseLiveEvent,
   isInspectionEvent,
   isAlarmEvent,
   isStatusEvent,
+  matchesCam,
 } from "@/types/ws";
 import { useLiveStore } from "@/store/liveStore";
 import { useAuthStore } from "@/store/authStore";
@@ -42,10 +43,17 @@ export interface UseLiveSocketOptions {
    * 지정 시 토큰 부착 없이 그대로 연결한다(테스트가 URL 을 완전 제어).
    */
   url?: string;
+  /**
+   * 이 화면이 보는 스테이션. 기본 CAM_ID(`?cam=`/VITE_CAM_ID). null 이면 전부.
+   * 2대 구성에서 다른 카메라의 결과·알람·하트비트는 여기서 버린다 — 화면이
+   * 두 라인 사이를 깜빡이지 않게.
+   */
+  camId?: string | null;
 }
 
 export function useLiveSocket(opts: UseLiveSocketOptions = {}): void {
   const overrideUrl = opts.url;
+  const camId = opts.camId === undefined ? CAM_ID : opts.camId;
   // 토큰이 바뀌면(로그인/로그아웃) 재구독해 새 토큰으로 연결한다.
   const token = useAuthStore((s) => s.token());
   const wsRef = useRef<WebSocket | null>(null);
@@ -128,6 +136,7 @@ export function useLiveSocket(opts: UseLiveSocketOptions = {}): void {
           typeof ev.data === "string" ? ev.data : String(ev.data),
         );
         if (!evt) return;
+        if (!matchesCam(evt, camId)) return; // 다른 스테이션 — 이 화면 것이 아니다.
         const s = useLiveStore.getState();
         if (isInspectionEvent(evt)) s.pushInspection(evt.data);
         else if (isAlarmEvent(evt)) s.pushAlarm(evt.data);
@@ -182,5 +191,5 @@ export function useLiveSocket(opts: UseLiveSocketOptions = {}): void {
     };
     // override URL 또는 토큰(로그인/로그아웃) 변경 시 재구독.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [overrideUrl, token]);
+  }, [overrideUrl, token, camId]);
 }

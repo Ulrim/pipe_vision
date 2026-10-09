@@ -59,11 +59,14 @@ class OrderBackend(FakeBackend):
         self.items = items
         self.active: dict | None = None
         self.fail_item_codes: set[str] = set()
+        #: /master/active 폴링마다 실린 ?cam_id= (2대 구성: 스테이션별 모드).
+        self.active_cam_ids: list[str | None] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         auth = request.headers.get("Authorization", "")
         if path == "/master/active":
+            self.active_cam_ids.append(request.url.params.get("cam_id"))
             if self.master_requires_auth and auth != "Bearer JWT-OP-TOKEN":
                 return httpx.Response(401, json={"detail": "인증 토큰 없음"})
             if self.active is None:
@@ -113,6 +116,19 @@ def test_active_null_keeps_env_behavior(tmp_path):
     assert posted["item_code"] == "HP12"
     assert posted["lot"] == "LOTTEST"  # _cfg 기본 lot(env 동작).
     assert posted.get("work_order") in (None, "")
+    worker.shutdown()
+
+
+def test_active_order_poll_names_this_station(tmp_path):
+    """2대 구성: 워커는 자기 cam_id 로 오더를 묻는다 — 그래야 서버가 스테이션별
+    모드(station_config)를 골라 준다. 빠지면 두 대가 같은 모드로 끌려간다."""
+    backend = _backend()
+    worker = Worker(_cfg(tmp_path, item_reload_s=1.0), client=_client(backend))
+    assert worker.startup() is True
+    _open_reload_window(worker)
+    worker._maybe_reload_item(datetime.now(timezone.utc))
+    assert backend.active_cam_ids, "오더 폴링이 없었다"
+    assert set(backend.active_cam_ids) == {worker.cfg.cam_id}
     worker.shutdown()
 
 

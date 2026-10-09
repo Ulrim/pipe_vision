@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultApiBase, withWsToken } from "@/lib/config";
+import { defaultApiBase, resolveCamId, withWsToken } from "@/lib/config";
 
 describe("defaultApiBase (실사용: 접속 호스트 기준 API 결정)", () => {
   it("파이 LCD(localhost) → localhost:8000", () => {
@@ -24,5 +24,20 @@ describe("withWsToken", () => {
     expect(withWsToken("ws://h:8000/ws/live", "T")).toBe(
       "ws://h:8000/ws/live?token=T",
     );
+  });
+});
+
+describe("resolveCamId (2대 구성: 이 화면이 보는 카메라)", () => {
+  it("URL ?cam= 이 최우선 — 같은 빌드를 두 파이가 주소만 다르게 쓴다", () => {
+    expect(resolveCamId("?cam=PI-CAM2", "PI-CAM1")).toBe("PI-CAM2");
+  });
+  it("URL 에 없으면 VITE_CAM_ID", () => {
+    expect(resolveCamId("", "PI-CAM1")).toBe("PI-CAM1");
+    expect(resolveCamId("?x=1", "PI-CAM1")).toBe("PI-CAM1");
+  });
+  it("둘 다 없으면 null — 전부 받는다(단일 구성·사무실 전체 보기)", () => {
+    expect(resolveCamId("", undefined)).toBeNull();
+    expect(resolveCamId("?cam=", "")).toBeNull();
+    expect(resolveCamId("?cam=%20", undefined)).toBeNull();
   });
 });

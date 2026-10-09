@@ -147,26 +147,33 @@ export interface ActiveOrderView {
   lot?: string | null;
   work_order?: string | null;
   inspection_stage?: string | null;
+  /** 모드가 어디서 왔나: "station"(이 카메라만) | "order"(전역) | null(미설정). */
+  stage_source?: "station" | "order" | null;
 }
 
-export function fetchActiveOrder(): Promise<ActiveOrderView | null> {
-  return request<ActiveOrderView | null>("/master/active", undefined, { auth: true });
+/** 현재 오더. camId 를 주면 그 스테이션의 모드(station_config)가 우선 적용된 값. */
+export function fetchActiveOrder(camId?: string | null): Promise<ActiveOrderView | null> {
+  const qs = camId ? `?cam_id=${encodeURIComponent(camId)}` : "";
+  return request<ActiveOrderView | null>(`/master/active${qs}`, undefined, { auth: true });
 }
 
 /**
  * 검사 모드만 바꾼다 — PUT /master/active/stage (작업자 권한).
  * 길이→표면→개수를 한 대로 번갈아 보는 벤치에서 재시작 없이 전환한다.
+ *
+ * camId 를 주면 **그 스테이션만** 바뀐다(2대 구성: 길이 스테이션 화면에서
+ * 모드를 눌렀는데 크레이트 스테이션까지 따라오면 안 된다). 비우면 전역.
  */
 export function setActiveStage(
   itemCode: string,
   stage: string,
+  camId?: string | null,
 ): Promise<ActiveOrderView> {
+  const body: Record<string, string> = { item_code: itemCode, inspection_stage: stage };
+  if (camId) body.cam_id = camId;
   return request<ActiveOrderView>(
     "/master/active/stage",
-    {
-      method: "PUT",
-      body: JSON.stringify({ item_code: itemCode, inspection_stage: stage }),
-    },
+    { method: "PUT", body: JSON.stringify(body) },
     { auth: true },
   );
 }

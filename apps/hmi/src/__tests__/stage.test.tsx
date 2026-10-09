@@ -208,6 +208,38 @@ describe("OrderSetup — 모드 전환", () => {
     expect(put?.body).toEqual({ item_code: "HP12", inspection_stage: "CRATE_COUNT" });
     expect(screen.getByTestId("stage-CRATE_COUNT")).toHaveAttribute("data-on", "yes");
     expect(screen.getByTestId("stage-picker")).toHaveTextContent("워커가 15초 내 전환");
+    // 카메라 고정이 없으면 전역 — 범위를 화면에 적어 둔다.
+    expect(screen.getByTestId("stage-scope")).toHaveAttribute("data-scope", "global");
+    expect(screen.getByTestId("stage-scope")).toHaveTextContent("모든 스테이션");
+  });
+
+  it("화면이 카메라에 고정돼 있으면(?cam=) 그 스테이션만 바꾼다 — cam_id 를 보낸다", async () => {
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+        return new Response(
+          JSON.stringify({ item_code: "HP12", inspection_stage: "CRATE_COUNT",
+                           stage_source: "station" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+    render(
+      <OrderSetup item={ITEM} onClose={() => {}}
+        currentStage={InspectionStage.CUT_LENGTH} camId="PI-CAM2" />,
+    );
+    expect(screen.getByTestId("stage-scope")).toHaveAttribute("data-scope", "station");
+    expect(screen.getByTestId("stage-scope")).toHaveTextContent("이 스테이션(PI-CAM2)만");
+    fireEvent.click(screen.getByTestId("stage-CRATE_COUNT"));
+    await waitFor(() =>
+      expect(calls.some((c) => c.url.endsWith("/master/active/stage"))).toBe(true),
+    );
+    const put = calls.find((c) => c.url.endsWith("/master/active/stage"));
+    expect(put?.body).toEqual({
+      item_code: "HP12", inspection_stage: "CRATE_COUNT", cam_id: "PI-CAM2",
+    });
   });
 
   it("전환 실패는 그 자리에 이유를 보여준다", async () => {

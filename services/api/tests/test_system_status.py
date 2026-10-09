@@ -96,7 +96,7 @@ def test_response_schema_contract(client, auth):
     assert sysm["throttled"] is None or isinstance(sysm["throttled"], bool)
 
     svc = body["services"]
-    assert set(svc) == {"db", "worker", "worker_last_seen_s"}
+    assert set(svc) == {"db", "worker", "worker_last_seen_s", "workers"}
     assert svc["db"] in ("up", "down")
     assert svc["worker"] in ("up", "stale", "down")
     assert svc["worker_last_seen_s"] is None or isinstance(

@@ -381,6 +381,11 @@ bash scripts/aivis.sh urls
 - 파이와 PC 가 **같은 네트워크**에 있어야 한다.
 - 비밀번호는 최초 로그인 후 반드시 변경한다(대시보드 > 사용자 관리).
 - IP 가 자꾸 바뀌면 공유기에서 파이 MAC 에 **고정 IP(DHCP 예약)** 를 설정한다.
+- **현장 측정값은 전부 이 웹 화면에 나온다.** 작업자 화면은 지금 판정 1건을 크게,
+  관리자 대시보드는 이력(필터·CSV)·KPI·모니터를 보여준다. 같은 네트워크면 사무실
+  PC 어디서나 열린다. 외부(다른 네트워크)에서 보려면 §10 의 클라우드 모드다.
+- 카메라가 2대 이상이면 작업자 화면 주소 뒤에 `?cam=PI-CAM1` 처럼 붙여 **그 라인
+  것만** 보게 한다(§10). 안 붙이면 두 라인의 결과가 섞여 번갈아 뜬다.
 
 ---
 
@@ -580,6 +585,11 @@ bash scripts/aivis-clean-images.sh --yes
    화면에서 바꾼 값이 있으면 그것이 우선합니다. 화면 설정을 비우면(`PUT /master/active`
    에 `inspection_stage` 없이 저장) 다시 이 기본값으로 돌아옵니다.
 
+**카메라가 2대 이상이면** 화면에서 누른 모드가 **어느 스테이션**에 가는지가 중요합니다.
+작업자 화면을 `?cam=PI-CAM1` 로 열었으면 모드 버튼 옆에 `이 스테이션(PI-CAM1)만` 이
+적혀 있고 그 카메라만 바뀝니다. `모든 스테이션` 으로 적혀 있으면(카메라 미지정) 전역
+설정이라 **스테이션별 설정이 없는 모든 카메라**가 따라 바뀝니다. 자세한 것은 §10.
+
 > 개수 확인 모드는 **크레이트를 위에서 찍은 단면 사진**을 셉니다(파이프를 세워
 > 담은 상자를 위에서 본 것). 기준 개수는 오더 설정의 `한 판 개수`입니다.
 
@@ -684,3 +694,127 @@ python -m vision.models.train_anomaly \
 
 > **하지 말아야 할 것**: 이미지 자체를 축소하는 것. 가는 스크래치가 뭉개져
 > 탐지력이 크게 떨어집니다(실측: DAGM 8x8 AUROC 1.000 → 0.708).
+
+---
+
+## 10. 카메라 2대 이상 구성 (컨베이어 길이 + 크레이트 개수)
+
+> 도입기업 확인(2026-10-08): 라즈베리파이+카메라를 **최소 2대** 설치한다.
+> 1호기 = 컨베이어 측면(길이), 2호기 = 크레이트 위(개수·유분기·변색).
+
+### 10-1. 구조 — 서버는 하나, 카메라는 여럿
+
+```
+[파이 1호기]  카메라 ─ 검사 워커(PI-CAM1, 길이)  ─┐
+                                                  ├─▶ API + DB + 화면 (한 곳)
+[파이 2호기]  카메라 ─ 검사 워커(PI-CAM2, 개수)  ─┘
+```
+
+- 검사 결과 행마다 `cam_id` 가 붙는다. 이력·KPI·모니터는 이 값으로 라인을 가른다.
+- **모드는 스테이션별**이다. 1호기는 길이, 2호기는 개수 — 서로 독립이다.
+- 오더(품목·LOT·기준길이·개수)는 **공통**이다. 같은 발주를 두 라인이 본다.
+
+API 를 어디에 둘지 두 가지가 있다. **둘 중 하나를 정해야 한다.**
+
+| 방식 | 어디에 API/DB | 장점 | 단점 |
+|---|---|---|---|
+| **허브 파이(LAN)** | 1호기 파이가 API·DB·화면까지 다 돌리고, 2호기는 워커만 | 인터넷 불필요, 설치 단순, 지연 없음 | 2호기의 이미지가 2호기 디스크에만 남아 **대시보드에서 2호기 사진이 안 열린다**(아래 10-4) |
+| **클라우드(edge→cloud)** | API/DB 는 클라우드(Render+Supabase), 화면은 Vercel, 파이 2대는 워커만 | 외부에서도 보인다, 이미지가 Supabase 에 모여 어느 라인 사진이든 열린다 | 인터넷 필요(끊기면 워커 로컬 큐에 쌓였다 재전송), 월 비용 |
+
+### 10-2. 1호기 — 그대로 설치
+
+§1-2 의 설치 명령 한 줄로 설치한다(API·DB·화면·워커 전부). 독립형은 환경파일이
+`/etc/aivis/standalone.env` 하나다(워커가 따로 없다 — 런처가 API 와 워커를 같이
+띄운다). 거기에 식별자와 모드를 적고 서비스를 재시작한다.
+
+```bash
+# /etc/aivis/standalone.env  (1호기)
+AIVIS_CAM_ID=PI-CAM1
+AIVIS_INSPECTION_STAGE=CUT_LENGTH
+# AIVIS_SERVICE_TOKEN=<긴 무작위 문자열>   # 선택. 적으면 API 가 워커 호출에 이 토큰을 요구한다
+```
+```bash
+sudo systemctl restart aivis-standalone
+```
+
+API 는 이미 `0.0.0.0:8000` 으로 열려 있어(§4 에서 사무실 PC 가 접속하는 그 포트)
+2호기가 같은 네트워크면 그대로 붙는다.
+
+### 10-3. 2호기 — 워커만
+
+설치 스크립트는 **독립형(올인원) 전용**이라 2호기는 손으로 워커만 붙인다.
+서비스 유닛(`deploy/aivis-vision-pi.service`)이 `/opt/aivis` 와 사용자 `pi` 를
+가정하므로 그 자리에 받는다.
+
+```bash
+# 2호기에서
+sudo apt update && sudo apt install -y git python3-venv python3-picamera2 python3-opencv
+sudo git clone <저장소> /opt/aivis && sudo chown -R pi:pi /opt/aivis
+cd /opt/aivis/services/vision
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements.txt
+sudo mkdir -p /etc/aivis && sudo cp /opt/aivis/deploy/aivis-worker.env.example /etc/aivis/worker.env
+sudo nano /etc/aivis/worker.env
+```
+
+환경파일에서 **반드시** 아래를 맞춘다(나머지는 예시 파일 기본값으로 둔다).
+
+```bash
+AIVIS_CAMERA=picam
+AIVIS_API_URL=http://<1호기IP>:8000        # 허브 파이 방식. 클라우드면 https://<api 주소>
+AIVIS_CAM_ID=PI-CAM2                        # 1호기와 달라야 한다(같으면 한 대로 보인다)
+AIVIS_INSPECTION_STAGE=CRATE_COUNT          # 이 스테이션의 기본 모드
+AIVIS_ITEM_CODE=HP12                        # 1호기와 같은 품목(오더는 공통)
+# 워커는 기준정보·오더를 읽을 때 이 계정으로 로그인한다 → 1호기 관리자 계정과 같게
+AIVIS_SEED_ADMIN_USER=admin
+AIVIS_SEED_ADMIN_PASSWORD=<1호기 admin 비밀번호>
+# 1호기 standalone.env 에 AIVIS_SERVICE_TOKEN 을 적었다면 여기도 같은 값. 안 적었으면 비운다.
+# AIVIS_SERVICE_TOKEN=
+```
+
+서비스 등록:
+
+```bash
+sudo cp /opt/aivis/deploy/aivis-vision-pi.service /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now aivis-vision-pi
+journalctl -u aivis-vision-pi -f      # 15초마다 status 가 찍히고 401/connection refused 가 없으면 성공
+```
+
+확인: 대시보드 **모니터** 화면 `스테이션 (카메라별)` 표에 `PI-CAM1`·`PI-CAM2` 가
+각각 상태·모드와 함께 보여야 한다. 한 대만 보이면 토큰(`AIVIS_SERVICE_TOKEN`)이나
+`AIVIS_API_URL` 을 의심한다.
+
+### 10-4. 이미지 — 허브 파이 방식의 한계
+
+워커는 이미지를 **자기 디스크**에 쓰고 DB 에는 경로만 넣는다. 허브 파이 방식에서
+2호기 사진은 2호기에 있으므로 1호기 API 가 열 수 없다(대시보드에서 "이미지 없음").
+해결은 셋 중 하나다:
+
+1. **클라우드 방식**으로 간다(이미지가 Supabase 에 모인다) — 가장 깔끔.
+2. 1호기 이미지 폴더를 NFS/Samba 로 공유해 2호기가 **같은 경로**에 쓰게 한다.
+3. 2호기 사진은 2호기에서만 본다(허용 가능한 운영이면).
+
+> 지금 코드의 이미지 백엔드는 `local` 과 `supabase` 둘뿐이다. "2호기 → 1호기 업로드"
+> 백엔드는 없다. 허브 파이 방식에서 2호기 사진까지 한 화면에서 보려면 2번(공유
+> 폴더)이 코드 변경 없는 유일한 길이다.
+
+### 10-5. 화면 — 라인마다 자기 것만
+
+| 화면 | 주소 | 보이는 것 |
+|---|---|---|
+| 1호기 키오스크 | `http://<API호스트>:5173/?cam=PI-CAM1` | 길이 라인 결과·알람·모드만 |
+| 2호기 키오스크 | `http://<API호스트>:5173/?cam=PI-CAM2` | 크레이트 라인만 |
+| 사무실(전체) | `http://<API호스트>:5173/` | 두 라인이 섞여 번갈아 뜬다(점검용) |
+| 대시보드 | `http://<API호스트>:5174/` | 이력 필터 `스테이션`·`검사 모드`, 모니터 스테이션 표 |
+
+`?cam=` 을 붙인 화면에서 `오더 설정 → 검사 모드` 를 누르면 **그 카메라만** 바뀐다
+(버튼 옆 `이 스테이션(PI-CAM2)만`). 붙이지 않은 화면에서는 전역이 바뀐다 — 두
+라인이 모두 따라오니 **점검용 화면에서는 모드를 누르지 않는다.**
+
+### 10-6. KPI 에서 개수 행은 뺀다
+
+크레이트 개수 확인 행은 **제품 1개가 아니라 크레이트 1판**이다. 공정불량률(ppm)·총
+검사수량에 섞이면 분모가 틀어지므로 KPI 는 `CRATE_COUNT` 행을 제외한다. 저장·MES
+연계율에는 포함한다(그 행도 저장은 되어야 하므로). 이력 화면에서 `검사 모드 = 개수
+확인` 으로 걸면 크레이트 행만 따로 본다.
+

@@ -20,6 +20,8 @@ export interface AlarmEvent {
     id: number | null;
     lot: string;
     defect_codes: DefectCode[] | null;
+    /** 어느 스테이션의 알람인가(서버가 실어 준다). 2대 구성에서 화면 필터용. */
+    cam_id?: string | null;
   };
 }
 
@@ -77,4 +79,22 @@ export function parseLiveEvent(raw: string): LiveEvent | null {
   } catch {
     return null;
   }
+}
+
+/** 이벤트가 어느 스테이션에서 왔는가. 모르면 null(필터하지 않는다). */
+export function eventCamId(e: LiveEvent): string | null {
+  const v = (e.data as { cam_id?: string | null }).cam_id;
+  return v ? String(v) : null;
+}
+
+/**
+ * 이 화면이 받아야 할 이벤트인가(2대 구성).
+ * camId 가 null 이면 전부 받는다(단일 구성·사무실 PC 전체 보기).
+ * 이벤트에 cam_id 가 없으면 버리지 않는다 — 옛 서버/테스트 호환이고,
+ * 모르는 것을 숨기는 쪽이 더 위험하다.
+ */
+export function matchesCam(e: LiveEvent, camId: string | null): boolean {
+  if (!camId) return true;
+  const c = eventCamId(e);
+  return c === null || c === camId;
 }

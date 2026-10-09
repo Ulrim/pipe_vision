@@ -8,6 +8,7 @@ import { VerdictBadge } from "@/components/VerdictBadge";
 import { InspectionDetail } from "@/components/InspectionDetail";
 import { fmtNum, fmtTimeShort } from "@/lib/format";
 import { rowsToCsv, triggerBlobDownload } from "@/lib/download";
+import { STAGE_OPTIONS, stageLabel } from "@/lib/stage";
 
 const PAGE_SIZE = 25;
 
@@ -17,13 +18,19 @@ interface Filters {
   from: string;
   to: string;
   verdict: string;
+  /** 스테이션(카메라) — 2대 구성에서 라인별 조회. */
+  cam: string;
+  /** 검사 모드. */
+  stage: string;
 }
-const EMPTY: Filters = { lot: "", item: "", from: "", to: "", verdict: "" };
+const EMPTY: Filters = { lot: "", item: "", from: "", to: "", verdict: "", cam: "", stage: "" };
 
 const CSV_COLUMNS = [
   { key: "id", header: "id" },
   { key: "lot", header: "lot" },
   { key: "item_code", header: "item_code" },
+  { key: "cam_id", header: "cam_id" },
+  { key: "inspection_stage", header: "inspection_stage" },
   { key: "inspected_at", header: "inspected_at" },
   { key: "meas_length_mm", header: "meas_length_mm" },
   { key: "deviation_mm", header: "deviation_mm" },
@@ -47,6 +54,8 @@ export function InspectionsPage(): JSX.Element {
       from: applied.from,
       to: applied.to,
       verdict: applied.verdict,
+      cam_id: applied.cam,
+      stage: applied.stage,
       limit: PAGE_SIZE,
       offset,
     }),
@@ -82,7 +91,7 @@ export function InspectionsPage(): JSX.Element {
       <h1 className="text-xl font-bold">검사이력 조회</h1>
 
       {/* 필터 조합 검색 */}
-      <div className="card grid grid-cols-2 gap-3 p-4 md:grid-cols-6">
+      <div className="card grid grid-cols-2 gap-3 p-4 md:grid-cols-4 lg:grid-cols-8">
         <Field label="LOT">
           <input className="input w-full" value={form.lot} data-testid="filter-lot"
             onChange={(e) => setForm({ ...form, lot: e.target.value })} />
@@ -105,6 +114,22 @@ export function InspectionsPage(): JSX.Element {
             <option value="">전체</option>
             <option value={Verdict.OK}>OK</option>
             <option value={Verdict.NG}>NG</option>
+          </select>
+        </Field>
+        {/* 2대 구성: 라인(카메라)·모드로 나눠 본다. 개수 확인 행은 제품이 아니라
+            크레이트 1판이므로 길이 행과 섞어 보면 헷갈린다. */}
+        <Field label="스테이션">
+          <input className="input w-full" value={form.cam} data-testid="filter-cam"
+            placeholder="예: PI-CAM1"
+            onChange={(e) => setForm({ ...form, cam: e.target.value })} />
+        </Field>
+        <Field label="검사 모드">
+          <select className="input w-full" value={form.stage} data-testid="filter-stage"
+            onChange={(e) => setForm({ ...form, stage: e.target.value })}>
+            <option value="">전체</option>
+            {STAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
           </select>
         </Field>
         <div className="flex items-end gap-2">
@@ -140,12 +165,13 @@ export function InspectionsPage(): JSX.Element {
               {/* 판정을 맨 앞에 둔다. NG 를 찾으려고 표를 가로지르게 하면 안 된다. */}
               <Th>판정</Th><Th>불량유형</Th><Th>편차(mm)</Th>
               <Th>검사시각</Th><Th>측정길이(mm)</Th><Th>처리(ms)</Th>
+              <Th>모드</Th><Th>스테이션</Th>
               <Th>LOT</Th><Th>품목</Th><Th>ID</Th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && !isFetching && (
-              <tr><td colSpan={9} className="p-6 text-center text-slate-400">결과 없음</td></tr>
+              <tr><td colSpan={11} className="p-6 text-center text-slate-400">결과 없음</td></tr>
             )}
             {rows.map((r) => {
               const outOfTol = r.length_verdict === "NG";
@@ -165,6 +191,8 @@ export function InspectionsPage(): JSX.Element {
                 <Td>{fmtTimeShort(r.inspected_at)}</Td>
                 <Td>{fmtNum(r.meas_length_mm, 3)}</Td>
                 <Td>{fmtNum(r.proc_time_ms, 0)}</Td>
+                <Td>{stageLabel(r.inspection_stage)}</Td>
+                <Td>{r.cam_id}</Td>
                 <Td>{r.lot}</Td>
                 <Td>{r.item_code}</Td>
                 <Td>{r.id}</Td>

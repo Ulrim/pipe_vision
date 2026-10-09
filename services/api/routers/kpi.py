@@ -68,9 +68,16 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
     base = select(Inspection).where(
         Inspection.inspected_at >= start, Inspection.inspected_at < end
     )
-    rows = list(db.execute(base).scalars().all())
+    all_rows = list(db.execute(base).scalars().all())
 
-    total_inspected = len(rows)  # 총 검사수량
+    # 개수 확인(CRATE_COUNT) 행은 **제품 1개가 아니라 크레이트 1판** 이다
+    # (2026-10-08, 2대 구성). 제품 단위 지표(공정불량률·자동검사율·검사불량률)에
+    # 섞으면 분모는 1판=1개로 깎이고 분자는 '개수 불일치' 가 제품 불량으로
+    # 잡힌다. 그래서 제품 지표는 개수 행을 빼고 센다. 저장·MES 연계율은
+    # "적재된 모든 건" 이 대상이므로 전체 행으로 센다.
+    rows = [r for r in all_rows if r.inspection_stage != "CRATE_COUNT"]
+
+    total_inspected = len(rows)  # 총 검사수량(제품)
 
     # 공정 중 불량수량 = final_verdict == 'NG'
     defect_count = sum(1 for r in rows if r.final_verdict == "NG")
@@ -95,11 +102,11 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
         misjudge_count + miss_count, total_inspected, 100.0
     )
 
-    # 데이터 저장&MES 연계율: 정상 저장·연계 건수 ÷ 전체 검사 건수
-    #  - 저장 건수 = DB 에 적재된 행(=total_inspected, 조회된 rows)
+    # 데이터 저장&MES 연계율: 정상 저장·연계 건수 ÷ 전체 검사 건수(개수 행 포함)
+    #  - 저장 건수 = DB 에 적재된 행
     #  - 연계 건수 = mes_synced True
-    stored_count = total_inspected
-    mes_synced_count = sum(1 for r in rows if r.mes_synced)
+    stored_count = len(all_rows)
+    mes_synced_count = sum(1 for r in all_rows if r.mes_synced)
     storage_mes_rate_pct = _rate(mes_synced_count, stored_count, 100.0)
 
     proc_times = [r.proc_time_ms for r in rows if r.proc_time_ms is not None]

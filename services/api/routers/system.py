@@ -30,6 +30,7 @@ from aivis_types import LogCategory, Role
 
 from core import updater
 from core.config import get_settings
+from core.heartbeat import all_beats as heartbeat_all_beats
 from core.heartbeat import last_seen as heartbeat_last_seen
 from core.report import proc_time_percentiles
 from core.security import CurrentUser, require_min_role
@@ -76,12 +77,27 @@ class SystemMetrics(BaseModel):
     throttled: Optional[bool] = None  # 파이 저전압/스로틀. 모르면 None
 
 
+class WorkerStatus(BaseModel):
+    """스테이션(카메라) 하나의 워커 상태."""
+
+    cam_id: str
+    state: str  # up|stale|down
+    last_seen_s: Optional[float] = None
+    stage: Optional[str] = None  # 그 스테이션이 지금 돌고 있는 검사 모드
+
+
 class ServicesStatus(BaseModel):
-    """의존 서비스 상태. db=up|down, worker=up|stale|down."""
+    """의존 서비스 상태. db=up|down, worker=up|stale|down.
+
+    `worker`/`worker_last_seen_s` 는 **가장 최근에 말한 스테이션** 기준(종전 호환).
+    스테이션이 2대 이상이면 `workers` 를 봐야 한다 — 한 대가 죽어도 다른 대의
+    하트비트 때문에 `worker` 는 up 으로 보일 수 있다(2026-10-08).
+    """
 
     db: str
     worker: str
     worker_last_seen_s: Optional[float] = None  # null = 기동 후 하트비트 없음
+    workers: list[WorkerStatus] = []
 
 
 class WindowStats(BaseModel):
@@ -260,9 +276,15 @@ def _collect_system() -> SystemMetrics:
 # ---- 워커 생존 --------------------------------------------------------------
 
 
-def _worker_state(now: datetime) -> tuple[str, Optional[float]]:
-    """(worker 상태, 마지막 하트비트 경과 초). 하트비트 없으면 ("down", None)."""
-    seen = heartbeat_last_seen()
+def _worker_state(
+    now: datetime, seen: Optional[datetime] = None, *, use_latest: bool = True
+) -> tuple[str, Optional[float]]:
+    """(worker 상태, 마지막 하트비트 경과 초). 하트비트 없으면 ("down", None).
+
+    seen 을 주면 그 시각으로(스테이션별), 안 주면 가장 최근 하트비트로 판정한다.
+    """
+    if seen is None and use_latest:
+        seen = heartbeat_last_seen()
     if seen is None:
         return "down", None
     if seen.tzinfo is None:
@@ -275,6 +297,16 @@ def _worker_state(now: datetime) -> tuple[str, Optional[float]]:
     else:
         state = "down"
     return state, round(elapsed, 1)
+
+
+def _workers(now: datetime) -> list[WorkerStatus]:
+    """스테이션별 워커 상태(cam_id 순). 하트비트가 한 번도 없으면 빈 목록."""
+    out: list[WorkerStatus] = []
+    for b in heartbeat_all_beats():
+        state, elapsed = _worker_state(now, b.seen, use_latest=False)
+        out.append(WorkerStatus(cam_id=b.cam_id, state=state,
+                                last_seen_s=elapsed, stage=b.stage))
+    return out
 
 
 # ---- 검사 통계 --------------------------------------------------------------
@@ -460,6 +492,7 @@ def system_status(
             db=db_state,
             worker=worker_state,
             worker_last_seen_s=worker_elapsed,
+            workers=_workers(now),
         ),
         inspection=inspection,
         active_order=active,

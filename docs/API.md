@@ -70,7 +70,11 @@
 | GET | `/master/items/{code}` | operator+ | 단건 |
 | POST | `/master/items` | quality+ | 등록(version=1) |
 | PUT | `/master/items/{code}` | quality+ | 부분 갱신(version +1, updated_by/at 기록) |
-| PUT | `/master/active/stage` | **operator+** | **검사 모드만** 바꾼다(`{item_code, inspection_stage}`; CUT_LENGTH\|POST_WASH_SURFACE\|CRATE_COUNT). 오더가 없으면 품목으로 만든다. 감사 로그 before→after. 워커 15s 폴링으로 재시작 없이 전환. `PUT /master/active` 도 `inspection_stage` 를 받는다(NULL=스테이션 env 기본) |
+| GET | `/master/active?cam_id=` | operator+ | 현재 오더. `cam_id` 를 주면 **그 스테이션의 모드**(station_config)가 전역보다 우선 적용된 값을 돌려주고 `stage_source`(`station`\|`order`\|null)로 출처를 말한다. 워커는 자기 `AIVIS_CAM_ID` 로 폴링한다 |
+| PUT | `/master/active/stage` | **operator+** | **검사 모드만** 바꾼다(`{item_code, inspection_stage, cam_id?}`; CUT_LENGTH\|POST_WASH_SURFACE\|CRATE_COUNT). `cam_id` 를 주면 **그 스테이션만**(station_config), 비우면 전역(active_order). 오더가 없으면 품목으로 만든다. 감사 로그 `[station=X]`/`[global]` before→after. 워커 15s 폴링으로 재시작 없이 전환. `PUT /master/active` 도 `inspection_stage` 를 받는다(NULL=스테이션 env 기본) |
+| GET | `/master/stations` | operator+ | 스테이션별 설정 목록(`{cam_id, inspection_stage, updated_by, updated_at}`) — 2대 구성 모니터/HMI 용 |
+| GET | `/master/stations/{cam_id}` | operator+ | 한 스테이션의 설정. 미설정이면 200 + null |
+| DELETE | `/master/stations/{cam_id}` | **operator+** | 스테이션 모드 해제 → 다시 전역/env 를 따른다(멱등 204, 감사 로그) |
 | PUT | `/master/items/{code}/spec` | **operator+** | **오더 교체용**: `ref_length_mm`/`tol_plus_mm`/`tol_minus_mm`/`expected_count` 만 수정(version +1, 감사 로그에 before→after). px_to_mm_scale·표면 임계값은 **전송 불가**. 값이 그대로면 version 을 올리지 않음. 최소 권한은 `AIVIS_SPEC_EDIT_MIN_ROLE`(기본 `operator`) |
 | POST | `/master/items/{code}/calibrate` | quality+ | 웹 자기보정: px_to_mm_scale ×= actual_mm/measured_mm (version +1) |
 | DELETE | `/master/items/{code}` | admin | 삭제 |
@@ -104,7 +108,8 @@
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
 | POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
-| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시 |
+| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
+| GET | `/inspection?…&cam_id=&stage=` | operator+ | 이력 조회 필터에 스테이션(`cam_id`)·검사 모드(`stage`, 대소문자 무관) 추가. KPI `/kpi/summary` 는 `CRATE_COUNT` 행(크레이트 1판 = 제품 아님)을 공정불량률·검사수량에서 **제외**하고 저장·연계율에는 포함한다 |
 | WS | `/ws/live?token=<JWT>` | 로그인 | 검사결과/알람 실시간 푸시. `token` 쿼리에 JWT 필요(무효/누락 시 accept 전 `1008` close). 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |
 

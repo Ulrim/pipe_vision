@@ -4,6 +4,8 @@ import {
   isInspectionEvent,
   isAlarmEvent,
   isStatusEvent,
+  matchesCam,
+  eventCamId,
 } from "@/types/ws";
 import { makeResult } from "./factories";
 
@@ -53,5 +55,37 @@ describe("parseLiveEvent (WS 봉투 계약)", () => {
   it("형식 불일치/깨진 JSON 은 null 을 반환한다", () => {
     expect(parseLiveEvent("not json")).toBeNull();
     expect(parseLiveEvent(JSON.stringify({ event: "unknown" }))).toBeNull();
+  });
+});
+
+describe("matchesCam (2대 구성: 다른 스테이션 이벤트는 이 화면 것이 아니다)", () => {
+  const insp = (cam: string | null | undefined) =>
+    ({ event: "inspection", data: makeResult({ id: 1, cam_id: cam as string }) }) as const;
+  const alarm = (cam?: string) =>
+    ({ event: "alarm", data: { id: 1, lot: "L", defect_codes: null, cam_id: cam } }) as const;
+  const status = (cam: string) =>
+    ({
+      event: "status",
+      data: {
+        cam_id: cam, item_code: "HP12", expected: 1, detected: 1, ng: 0,
+        mismatch: false, proc_time_ms: 1, ts: "t", error: null,
+      },
+    }) as const;
+
+  it("화면이 카메라를 고정하지 않으면(null) 전부 받는다", () => {
+    expect(matchesCam(insp("PI-CAM2"), null)).toBe(true);
+    expect(matchesCam(status("PI-CAM2"), null)).toBe(true);
+  });
+  it("같은 카메라만 통과 — 결과·알람·하트비트 모두", () => {
+    expect(matchesCam(insp("PI-CAM1"), "PI-CAM1")).toBe(true);
+    expect(matchesCam(insp("PI-CAM2"), "PI-CAM1")).toBe(false);
+    expect(matchesCam(alarm("PI-CAM2"), "PI-CAM1")).toBe(false);
+    expect(matchesCam(status("PI-CAM2"), "PI-CAM1")).toBe(false);
+    expect(matchesCam(status("PI-CAM1"), "PI-CAM1")).toBe(true);
+  });
+  it("cam_id 가 없는 이벤트는 버리지 않는다(옛 서버 호환 — 모르는 것을 숨기지 않는다)", () => {
+    expect(eventCamId(alarm(undefined))).toBeNull();
+    expect(matchesCam(alarm(undefined), "PI-CAM1")).toBe(true);
+    expect(matchesCam(insp(null), "PI-CAM1")).toBe(true);
   });
 });

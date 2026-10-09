@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { InspectionResult } from "@aivis/shared-types";
 import { Verdict, DefectCode } from "@aivis/shared-types";
@@ -53,6 +53,27 @@ describe("InspectionsPage", () => {
       expect(lastCall).toMatchObject({
         lot: "LOT-A", verdict: "NG", limit: 25, offset: 0,
       });
+    });
+  });
+
+  it("스테이션·검사 모드 필터가 cam_id/stage 쿼리로 나간다(2대 구성)", async () => {
+    fetchInspections.mockResolvedValue([
+      { ...row, cam_id: "PI-CAM2", inspection_stage: "CRATE_COUNT" },
+    ]);
+    renderApp(<InspectionsPage />);
+    await screen.findByText("LOT-A");
+    // 표 행에 모드(한글)·스테이션(원문)이 보인다. (필터 select 에도 같은 글자가
+    // 있으므로 행 안에서 찾는다.)
+    const tr = screen.getByTestId("insp-row");
+    expect(within(tr).getByText("개수 확인")).toBeInTheDocument();
+    expect(within(tr).getByText("PI-CAM2")).toBeInTheDocument();
+
+    await userEvent.type(screen.getByTestId("filter-cam"), "PI-CAM2");
+    await userEvent.selectOptions(screen.getByTestId("filter-stage"), "CRATE_COUNT");
+    await userEvent.click(screen.getByTestId("apply-filters"));
+    await waitFor(() => {
+      const lastCall = fetchInspections.mock.calls.at(-1)?.[0];
+      expect(lastCall).toMatchObject({ cam_id: "PI-CAM2", stage: "CRATE_COUNT" });
     });
   });
 

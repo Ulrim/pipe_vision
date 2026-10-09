@@ -393,10 +393,17 @@ CREATE TABLE sys_log (
 | `POST_WASH_SURFACE` | `OIL`/`DIS`/`SCR` 만 | 표면 검사 |
 | `CRATE_COUNT` | `COUNT` 만 (`count_bundle`, 행 1건) | 개수 확인 |
 
-한 모드 안에서는 `MULTI` 가 날 수 없다(길이 모드 LEN 하나뿐). 모드는 스테이션
-env `AIVIS_INSPECTION_STAGE` 가 기본이고, `active_order.inspection_stage` 가 있으면
-그것이 우선한다(HMI 오더 설정 → `PUT /master/active/stage`, 작업자 권한, 워커 15s
-폴링으로 재시작 없이 전환). HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
+한 모드 안에서는 `MULTI` 가 날 수 없다(길이 모드 LEN 하나뿐). 모드 우선순위는
+**스테이션별 `station_config.inspection_stage` > 전역 `active_order.inspection_stage` >
+스테이션 env `AIVIS_INSPECTION_STAGE`** 다(HMI 오더 설정 → `PUT /master/active/stage`
+에 `cam_id` 를 주면 그 스테이션만, 비우면 전역; 작업자 권한; 워커는 자기
+`AIVIS_CAM_ID` 로 `GET /master/active?cam_id=` 를 15s 폴링해 재시작 없이 전환).
+**2대 구성(2026-10-08 도입기업 확인: 파이+카메라 최소 2대)** 에서는 1호기=길이,
+2호기=개수처럼 라인마다 모드가 다르므로 전역만 있으면 한 화면의 조작이 두 대를
+같이 바꾼다 — 그래서 스테이션 단위를 둔다. HMI 는 `?cam=` 로 자기 카메라의
+결과·알람·하트비트만 받고, 하트비트는 카메라별로 기록되어 모니터에 스테이션마다
+한 줄씩 나온다. KPI 는 `CRATE_COUNT` 행(크레이트 1판)을 제품 수에서 뺀다. 절차는
+`docs/OPERATIONS_PI.md` §10. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
 (허용 −0.10)", "유분기 0.62 > 기준 0.40", "개수 18 / 기준 20 (−2)".
 
 ### 7.3 MES 연계 인터페이스 (`docs/MES_INTERFACE.md`)

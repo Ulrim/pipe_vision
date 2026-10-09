@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import type { SystemStatus } from "@/api/endpoints";
+import type { SystemStatus, WorkerState, WorkerStatus } from "@/api/endpoints";
 import { fetchSystemStatus } from "@/api/endpoints";
 import { fmtDateTime, fmtNum } from "@/lib/format";
+import { stageLabel } from "@/lib/stage";
 
 /** 자동 갱신 주기(ms) — 현장 장비 감시용 짧은 폴링. */
 export const REFETCH_MS = 5000;
@@ -69,10 +70,34 @@ export interface StatusLabel {
 }
 
 /** 워커 상태 → 기호+한국어 라벨. */
-export function workerStatusLabel(s: SystemStatus["services"]["worker"]): StatusLabel {
+export function workerStatusLabel(s: WorkerState): StatusLabel {
   if (s === "up") return { sev: "ok", symbol: SEV_SYMBOL.ok, text: "정상" };
   if (s === "stale") return { sev: "warn", symbol: SEV_SYMBOL.warn, text: "응답 지연" };
   return { sev: "danger", symbol: SEV_SYMBOL.danger, text: "정지" };
+}
+
+/**
+ * 스테이션이 여럿이면 **가장 나쁜 쪽**이 대표다(2대 구성).
+ * 서버의 단일 `worker` 필드는 "가장 최근에 응답한 한 대" 기준이라 한 대가
+ * 죽어도 "정상" 이 나온다 — 그걸 그대로 쓰면 모니터가 거짓말을 한다.
+ * 하트비트가 아직 없으면(빈 배열) 종전 단일 필드로 돌아간다.
+ */
+export function fleetWorkerLabel(
+  single: WorkerState,
+  workers: WorkerStatus[] | undefined,
+): StatusLabel {
+  const list = workers ?? [];
+  if (list.length <= 1) return workerStatusLabel(single);
+  const down = list.filter((w) => w.state === "down").length;
+  const stale = list.filter((w) => w.state === "stale").length;
+  const n = list.length;
+  if (down > 0) {
+    return { sev: "danger", symbol: SEV_SYMBOL.danger, text: `정지 ${down}/${n}대` };
+  }
+  if (stale > 0) {
+    return { sev: "warn", symbol: SEV_SYMBOL.warn, text: `응답 지연 ${stale}/${n}대` };
+  }
+  return { sev: "ok", symbol: SEV_SYMBOL.ok, text: `정상 ${n}대` };
 }
 
 /** DB 상태 → 기호+한국어 라벨(워커와 동일 규칙). */
@@ -183,7 +208,8 @@ export function MonitorPage(): JSX.Element {
 
 function MonitorBody({ status }: { status: SystemStatus }): JSX.Element {
   const { system: sys, services: svc, inspection: insp, active_order: order } = status;
-  const worker = workerStatusLabel(svc.worker);
+  const workers = svc.workers ?? [];
+  const worker = fleetWorkerLabel(svc.worker, workers);
   const db = dbStatusLabel(svc.db);
   const tempSev = cpuTempSeverity(sys.cpu_temp_c);
 
@@ -203,7 +229,7 @@ function MonitorBody({ status }: { status: SystemStatus }): JSX.Element {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatusCard
           testid="svc-worker"
-          title="검사 워커"
+          title={workers.length > 1 ? `검사 워커 (${workers.length}대)` : "검사 워커"}
           label={worker}
           sub={
             svc.worker_last_seen_s === null
@@ -232,6 +258,51 @@ function MonitorBody({ status }: { status: SystemStatus }): JSX.Element {
           }
         />
       </div>
+
+      {/* 스테이션별 — 2대 구성(컨베이어 길이 / 크레이트 개수). 한 대가 죽어도
+          위 요약이 가릴 수 있으므로 대수와 무관하게 한 줄씩 다 보여준다. */}
+      {workers.length > 0 && (
+        <div className="card p-4" data-testid="station-list">
+          <h2 className="mb-3 font-semibold">스테이션 (카메라별)</h2>
+          <table className="w-full text-sm">
+            <thead className="text-left text-slate-500">
+              <tr>
+                <th className="px-2 py-1 font-medium">스테이션</th>
+                <th className="px-2 py-1 font-medium">상태</th>
+                <th className="px-2 py-1 font-medium">검사 모드</th>
+                <th className="px-2 py-1 font-medium">마지막 응답</th>
+              </tr>
+            </thead>
+            <tbody>
+              {workers.map((w) => {
+                const lab = workerStatusLabel(w.state);
+                return (
+                  <tr
+                    key={w.cam_id}
+                    className="border-t border-slate-100"
+                    data-testid={`station-${w.cam_id}`}
+                    data-state={w.state}
+                  >
+                    <td className="px-2 py-1.5 font-semibold">{w.cam_id}</td>
+                    <td className="px-2 py-1.5">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-bold ${SEV_BADGE[lab.sev]}`}
+                      >
+                        {lab.symbol && <span aria-hidden="true">{lab.symbol}</span>}
+                        <span>{lab.text}</span>
+                      </span>
+                    </td>
+                    <td className="px-2 py-1.5">{stageLabel(w.stage)}</td>
+                    <td className="px-2 py-1.5 tabular-nums text-slate-600">
+                      {w.last_seen_s === null ? "기록 없음" : `${fmtNum(w.last_seen_s, 0)}초 전`}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* 시스템 자원 */}
       <div className="card p-4">

@@ -25,7 +25,7 @@ const base: SystemStatus = {
     disk_percent: 37,
     throttled: false,
   },
-  services: { db: "up", worker: "up", worker_last_seen_s: 3 },
+  services: { db: "up", worker: "up", worker_last_seen_s: 3, workers: [] },
   inspection: {
     last_hour: { total: 420, ng: 7, ng_rate_pct: 1.67 },
     today: { total: 3150, ng: 41, ng_rate_pct: 1.3 },
@@ -98,7 +98,7 @@ describe("MonitorPage — 정상 응답", () => {
 describe("MonitorPage — 워커/DB 상태 표기(기호+문자, 색 단독 금지)", () => {
   it("worker=stale 이면 '응답 지연' 문자가 보인다", async () => {
     fetchSystemStatus.mockResolvedValue(
-      statusWith({ services: { db: "up", worker: "stale", worker_last_seen_s: 47 } }),
+      statusWith({ services: { db: "up", worker: "stale", worker_last_seen_s: 47, workers: [] } }),
     );
     renderApp(<MonitorPage />);
     const worker = await screen.findByTestId("svc-worker");
@@ -109,7 +109,7 @@ describe("MonitorPage — 워커/DB 상태 표기(기호+문자, 색 단독 금�
 
   it("worker=down 이면 '정지' 문자가 보인다", async () => {
     fetchSystemStatus.mockResolvedValue(
-      statusWith({ services: { db: "down", worker: "down", worker_last_seen_s: null } }),
+      statusWith({ services: { db: "down", worker: "down", worker_last_seen_s: null, workers: [] } }),
     );
     renderApp(<MonitorPage />);
     const worker = await screen.findByTestId("svc-worker");
@@ -240,6 +240,49 @@ describe("MonitorPage — 오류/예외 상태", () => {
 });
 
 describe("MonitorPage 표시 헬퍼", () => {
+  it("2대 구성: 한 대가 죽으면 요약은 '정지 1/2대', 스테이션 표에 각각 보인다", async () => {
+    fetchSystemStatus.mockResolvedValue(
+      statusWith({
+        services: {
+          db: "up", worker: "up", worker_last_seen_s: 2,   // 서버 단일 필드는 최근 1대 기준 → up
+          workers: [
+            { cam_id: "PI-CAM1", state: "up", last_seen_s: 2, stage: "CUT_LENGTH" },
+            { cam_id: "PI-CAM2", state: "down", last_seen_s: 95, stage: "CRATE_COUNT" },
+          ],
+        },
+      }),
+    );
+    renderApp(<MonitorPage />);
+    const worker = await screen.findByTestId("svc-worker");
+    expect(worker).toHaveTextContent("정지 1/2대");
+    expect(worker).toHaveTextContent("✕");
+    const list = screen.getByTestId("station-list");
+    const cam1 = within(list).getByTestId("station-PI-CAM1");
+    const cam2 = within(list).getByTestId("station-PI-CAM2");
+    expect(cam1).toHaveTextContent("정상");
+    expect(cam1).toHaveTextContent("길이 검사");
+    expect(cam1).toHaveTextContent("2초 전");
+    expect(cam2).toHaveTextContent("정지");
+    expect(cam2).toHaveTextContent("개수 확인");
+    expect(cam2).toHaveAttribute("data-state", "down");
+  });
+
+  it("스테이션이 하나뿐이면 요약은 종전 단일 표기(정상)를 유지한다", async () => {
+    fetchSystemStatus.mockResolvedValue(
+      statusWith({
+        services: {
+          db: "up", worker: "up", worker_last_seen_s: 1,
+          workers: [{ cam_id: "PI-CAM1", state: "up", last_seen_s: 1, stage: null }],
+        },
+      }),
+    );
+    renderApp(<MonitorPage />);
+    const worker = await screen.findByTestId("svc-worker");
+    expect(worker).toHaveTextContent("정상");
+    expect(worker.textContent).not.toContain("대");
+    expect(screen.getByTestId("station-PI-CAM1")).toHaveTextContent("-"); // 모드 미상
+  });
+
   it("relativeTimeKo — 초/분/시간/일 단위", () => {
     const now = new Date("2026-08-29T09:00:00Z").getTime();
     expect(relativeTimeKo("2026-08-29T08:59:30Z", now)).toBe("30초 전");

@@ -48,6 +48,11 @@ export interface OrderSetupProps {
   currentStage?: string | null;
   /** 모드 전환 성공 콜백(테스트/상위 표시용). */
   onStageChanged?: (stage: InspectionStage) => void;
+  /**
+   * 이 화면이 고정된 스테이션(`?cam=`). 있으면 모드 전환은 **그 카메라만**
+   * 바꾼다. 없으면 전역(모든 스테이션) — 단일 구성과 같다.
+   */
+  camId?: string | null;
 }
 
 /** 서버(ItemSpecUpdate)와 같은 규칙. 통과하면 저장 버튼이 열린다. */
@@ -73,6 +78,7 @@ export function OrderSetup({
   onSaved,
   currentStage,
   onStageChanged,
+  camId = null,
 }: OrderSetupProps) {
   // 모드 전환은 저장 2단계와 별개의 즉시 동작이다 — 카메라를 다른 자리로
   // 돌려 세운 작업자가 바로 모드를 맞춰야 하기 때문. 대신 현재 모드를 크게
@@ -84,7 +90,7 @@ export function OrderSetup({
     setStageBusy(next);
     setStageError(null);
     try {
-      await setActiveStage(item.item_code, next);
+      await setActiveStage(item.item_code, next, camId);
       setStageDone(next);
       onStageChanged?.(next);
     } catch (e) {
@@ -184,7 +190,18 @@ export function OrderSetup({
             data-current={shownStage ?? ""}
           >
             <div className="mb-2 flex items-baseline justify-between">
-              <span className="text-hmi-body font-bold text-gray-600">검사 모드</span>
+              <span className="text-hmi-body font-bold text-gray-600">
+                검사 모드
+                {/* 2대 구성: 어느 범위가 바뀌는지 먼저 말한다 — 길이 라인 화면에서
+                    누른 버튼이 크레이트 라인까지 바꾸면 사고다. */}
+                <span
+                  className="ml-2 text-hmi-cap font-semibold text-gray-500"
+                  data-testid="stage-scope"
+                  data-scope={camId ? "station" : "global"}
+                >
+                  {camId ? `이 스테이션(${camId})만` : "모든 스테이션"}
+                </span>
+              </span>
               <span className="text-hmi-cap font-semibold text-gray-500">
                 {stageDone ? "저장됨 — 워커가 15초 내 전환" : "누르면 바로 바뀝니다"}
               </span>
