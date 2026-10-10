@@ -568,17 +568,28 @@ def compute_kpi(rows: Sequence[Inspection], period: str, manual: KpiManual | Non
 
     - 공정불량률(ppm) = NG ÷ 총검사 × 1,000,000
     - 검사불량률(%) = (오검 + 미검) ÷ 총검사 × 100
-      오검 = manual_verdict 입력 & ≠ final_verdict, 미검 = review_flag & manual 미입력
+      오검 = AI NG 인데 사람이 OK, 미검 = AI OK 인데 사람이 NG
+      (2026-10-10 점검 보완 — 종전엔 '재확인 안 한 건' 을 미검으로 셌다. 그것은
+       재확인 대기이지 판정 오류가 아니다. 백엔드와 같이 고쳤다.)
     - 자동검사율(%) = final_verdict 존재 ÷ 총검사 × 100
     - 저장&MES 연계율(%) = mes_synced ÷ 저장 × 100
+    - 개수 확인(CRATE_COUNT) 행은 크레이트 1판이라 제품 지표에서 뺀다(저장·연계엔 포함).
     """
-    total = len(rows)
-    defect = sum(1 for r in rows if r.final_verdict == "NG")
-    auto = sum(1 for r in rows if r.final_verdict)
-    misjudge = sum(1 for r in rows if r.manual_verdict is not None and r.manual_verdict != r.final_verdict)
-    miss = sum(1 for r in rows if r.review_flag and r.manual_verdict is None)
-    synced = sum(1 for r in rows if r.mes_synced)
-    times = [r.proc_time_ms for r in rows if r.proc_time_ms is not None]
+    all_rows = list(rows)
+    prod = [r for r in all_rows if getattr(r, "inspection_stage", None) != "CRATE_COUNT"]
+
+    def _mv(r) -> str | None:
+        v = r.manual_verdict
+        return None if v is None else str(getattr(v, "value", v)).upper()
+
+    total = len(prod)
+    defect = sum(1 for r in prod if r.final_verdict == "NG")
+    auto = sum(1 for r in prod if r.final_verdict)
+    misjudge = sum(1 for r in prod if r.final_verdict == "NG" and _mv(r) == "OK")
+    miss = sum(1 for r in prod if r.final_verdict == "OK" and _mv(r) == "NG")
+    pending = sum(1 for r in prod if r.review_flag and _mv(r) is None)
+    synced = sum(1 for r in all_rows if r.mes_synced)
+    times = [r.proc_time_ms for r in prod if r.proc_time_ms is not None]
     avg_ms = (sum(times) / len(times)) if times else None
     return {
         "schema_version": SCHEMA_VERSION,
@@ -590,10 +601,11 @@ def compute_kpi(rows: Sequence[Inspection], period: str, manual: KpiManual | Non
         "auto_inspection_rate_pct": round(_rate(auto, total, 100.0), 3),
         "misjudge_count": misjudge,
         "miss_count": miss,
+        "pending_review_count": pending,
         "inspection_defect_rate_pct": round(_rate(misjudge + miss, total, 100.0), 3),
-        "stored_count": total,
+        "stored_count": len(all_rows),
         "mes_synced_count": synced,
-        "storage_mes_rate_pct": round(_rate(synced, total, 100.0), 3),
+        "storage_mes_rate_pct": round(_rate(synced, len(all_rows), 100.0), 3),
         "avg_proc_time_ms": round(avg_ms, 2) if avg_ms is not None else None,
         "claim_count": manual.claim_count if manual else None,
         "workload_index": _num(manual.workload_index) if manual else None,

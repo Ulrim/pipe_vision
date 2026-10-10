@@ -57,6 +57,14 @@ describe("HmiHeader (상단 상태 바)", () => {
     expect(h).toHaveAttribute("data-tone", "warn");
   });
 
+  it("센서 트리거 대기(제품 없음)는 '제품 대기' — 미검출 경고가 아니다", () => {
+    setStatus({ detected: 0, waiting: true });
+    render(<HmiHeader />);
+    const h = screen.getByTestId("header-health");
+    expect(h).toHaveTextContent("제품 대기");
+    expect(h).toHaveAttribute("data-tone", "idle");
+  });
+
   it("취득 오류가 오면 이상 상태로 표기한다", () => {
     setStatus({ error: "camera timeout" });
     render(<HmiHeader />);

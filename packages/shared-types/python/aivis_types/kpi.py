@@ -55,10 +55,12 @@ class KpiSummary(BaseModel):
     )
 
     misjudge_count: int = Field(
-        ..., ge=0, description="오검수량(AI 판정 ≠ 작업자 재확인 판정)"
+        ..., ge=0,
+        description="오검수량 = AI 가 NG 라 했는데 사람이 다시 보니 OK(과검출)",
     )
     miss_count: int = Field(
-        ..., ge=0, description="미검수량(재확인 대상 review_flag 중 manual 미입력)"
+        ..., ge=0,
+        description="미검수량 = AI 가 OK 라 했는데 사람이 다시 보니 NG(놓친 불량)",
     )
     inspection_defect_rate_pct: float = Field(
         ..., description="검사불량률(%) = (오검+미검)/총검사 × 100"
@@ -72,6 +74,27 @@ class KpiSummary(BaseModel):
 
     avg_proc_time_ms: Optional[float] = Field(
         None, description="평균 처리속도(ms). 목표 ≤ 300ms/ea"
+    )
+
+    # 2026-10-10 점검 보완 — 판정 품질을 나눠 본다.
+    pending_review_count: Optional[int] = Field(
+        None, ge=0,
+        description="재확인 대기(재확인 대상인데 아직 사람이 안 봄). 미검이 아니다",
+    )
+    audited_count: Optional[int] = Field(
+        None, ge=0, description="사람이 재확인한 건수(오검·미검을 알 수 있는 표본)"
+    )
+    misjudge_rate_pct: Optional[float] = Field(None, description="오검률(%) = 오검/총검사")
+    miss_rate_pct: Optional[float] = Field(None, description="미검률(%) = 미검/총검사")
+    # MES 연계를 무엇으로 셌는지 — table=스테이징 적재, rest=실제 MES 응답,
+    # rest_fake=가짜 전송(시험용 — 인수 증빙 아님).
+    mes_mode: Optional[str] = Field(None, description="table | rest | rest_fake")
+    mes_consumed_count: Optional[int] = Field(
+        None, ge=0,
+        description="MES 가 실제로 받아갔음이 확인된 건수(table: consumed, rest: 실 응답)",
+    )
+    claim_count_ytd: Optional[int] = Field(
+        None, ge=0, description="Claim 연 누계(해당 연도 1월~해당 월, 수기 입력 합)"
     )
 
     # 비자동 입력(있으면 함께 노출)

@@ -104,7 +104,12 @@ export function buildKpiGauges(
     shipment_leak_ppm: s.shipment_leak_ppm,
     inspection_defect_rate_pct: s.inspection_defect_rate_pct,
     auto_inspection_rate_pct: s.auto_inspection_rate_pct,
-    storage_mes_rate_pct: s.storage_mes_rate_pct,
+    // 가짜 MES 전송으로 센 연계율은 게이지로 그리지 않는다(증빙 아님).
+    storage_mes_rate_pct: s.mes_mode === "rest_fake" ? null : s.storage_mes_rate_pct,
+    // 수기 KPI — 입력이 있을 때만 게이지(없으면 0 = 합격으로 오독된다).
+    claim_count_ytd: s.claim_count_ytd,
+    lead_time_days: s.lead_time_days,
+    workload_index: s.workload_index,
   };
   const unit: Record<string, string> = {
     process_defect_ppm: "ppm",
@@ -112,6 +117,9 @@ export function buildKpiGauges(
     inspection_defect_rate_pct: "%",
     auto_inspection_rate_pct: "%",
     storage_mes_rate_pct: "%",
+    claim_count_ytd: "건",
+    lead_time_days: "일",
+    workload_index: "",
   };
   const out: KpiGaugeSpec[] = [];
   for (const t of targets) {

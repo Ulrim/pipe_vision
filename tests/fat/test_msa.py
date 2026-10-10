@@ -34,7 +34,10 @@ def msa_result(tmp_path_factory):
         img, item, repeats=_REPEATS, appraiser_insets=[0.05, 0.06, 0.07]
     )
     payload = {
-        "title": "AIVIS MSA 분석 결과서 (길이 반복성/재현성, §5 M3)",
+        # 2026-10-10 점검: "같은 합성 이미지 1장을 30번 돌려 %GR&R 0%" 를 MSA 결과서로
+        # 냈다는 지적. 맞다 — 이것은 알고리즘 결정성 확인이지 MSA 가 아니다. 제목부터
+        # 그렇게 적는다. 실물 MSA 는 vision.tools.run_msa(실제 촬영).
+        "title": "AIVIS 길이 측정 결정성 확인 (합성 — MSA 결과서 아님)",
         "dataset_source": "synthetic OK 샘플 1장 반복 측정",
         "sample_count": 1,
         "overall_passed": res.passed,
@@ -49,7 +52,9 @@ def msa_result(tmp_path_factory):
         "msa": res.as_dict(),
         "notes": [
             f"동일 샘플 {_REPEATS}회 × {res.appraisers}조건 반복 측정.",
-            "파이프라인 결정성으로 반복성(EV)이 0 에 수렴 → 측정시스템 우수.",
+            "파이프라인 결정성으로 반복성(EV)이 0 — 같은 입력이면 같은 출력(회귀 확인용).",
+            "측정시스템 능력(실제 %GR&R)은 실물 부품·실제 카메라로만 확인된다: "
+            "python -m vision.tools.run_msa (docs/LENGTH_TOLERANCE.md).",
             "재현성(AV)은 surface_inset_ratio 조건 변동에 대한 길이측정 안정성.",
         ],
     }

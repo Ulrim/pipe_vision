@@ -347,6 +347,7 @@ bash scripts/aivis.sh
    3) 재시작               4) 상태 보기
    5) 실시간 모니터        6) 프로그램 업데이트
    7) 로그 보기            8) 접속 주소 표시
+   9) 검사 DB 백업(지금)
    0) 종료
 ```
 번호를 누르고 Enter 만 치면 된다. 명령을 직접 쓰고 싶으면:
@@ -359,6 +360,7 @@ bash scripts/aivis.sh status     # 상태 1회 요약
 bash scripts/aivis.sh monitor    # 실시간 모니터 (Ctrl+C 로 종료)
 bash scripts/aivis.sh logs       # 로그 실시간 보기 (Ctrl+C 로 종료)
 bash scripts/aivis.sh urls       # 사무실 PC 접속 주소
+bash scripts/aivis.sh backup     # 검사 DB 백업(§11-3)
 ```
 
 부팅 자동시작을 등록했으면 systemd 로, 안 했으면 백그라운드 직접 실행으로
@@ -858,4 +860,98 @@ sudo mkdir -p /var/lib/aivis/spool && sudo chown pi:pi /var/lib/aivis/spool
 검사수량에 섞이면 분모가 틀어지므로 KPI 는 `CRATE_COUNT` 행을 제외한다. 저장·MES
 연계율에는 포함한다(그 행도 저장은 되어야 하므로). 이력 화면에서 `검사 모드 = 개수
 확인` 으로 걸면 크레이트 행만 따로 본다.
+
+---
+
+## 11. 현장 입출력 — 근접센서 트리거 · 경광등/부저 · DB 백업
+
+> 2026-10-10 개발 진척 점검 보완. 결선(배선·센서·릴레이 구매)은 도입기업 몫이고,
+> 아래는 **소프트웨어가 준비한 것과 켜는 법**이다. 핀 번호는 모두 **BCM** 번호다
+> (헤더의 물리 핀 번호가 아니다 — `pinout` 명령으로 확인).
+
+### 11-1. 근접센서로 찍기 (타이머 대신)
+
+기본은 1.5초마다 찍는 타이머다. 컨베이어에 근접센서(광전/유도형)를 달면 **제품이
+왔을 때만** 찍는다. 빈 컨베이어를 찍어 '미검출' 을 쏟아내지 않고, 같은 제품을 두 번
+찍지도 않는다(센서가 꺼졌다 다시 켜져야 다음 촬영).
+
+```bash
+# /etc/aivis/worker.env (또는 독립형이면 /etc/aivis/standalone.env)
+AIVIS_TRIGGER=gpio
+AIVIS_TRIGGER_GPIO=17            # 센서 신호선을 물린 BCM 핀
+AIVIS_TRIGGER_ACTIVE_LOW=true    # NPN(감지 시 GND) 센서. PNP 면 false
+AIVIS_TRIGGER_SETTLE_MS=150      # 감지 후 촬영까지 대기 — 멈춘 뒤 찍는다(롤링 셔터)
+```
+
+- **배선**: 24V 센서를 파이 GPIO(3.3V)에 **직접 물리면 안 된다.** 포토커플러/레벨
+  변환 모듈을 거친다. NPN 센서 + 풀업이면 감지 시 LOW.
+- **SETTLE_MS**: 컨베이어가 멈추고 진동이 가라앉는 시간에 맞춘다. 파이 카메라는 롤링
+  셔터라 움직이는 중에 찍으면 상이 기울어 길이가 틀어진다(부록 A.1.1).
+- 제품이 안 오는 동안 화면에는 **'제품 대기'**(무채색)로 뜬다. 이상이 아니다.
+  5초(`AIVIS_TRIGGER_IDLE_S`)마다 대기 하트비트를 보내 '정지' 로 오인되지 않는다.
+- 파이가 아니거나 gpiozero 가 없으면 워커 로그에 안내가 찍힌다:
+  `sudo apt install -y python3-gpiozero python3-lgpio`.
+
+### 11-2. 경광등 · 부저
+
+| 판정 | 출력 |
+|---|---|
+| OK | 녹색 켬 |
+| NG | 적색 켬 + 부저 짧게(0.4초) |
+| 연속 NG(기본 3회) | 적색 + 부저 **계속** — 다음 OK 까지(공정 이상 신호) |
+| 카메라 취득 실패 | 황색 켬(다음 정상 사이클에 꺼짐) |
+
+```bash
+AIVIS_TOWER_RED=23
+AIVIS_TOWER_GREEN=24
+AIVIS_TOWER_YELLOW=25
+AIVIS_TOWER_BUZZER=26
+AIVIS_TOWER_ACTIVE_LOW=true      # 릴레이 모듈이 LOW 에서 켜지면(대부분의 파이용 릴레이 보드)
+AIVIS_TOWER_CONSEC_NG=3
+AIVIS_TOWER_BUZZ_MS=400
+```
+
+- 경광등은 **파이가 직접** 울린다 — 서버(1호기)나 네트워크가 끊겨도 현장 경보는 산다.
+- 24V 경광등은 반드시 **릴레이 모듈**을 거친다(파이 GPIO 는 3.3V·수 mA).
+- 핀을 하나도 안 적으면 아무것도 하지 않는다. 릴레이가 고장 나도 검사는 멈추지 않는다
+  (로그에 경고만).
+
+### 11-3. 검사 DB 백업 (독립형)
+
+검사 이력·기준정보·감사 로그가 전부 `/var/lib/aivis/db/aivis.db` 한 파일에 있다.
+**SD 카드가 죽으면 전부 잃는다.**
+
+```bash
+bash scripts/aivis.sh backup     # 지금 1회 (검사 중에도 안전)
+```
+
+매일 새벽 자동:
+
+```bash
+sudo cp /opt/aivis/deploy/aivis-backup.service /opt/aivis/deploy/aivis-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now aivis-backup.timer
+systemctl list-timers aivis-backup.timer      # 다음 실행 시각 확인
+```
+
+- 기본 보관: `/var/lib/aivis/backups`, 최근 14개(`AIVIS_BACKUP_KEEP`).
+  **SD 카드 고장 대비로 USB 메모리/NAS 로 바꾼다**: 서비스 파일의
+  `AIVIS_BACKUP_DIR=/media/usb/aivis-backups`.
+- 백업은 sqlite 백업 API 로 뜨고, 사본을 다시 열어 무결성 검사(`integrity_check`)가
+  ok 일 때만 남긴다.
+- 복원: `bash scripts/aivis.sh stop` → `gunzip -c <백업>.db.gz > /var/lib/aivis/db/aivis.db`
+  → `bash scripts/aivis.sh start`.
+- 사진(`/var/lib/aivis/images`)은 백업 대상이 아니다(용량). 보관기한 정리 규칙을 따른다.
+
+### 11-4. KPI 목표 기준 — 계획값 / 협약값
+
+점검 보고서가 "개발지침 목표(600ppm·30%)와 협약 성과지표(1,000ppm·40%·Claim 3·
+리드타임 6일)가 다르다" 고 지적했다. 시스템은 둘 다 갖고 있고 한 줄로 바꾼다:
+
+```bash
+AIVIS_KPI_PROFILE=contract     # 기본 plan(사업계획서·개발지침)
+```
+
+`contract` 값은 10/10 점검 보고서에 적힌 값이다 — **협약서 원문과 대조한 뒤** 켠다.
+값이 다르면 `AIVIS_KPI_TARGET_INSPECTION_PCT=…` 처럼 항목별로 덮어쓴다. 월간 리포트와
+KPI 화면에 "목표 기준" 과 "구축 전" 열이 함께 나간다.
 

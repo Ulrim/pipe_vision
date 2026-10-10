@@ -9,7 +9,7 @@ import os
 
 from dataclasses import dataclass, field
 import math
-from typing import Dict, Sequence
+from typing import Dict, Optional, Sequence
 
 from aivis_types import ItemMaster
 
@@ -126,9 +126,19 @@ class LatencyReport:
     mean_ms: float
     over_300_count: int
     passed: bool
+    #: 측정 구간. §1.2 정의는 "이미지 취득~결과 저장" — acquire_to_save.
+    #: (2026-10-10 점검 전에는 판정 구간만 재서 짧게 나왔다.)
+    scope: str = "acquire_to_save"
+    #: 단계별 평균 ms {read_ms, infer_ms, save_ms}.
+    breakdown: dict = field(default_factory=dict)
+    #: 참고: 판정(파이프라인)만의 백분위 — 종전 지표와 비교용. 판정에 쓰지 않는다.
+    infer_only: Optional[dict] = None
 
     def as_dict(self) -> dict:
         return {
+            "scope": self.scope,
+            "breakdown_mean_ms": {k: round(v, 3) for k, v in self.breakdown.items()},
+            "infer_only": self.infer_only,
             "count": self.count,
             "p50_ms": round(self.p50_ms, 3),
             "p95_ms": round(self.p95_ms, 3),

@@ -82,12 +82,16 @@
 ## KPI (§5 M12, §1.1 — 산출식 그대로)
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
-| GET | `/kpi/summary?period=YYYY-MM` | operator+ | 월별 자동 산출 → `KpiSummary` |
+| GET | `/kpi/summary?period=YYYY-MM` | operator+ | 월별 자동 산출 → `KpiSummary`. 2026-10-10 추가 필드: `pending_review_count`(재확인 대기), `audited_count`(사람이 재확인한 표본), `misjudge_rate_pct`/`miss_rate_pct`, `mes_mode`(table\|rest\|rest_fake\|rest_unconfigured), `mes_consumed_count`(MES 수신 확인), `claim_count_ytd`(Claim 연 누계) |
+| GET | `/kpi/targets` | operator+ | 목표표(리포트·화면 단일 출처). 행마다 `baseline_value`(구축 전), `profile`(plan\|contract). 수기 KPI 목표(`claim_count_ytd`·`lead_time_days`·`workload_index`) 포함 |
 | POST | `/kpi/manual` | quality+ | 작업공수/리드타임/Claim upsert |
 | GET | `/kpi/report?period=&fmt=pdf\|xlsx` | quality+ | 월간 리포트 **파일** 생성(PDF=reportlab / XLSX=openpyxl). `attachment` 다운로드. `period` 미지정 시 당월 |
 
 ### 월간 품질 리포트 내용 (M12, GET /kpi/report)
 - §1.1 KPI: 공정불량률(ppm) / 검사불량률(%) / 자동검사율(%) / 저장·MES 연계율(%) / 평균 처리속도(ms) / 총·불량 수량.
+- 2026-10-10 점검 보완: 오검·미검 **분리**(건수·비율), 재확인 대기·재확인 표본 수, MES 연계 방식·수신 확인 건수,
+  Claim 연 누계·리드타임·작업공수 지수, 목표표에 **구축 전** 열과 **목표 기준**(plan=사업계획서·개발지침 /
+  contract=협약 성과지표). 가짜 MES 전송(`rest_fake`)으로 센 연계율은 "가짜 전송 — 증빙 아님" 으로 적고 판정보류.
 - 불량유형별 집계(`defect_codes` 배열 카운트, §7.2 코드).
 - 일자별 검사수/불량수 표.
 - 응답: `Content-Type` = `application/pdf` 또는 xlsx MIME, `Content-Disposition: attachment; filename="aivis_kpi_YYYY-MM.{ext}"`.
@@ -97,18 +101,27 @@
 산출식(§1.1):
 - 공정불량률(ppm) = (final_verdict=NG 수 ÷ 총 검사수) × 1,000,000
 - 검사불량률(%) = (오검 + 미검) ÷ 총 검사수 × 100
-  - 오검 = manual_verdict 입력됨 AND ≠ final_verdict
-  - 미검 = review_flag=true AND manual_verdict 미입력
+  - 오검(과검출) = final_verdict=NG AND manual_verdict=OK
+  - 미검(놓친 불량) = final_verdict=OK AND manual_verdict=NG — AI 가 OK 라 한 것도 일부 재확인(표본 감사)해야 알 수 있다
+  - 재확인 대기 = review_flag=true AND manual_verdict 미입력 — **판정 오류가 아니므로 검사불량률에 넣지 않는다**
+  - (2026-10-10 정의 수정: 종전에는 재확인 대기를 미검으로, AI OK→사람 NG 를 오검으로 셌다)
+- 개수 확인(CRATE_COUNT) 행은 제품 지표에서 제외(크레이트 1판), 저장·연계율에는 포함
 - 자동검사율(%) = final_verdict 존재 수 ÷ 총 검사대상 × 100
 - 저장&MES 연계율(%) = mes_synced 수 ÷ 전체 검사 × 100
-- avg_proc_time_ms = 평균 처리속도(목표 ≤ 300ms/ea)
+- avg_proc_time_ms = 평균 처리속도(목표 ≤ 300ms/ea). 행의 `proc_time_ms` 는 **이미지 취득 시작 ~ 원본·결과 이미지 저장 완료**
+  (§1.2 정의, 2026-10-10 — 종전엔 판정 구간만). 다발(한 장 N개)은 1개당 = 프레임 전체 ÷ N. 단계별 분해는 하트비트 `timings`
+- 목표값: `AIVIS_KPI_PROFILE=plan`(기본, CLAUDE.md §1.1: 600ppm·30%·Claim 2·리드타임 5일·공수 50) | `contract`(10/10 점검 보고서 기재 협약값:
+  검사불량률 40%·Claim 3·리드타임 6일 — **협약서 원문과 대조 후 사용**). 개별 `AIVIS_KPI_TARGET_*` 가 그 위에 덮인다.
+  구축 전 기준값 `AIVIS_KPI_BASELINE_PROCESS_PPM/_LEAK_PPM/_CLAIM/_LEAD_DAYS/_WORKLOAD`(기본 2000/2000/5/7/100)
 
 ## 로그 / MES / 실시간
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
 | POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
-| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
+| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `timings{grab_ms, infer_ms, save_ms, total_ms, per_ea_ms, n, post_ms}`(단계별 처리시간), `waiting`(센서 트리거 대기 — 제품 없음, 촬영 안 함), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
+| GET | `/inspection/stats?item=&from=&to=&cam_id=&stage=` | operator+ | 통계 **서버 집계**(2026-10-10): `{total, ng, by_code[{code,count}], monthly[{month(KST), total, ng, defect_rate_pct}]}`. 대시보드 통계 화면용 — 종전 행 5,000건 요청이 목록 상한 2,000건을 넘어 실패하던 버그 수정 |
+| GET | `/inspection/lot-summary?lot=&require=` | operator+ | **LOT 종합 판정**(2026-10-10): 모드(스테이션)별 결과를 LOT 단위로 합친다. `final_verdict` = NG(어느 모드든 NG 1건↑) \| INCOMPLETE(NG 없음 + 거쳐야 할 모드 결과 없음) \| OK \| NONE. `require` 미지정 시 스테이션 설정의 모드 전부. `reasons` 에 모드별 수치("길이 검사 NG 1개 / 20개 (LEN 1)") |
 | GET | `/inspection?…&cam_id=&stage=` | operator+ | 이력 조회 필터에 스테이션(`cam_id`)·검사 모드(`stage`, 대소문자 무관) 추가. KPI `/kpi/summary` 는 `CRATE_COUNT` 행(크레이트 1판 = 제품 아님)을 공정불량률·검사수량에서 **제외**하고 저장·연계율에는 포함한다 |
 | WS | `/ws/live?token=<JWT>` | 로그인 | 검사결과/알람 실시간 푸시. `token` 쿼리에 JWT 필요(무효/누락 시 accept 전 `1008` close). 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |

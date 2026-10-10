@@ -12,7 +12,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import Text, cast, select
 from sqlalchemy.orm import Session
 
 from aivis_types import (
@@ -79,6 +79,11 @@ class BatchStatus(BaseModel):
     stage: Optional[str] = None  # 지금 돌고 있는 검사 모드(InspectionStage 값)
     error: Optional[str] = None  # 취득/검사 오류 요약(정상은 None)
     host: Optional[WorkerHost] = None  # 그 파이 자신의 상태(구 워커는 안 보냄)
+    # 단계별 처리시간 ms(2026-10-10): grab/infer/save/total/per_ea/n/post.
+    # proc_time_ms 는 이제 취득~저장(§1.2 정의) — 이 분해로 어디가 느린지 본다.
+    timings: Optional[dict[str, int]] = None
+    # 센서 트리거 대기 중(제품 없음) — 촬영 안 함. '미검출' 과 다르다.
+    waiting: bool = False
 
 # write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.
 # 디스크 동시 소진 등으로 두 경로가 함께 실패하면(§M7 DoD 위반: 검사결과 완전
@@ -248,6 +253,8 @@ async def broadcast_status(
             "mismatch": body.mismatch,
             "proc_time_ms": body.proc_time_ms,
             "error": body.error,
+            "timings": body.timings,
+            "waiting": body.waiting,
         },
         host=body.host.model_dump() if body.host else None,
     )
@@ -312,6 +319,239 @@ def list_inspections(
     stmt = stmt.order_by(Inspection.inspected_at.desc()).limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
     return [inspection_to_schema(r) for r in rows]
+
+
+# ---- 통계 서버 집계 (2026-10-10 점검 보완) ------------------------------------
+#
+# 대시보드 통계 화면이 행을 5,000건 요청해 브라우저에서 셌는데, 목록 API 상한은
+# 2,000건이라 **요청 자체가 422 로 실패**했다(점검 보고서 지적). 상한을 올리는 것은
+# 답이 아니다 — 100만 건이면 어떤 상한도 표본이 된다. 그래서 DB 가 센다.
+
+
+class DefectCount(BaseModel):
+    code: str
+    count: int
+
+
+class MonthPoint(BaseModel):
+    month: str  # YYYY-MM (KST)
+    total: int
+    ng: int
+    defect_rate_pct: float
+
+
+class InspectionStats(BaseModel):
+    total: int
+    ng: int
+    by_code: list[DefectCount]
+    monthly: list[MonthPoint]
+
+
+_STAT_CODES = ("LEN", "OIL", "DIS", "SCR", "COUNT", "MULTI")
+
+
+def _stats_filters(stmt, *, item, from_, to, cam_id, stage):
+    if item:
+        stmt = stmt.where(Inspection.item_code == item)
+    if cam_id:
+        stmt = stmt.where(Inspection.cam_id == cam_id)
+    if stage:
+        stmt = stmt.where(Inspection.inspection_stage == stage.upper())
+    if from_:
+        stmt = stmt.where(Inspection.inspected_at >= from_)
+    if to:
+        stmt = stmt.where(Inspection.inspected_at <= to)
+    return stmt
+
+
+@router.get("/stats", response_model=InspectionStats)
+def inspection_stats(
+    db: Session = Depends(get_db),
+    item: Optional[str] = Query(None),
+    from_: Optional[datetime] = Query(None, alias="from"),
+    to: Optional[datetime] = Query(None),
+    cam_id: Optional[str] = Query(None),
+    stage: Optional[str] = Query(None),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """불량유형 분포 + 월별(KST) 불량률 — 전 건을 DB 에서 집계(표본 아님).
+
+    by_code: 한 검사에 코드가 여럿이면 각각 센다(MULTI 포함, 화면 규칙과 같다).
+    monthly: 한국 시각 기준 월. 행을 내려보내지 않으므로 기간이 길어도 가볍다.
+    """
+    from sqlalchemy import case, func, literal_column
+
+    kw = dict(item=item, from_=from_, to=to, cam_id=cam_id, stage=stage)
+    total, ng = db.execute(
+        _stats_filters(
+            select(
+                func.count(Inspection.id),
+                func.sum(case((Inspection.final_verdict == "NG", 1), else_=0)),
+            ),
+            **kw,
+        )
+    ).one()
+    total, ng = int(total or 0), int(ng or 0)
+
+    dialect = db.get_bind().dialect.name
+    by_code: list[DefectCount] = []
+    for code in _STAT_CODES:
+        if dialect == "postgresql":
+            cond = Inspection.defect_codes.any(code)
+        else:  # sqlite JSON 배열 텍스트: ["LEN","OIL"]
+            cond = func.coalesce(cast(Inspection.defect_codes, Text), "").like(f'%"{code}"%')
+        n = db.execute(
+            _stats_filters(select(func.count(Inspection.id)).where(cond), **kw)
+        ).scalar() or 0
+        if n:
+            by_code.append(DefectCount(code=code, count=int(n)))
+
+    if dialect == "postgresql":
+        month_expr = func.to_char(
+            func.timezone("Asia/Seoul", Inspection.inspected_at), "YYYY-MM"
+        )
+    else:
+        month_expr = func.strftime("%Y-%m", Inspection.inspected_at, literal_column("'+9 hours'"))
+    rows = db.execute(
+        _stats_filters(
+            select(
+                month_expr.label("m"),
+                func.count(Inspection.id),
+                func.sum(case((Inspection.final_verdict == "NG", 1), else_=0)),
+            ),
+            **kw,
+        ).group_by("m").order_by("m")
+    ).all()
+    monthly = [
+        MonthPoint(
+            month=str(m),
+            total=int(t or 0),
+            ng=int(n or 0),
+            defect_rate_pct=round((int(n or 0) / int(t)) * 100.0, 3) if t else 0.0,
+        )
+        for m, t, n in rows
+        if m
+    ]
+    return InspectionStats(total=total, ng=ng, by_code=by_code, monthly=monthly)
+
+
+# ---- LOT 단위 통합 판정 (2026-10-10 점검 보완) ---------------------------------
+#
+# 점검: "모드 분리 후 '길이+표면 제품단위 통합판정' 이 실제로 안 일어남". 맞다 — 현장
+# 요구(2026-10-05)로 스테이션마다 한 가지만 본다. 그리고 다발로 흐르는 튜브는 개별
+# 추적이 안 돼 컨베이어 길이 스테이션의 '3번 튜브' 가 세척 뒤 표면 스테이션의 몇 번인지
+# 알 수 없다. 그래서 **제품 단위가 아니라 LOT 단위**로 합친다: 그 LOT 이 거친 모든
+# 스테이션(모드)의 결과를 모아 하나라도 NG 면 LOT NG, 봐야 할 모드가 아직 없으면 미완.
+
+_STAGE_KO = {
+    "CUT_LENGTH": "길이 검사",
+    "POST_WASH_SURFACE": "표면 검사",
+    "CRATE_COUNT": "개수 확인",
+}
+
+
+class LotStage(BaseModel):
+    stage: str
+    label: str
+    cam_ids: list[str]
+    total: int
+    ng: int
+    ng_rate_pct: float
+    by_code: dict[str, int]
+    pending_review: int
+    first_at: Optional[datetime] = None
+    last_at: Optional[datetime] = None
+
+
+class LotSummary(BaseModel):
+    lot: str
+    item_codes: list[str]
+    final_verdict: str  # OK | NG | INCOMPLETE | NONE
+    reasons: list[str]
+    required_stages: list[str]
+    missing_stages: list[str]
+    stages: list[LotStage]
+
+
+@router.get("/lot-summary", response_model=LotSummary)
+def lot_summary(
+    lot: str = Query(..., min_length=1),
+    require: Optional[str] = Query(
+        None,
+        description="이 LOT 이 반드시 거쳐야 할 모드(콤마). 비우면 스테이션 설정에 있는 모드 전부",
+    ),
+    db: Session = Depends(get_db),
+    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+):
+    """LOT 종합 판정 — 스테이션(모드)별 결과를 합친다.
+
+    final_verdict:
+      NG          어느 모드에서든 NG 가 1건이라도 있다(사유에 모드별 수치)
+      INCOMPLETE  NG 는 없지만 거쳐야 할 모드 중 결과가 없는 것이 있다
+      OK          거쳐야 할 모드를 모두 거쳤고 NG 가 없다
+      NONE        이 LOT 의 결과가 하나도 없다
+    재확인 대기가 남아 있으면 사유에 적는다(판정은 AI 결과 기준).
+    """
+    from db.models import StationConfig
+
+    rows = db.execute(select(Inspection).where(Inspection.lot == lot)).scalars().all()
+    if require:
+        required = [x.strip().upper() for x in require.split(",") if x.strip()]
+    else:
+        required = sorted({
+            c.inspection_stage for c in db.execute(select(StationConfig)).scalars().all()
+            if c.inspection_stage
+        })
+
+    by_stage: dict[str, list[Inspection]] = {}
+    for r in rows:
+        by_stage.setdefault(r.inspection_stage or "UNSPECIFIED", []).append(r)
+
+    stages: list[LotStage] = []
+    reasons: list[str] = []
+    any_ng = False
+    for st in sorted(by_stage, key=lambda k: list(_STAGE_KO).index(k) if k in _STAGE_KO else 99):
+        rs = by_stage[st]
+        ng_rows = [r for r in rs if r.final_verdict == "NG"]
+        codes: dict[str, int] = {}
+        for r in ng_rows:
+            for c in r.defect_codes or []:
+                codes[str(c)] = codes.get(str(c), 0) + 1
+        pending = sum(1 for r in rs if r.review_flag and r.manual_verdict is None)
+        times = [r.inspected_at for r in rs if r.inspected_at]
+        label = _STAGE_KO.get(st, "모드 미지정" if st == "UNSPECIFIED" else st)
+        stages.append(LotStage(
+            stage=st, label=label, cam_ids=sorted({r.cam_id for r in rs}),
+            total=len(rs), ng=len(ng_rows),
+            ng_rate_pct=round(len(ng_rows) / len(rs) * 100.0, 3) if rs else 0.0,
+            by_code=dict(sorted(codes.items())), pending_review=pending,
+            first_at=min(times) if times else None, last_at=max(times) if times else None,
+        ))
+        if ng_rows:
+            any_ng = True
+            unit = "판" if st == "CRATE_COUNT" else "개"
+            detail = ", ".join(f"{k} {v}" for k, v in sorted(codes.items()) if k != "MULTI")
+            reasons.append(f"{label} NG {len(ng_rows)}{unit} / {len(rs)}{unit}"
+                           + (f" ({detail})" if detail else ""))
+        if pending:
+            reasons.append(f"{label} 재확인 대기 {pending}건")
+
+    missing = [s for s in required if s not in by_stage]
+    for m in missing:
+        reasons.append(f"{_STAGE_KO.get(m, m)} 결과 없음")
+    if not rows:
+        verdict = "NONE"
+    elif any_ng:
+        verdict = "NG"
+    elif missing:
+        verdict = "INCOMPLETE"
+    else:
+        verdict = "OK"
+    return LotSummary(
+        lot=lot, item_codes=sorted({r.item_code for r in rows if r.item_code}),
+        final_verdict=verdict, reasons=reasons, required_stages=required,
+        missing_stages=missing, stages=stages,
+    )
 
 
 @router.get("/{insp_id}", response_model=InspectionResult)

@@ -56,6 +56,30 @@ LABELS: dict[str, tuple[str, str]] = {
     "p50": ("p50 (중앙값)", "p50 (median)"),
     "p95": ("p95", "p95"),
     "p99": ("p99", "p99"),
+    # 2026-10-10 점검 보완
+    "misjudge": ("오검 (AI NG → 재확인 OK)", "False reject (AI NG, human OK)"),
+    "miss": ("미검 (AI OK → 재확인 NG)", "Escape (AI OK, human NG)"),
+    "pending_review": ("재확인 대기 (판정 오류 아님)", "Awaiting review"),
+    "audited": ("재확인 표본 수 (미검을 알 수 있는 범위)", "Human-reviewed sample"),
+    "mes_mode": ("MES 연계 방식", "MES link mode"),
+    "mes_consumed": ("MES 수신 확인 건수", "MES consumed (confirmed)"),
+    "claim_ytd": ("Claim 연 누계 (건)", "Claims YTD"),
+    "lead_time": ("수주출하 리드타임 (일)", "Lead time (days)"),
+    "workload": ("검사 작업공수 지수 (구축 전=100)", "Workload index (before=100)"),
+    "baseline": ("구축 전", "Before"),
+    "profile_note": ("목표 기준", "Target basis"),
+}
+
+#: MES 연계 방식 표기 — 무엇으로 '연계' 를 셌는지 리포트에 그대로 적는다.
+MES_MODE_KO = {
+    "table": "DB 인터페이스 테이블 적재(MES 수신은 '수신 확인' 건수로 확인)",
+    "rest": "REST — 실제 MES 응답",
+    "rest_fake": "가짜 전송(시험용) — 인수 증빙 아님",
+    "rest_unconfigured": "REST 주소 미설정 — 연계 보류",
+}
+PROFILE_KO = {
+    "plan": "사업계획서·개발지침(CLAUDE.md §1.1)",
+    "contract": "협약 성과지표(협약서 원문 대조 필요)",
 }
 
 # 불량유형 코드 한글 설명(§7.2).
@@ -92,21 +116,82 @@ GRID_INK = "#d8d7d3"
 #
 # 목표값은 env 로 덮어쓸 수 있다(현장 재협의 시 코드 수정 없이 반영):
 #   AIVIS_KPI_TARGET_PROCESS_PPM / _LEAK_PPM / _INSPECTION_PCT / _PROC_MS
-_TARGET_DEFAULTS = {
-    # CLAUDE.md §1.1 (개발지침 기준)
-    "process_defect_ppm": 600.0,
-    "inspection_defect_rate_pct": 30.0,
-    # 계약 성과지표 기준
-    "shipment_leak_ppm": 1000.0,
-    "p95_proc_time_ms": 300.0,
+#   AIVIS_KPI_TARGET_CLAIM / _LEAD_DAYS / _WORKLOAD
+#
+# **목표 프로파일(2026-10-10 점검 보완)**: 점검 보고서가 "계약값(1,000ppm·40%·
+# Claim 3·리드타임 6일)과 개발지침값(600ppm·30%·Claim 2·5일)이 다르다" 고 지적했다.
+# 협약서 원문을 저장소가 갖고 있지 않으므로 **기본은 개발지침(plan)** 으로 두고,
+# `AIVIS_KPI_PROFILE=contract` 한 줄로 계약 기준 전체를 바꾼다. 개별 env 는 그
+# 위에 덮인다. contract 값은 10/10 점검 보고서 기재값이다 — 협약서와 대조할 것.
+_PROFILES: dict[str, dict[str, float]] = {
+    "plan": {  # CLAUDE.md §1.1 (사업계획서·개발지침)
+        "process_defect_ppm": 600.0,
+        "shipment_leak_ppm": 1000.0,
+        "inspection_defect_rate_pct": 30.0,
+        "p95_proc_time_ms": 300.0,
+        "claim_count_ytd": 2.0,
+        "lead_time_days": 5.0,
+        "workload_index": 50.0,
+    },
+    "contract": {  # 협약 성과지표(10/10 점검 보고서 기재값 — 협약서 대조 필요)
+        "process_defect_ppm": 600.0,
+        "shipment_leak_ppm": 1000.0,
+        "inspection_defect_rate_pct": 40.0,
+        "p95_proc_time_ms": 300.0,
+        "claim_count_ytd": 3.0,
+        "lead_time_days": 6.0,
+        "workload_index": 50.0,
+    },
+}
+_TARGET_DEFAULTS = _PROFILES["plan"]
+
+#: 구축 전 기준값(사업계획서 §1.1 "구축 전" 열). 리포트의 전후 비교 열에 쓴다.
+#: 점검 보고서: "구축 전 2,000ppm 기준값 저장 없음". env 로 실측값을 덮어쓴다:
+#:   AIVIS_KPI_BASELINE_PROCESS_PPM / _LEAK_PPM / _CLAIM / _LEAD_DAYS / _WORKLOAD
+_BASELINE_DEFAULTS: dict[str, Optional[float]] = {
+    "process_defect_ppm": 2000.0,
+    "shipment_leak_ppm": 2000.0,
+    "inspection_defect_rate_pct": None,   # 구축 전은 수동 의존 — 수치 없음
+    "auto_inspection_rate_pct": 0.0,      # 전량 육안 검사
+    "storage_mes_rate_pct": 0.0,          # 검사결과 DB화 안 됨
+    "p95_proc_time_ms": None,
+    "claim_count_ytd": 5.0,
+    "lead_time_days": 7.0,
+    "workload_index": 100.0,
+}
+_BASELINE_ENV = {
+    "process_defect_ppm": "AIVIS_KPI_BASELINE_PROCESS_PPM",
+    "shipment_leak_ppm": "AIVIS_KPI_BASELINE_LEAK_PPM",
+    "claim_count_ytd": "AIVIS_KPI_BASELINE_CLAIM",
+    "lead_time_days": "AIVIS_KPI_BASELINE_LEAD_DAYS",
+    "workload_index": "AIVIS_KPI_BASELINE_WORKLOAD",
 }
 
 
+def kpi_profile() -> str:
+    """현재 목표 프로파일(plan|contract). 모르는 값은 plan."""
+    p = (os.getenv("AIVIS_KPI_PROFILE") or "plan").strip().lower()
+    return p if p in _PROFILES else "plan"
+
+
 def _target(key: str, env: str) -> float:
+    default = _PROFILES[kpi_profile()][key]
     try:
-        return float(os.getenv(env, str(_TARGET_DEFAULTS[key])))
+        return float(os.getenv(env, str(default)))
     except (TypeError, ValueError):
-        return _TARGET_DEFAULTS[key]
+        return default
+
+
+def kpi_baseline(key: str) -> Optional[float]:
+    """구축 전 기준값. 없으면 None(그 지표는 구축 전 수치가 없다)."""
+    default = _BASELINE_DEFAULTS.get(key)
+    env = _BASELINE_ENV.get(key)
+    if env and os.getenv(env):
+        try:
+            return float(os.environ[env])
+        except ValueError:
+            return default
+    return default
 
 
 def kpi_targets() -> list[tuple[str, str, str, str, str]]:
@@ -119,6 +204,9 @@ def kpi_targets() -> list[tuple[str, str, str, str, str]]:
     leak = _target("shipment_leak_ppm", "AIVIS_KPI_TARGET_LEAK_PPM")
     insp = _target("inspection_defect_rate_pct", "AIVIS_KPI_TARGET_INSPECTION_PCT")
     ms = _target("p95_proc_time_ms", "AIVIS_KPI_TARGET_PROC_MS")
+    claim = _target("claim_count_ytd", "AIVIS_KPI_TARGET_CLAIM")
+    lead = _target("lead_time_days", "AIVIS_KPI_TARGET_LEAD_DAYS")
+    work = _target("workload_index", "AIVIS_KPI_TARGET_WORKLOAD")
     return [
         (
             "process_defect_ppm",
@@ -149,6 +237,28 @@ def kpi_targets() -> list[tuple[str, str, str, str, str]]:
             "Proc time p95 (ms)",
             f"{ms:g} 이하",
             f"lte:{ms}",
+        ),
+        # 수기 KPI(2026-10-10 점검 보완: "리포트·목표값·연 누계·전후 비교 없음").
+        (
+            "claim_count_ytd",
+            "Claim 건수 (건/년, 연 누계)",
+            "Claims (per year, YTD)",
+            f"{claim:g} 이하",
+            f"lte:{claim}",
+        ),
+        (
+            "lead_time_days",
+            "수주출하 리드타임 (일)",
+            "Order-to-ship lead time (days)",
+            f"{lead:g} 이하",
+            f"lte:{lead}",
+        ),
+        (
+            "workload_index",
+            "검사 작업공수 지수 (구축 전=100)",
+            "Inspection workload index (before=100)",
+            f"{work:g} 이하",
+            f"lte:{work}",
         ),
     ]
 
@@ -191,7 +301,14 @@ def evaluate_targets(
         "auto_inspection_rate_pct": summary.auto_inspection_rate_pct,
         "storage_mes_rate_pct": summary.storage_mes_rate_pct,
         "p95_proc_time_ms": pct["p95"],
+        # 수기 입력이 없으면 None → 판정보류(0 으로 채우면 "클레임 0 = 합격").
+        "claim_count_ytd": summary.claim_count_ytd,
+        "lead_time_days": summary.lead_time_days,
+        "workload_index": summary.workload_index,
     }
+    # 가짜 MES 전송으로 센 연계율은 판정하지 않는다 — 증빙이 아니다.
+    if getattr(summary, "mes_mode", None) == "rest_fake":
+        actuals["storage_mes_rate_pct"] = None
     out: list[tuple[str, str, str, str, Optional[bool]]] = []
     for key, ko, latin, target_text, rule in kpi_targets():
         val = actuals.get(key)
@@ -213,7 +330,21 @@ def target_actual_text(
     if key == "p95_proc_time_ms":
         return "-" if pct["p95"] is None else f"{pct['p95']:.0f}"
     val = getattr(summary, key, None)
-    return "-" if val is None else f"{float(val):.3f}"
+    if val is None:
+        return "-"
+    if key == "claim_count_ytd":
+        return f"{int(val)}"
+    if key == "storage_mes_rate_pct" and getattr(summary, "mes_mode", None) == "rest_fake":
+        return f"{float(val):.3f} (가짜 전송 — 증빙 아님)"
+    return f"{float(val):.3f}"
+
+
+def baseline_text(key: str) -> str:
+    """구축 전 기준값 문자열(리포트 전후 비교 열). 없으면 '-'."""
+    v = kpi_baseline(key)
+    if v is None:
+        return "-"
+    return f"{v:g}"
 
 
 def _lab(key: str, korean_ok: bool) -> str:
@@ -407,6 +538,35 @@ def _register_korean_font() -> Optional[str]:
     return None
 
 
+def _fmt_opt(v, digits: int = 3) -> str:
+    if v is None:
+        return "-"
+    if isinstance(v, int):
+        return f"{v}"
+    return f"{float(v):.{digits}f}"
+
+
+def _detail_rows(summary: KpiSummary, korean_ok: bool) -> list[list[str]]:
+    """KPI 표 추가 행(2026-10-10 점검 보완): 오검·미검 분리, 재확인 대기·표본,
+    MES 연계 방식·수신 확인, 수기 KPI(Claim 연 누계·리드타임·공수)."""
+    mode = getattr(summary, "mes_mode", None)
+    mode_txt = (MES_MODE_KO.get(mode, mode or "-") if korean_ok else (mode or "-"))
+    rows = [
+        [_lab("misjudge", korean_ok),
+         f"{summary.misjudge_count} ({_fmt_opt(getattr(summary, 'misjudge_rate_pct', None))}%)"],
+        [_lab("miss", korean_ok),
+         f"{summary.miss_count} ({_fmt_opt(getattr(summary, 'miss_rate_pct', None))}%)"],
+        [_lab("pending_review", korean_ok), _fmt_opt(getattr(summary, "pending_review_count", None))],
+        [_lab("audited", korean_ok), _fmt_opt(getattr(summary, "audited_count", None))],
+        [_lab("mes_mode", korean_ok), mode_txt],
+        [_lab("mes_consumed", korean_ok), _fmt_opt(getattr(summary, "mes_consumed_count", None))],
+        [_lab("claim_ytd", korean_ok), _fmt_opt(getattr(summary, "claim_count_ytd", None))],
+        [_lab("lead_time", korean_ok), _fmt_opt(summary.lead_time_days, 1)],
+        [_lab("workload", korean_ok), _fmt_opt(summary.workload_index, 1)],
+    ]
+    return rows
+
+
 def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -466,7 +626,7 @@ def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
          f"{summary.storage_mes_rate_pct:.3f}"],
         [_lab("avg_proc_time_ms", korean_ok),
          ("-" if summary.avg_proc_time_ms is None else f"{summary.avg_proc_time_ms:.2f}")],
-    ]
+    ] + _detail_rows(summary, korean_ok)
     t = Table(kpi_rows, colWidths=[90 * mm, 70 * mm])
     t.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), font),
@@ -501,8 +661,13 @@ def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
     # KPI 목표 대비 달성 판정(§1.1/§1.2) — 인수 심사용.
     # 달성/미달은 색만이 아니라 기호(✓/✗)+문자를 함께 표기한다(색각 이상 고려).
     story.append(Paragraph(_lab("targets", korean_ok), h2))
-    tgt_rows = [[_lab("kpi_item", korean_ok), _lab("target", korean_ok),
-                 _lab("actual", korean_ok), _lab("achieved", korean_ok)]]
+    story.append(Paragraph(
+        f"{_lab('profile_note', korean_ok)}: {PROFILE_KO[kpi_profile()] if korean_ok else kpi_profile()}",
+        body,
+    ))
+    tgt_rows = [[_lab("kpi_item", korean_ok), _lab("baseline", korean_ok),
+                 _lab("target", korean_ok), _lab("actual", korean_ok),
+                 _lab("achieved", korean_ok)]]
     tgt_style = [
         ("FONTNAME", (0, 0), (-1, -1), font),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
@@ -523,12 +688,13 @@ def render_pdf(summary: KpiSummary, rows: list[Inspection]) -> bytes:
             mark, ink = f"X {_lab('fail_ko', korean_ok)}", STATUS_CRITICAL
         tgt_rows.append([
             ko if korean_ok else latin,
+            baseline_text(key),
             target_text if korean_ok else target_text.replace(" 이하", " max"),
             target_actual_text(key, summary, rows),
             mark,
         ])
-        tgt_style.append(("TEXTCOLOR", (3, i), (3, i), colors.HexColor(ink)))
-    tt = Table(tgt_rows, colWidths=[58 * mm, 34 * mm, 34 * mm, 34 * mm])
+        tgt_style.append(("TEXTCOLOR", (4, i), (4, i), colors.HexColor(ink)))
+    tt = Table(tgt_rows, colWidths=[52 * mm, 20 * mm, 28 * mm, 34 * mm, 26 * mm])
     tt.setStyle(TableStyle(tgt_style))
     story.append(tt)
     story.append(Spacer(1, 8 * mm))
@@ -612,7 +778,7 @@ def render_xlsx(summary: KpiSummary, rows: list[Inspection]) -> bytes:
         (LABELS["auto_inspection_rate_pct"][0], summary.auto_inspection_rate_pct),
         (LABELS["storage_mes_rate_pct"][0], summary.storage_mes_rate_pct),
         (LABELS["avg_proc_time_ms"][0], summary.avg_proc_time_ms),
-    ]
+    ] + [(label, value) for label, value in _detail_rows(summary, True)]
     ws.cell(r, 1, LABELS["kpi"][0]).font = bold
     r += 1
     for label, value in kpi_pairs:
@@ -633,9 +799,10 @@ def render_xlsx(summary: KpiSummary, rows: list[Inspection]) -> bytes:
     # KPI 목표 대비 달성(인수 심사용) — PDF 와 동일 기준.
     r += 1
     ws.cell(r, 1, LABELS["targets"][0]).font = bold
+    ws.cell(r, 2, f"{LABELS['profile_note'][0]}: {PROFILE_KO[kpi_profile()]}")
     r += 1
     for col, key in enumerate(
-        ("kpi_item", "target", "actual", "achieved"), start=1
+        ("kpi_item", "baseline", "target", "actual", "achieved"), start=1
     ):
         c = ws.cell(r, col, LABELS[key][0])
         c.font = bold
@@ -643,19 +810,21 @@ def render_xlsx(summary: KpiSummary, rows: list[Inspection]) -> bytes:
     r += 1
     for key, ko, _latin, target_text, passed in evaluate_targets(summary, rows):
         ws.cell(r, 1, ko)
-        ws.cell(r, 2, target_text)
-        ws.cell(r, 3, target_actual_text(key, summary, rows))
+        ws.cell(r, 2, baseline_text(key))
+        ws.cell(r, 3, target_text)
+        ws.cell(r, 4, target_actual_text(key, summary, rows))
         ws.cell(
-            r, 4,
+            r, 5,
             LABELS["na"][0] if passed is None
             else (LABELS["pass_ko"][0] if passed else LABELS["fail_ko"][0]),
         )
         r += 1
 
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 20
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 14
     ws.column_dimensions["C"].width = 16
-    ws.column_dimensions["D"].width = 12
+    ws.column_dimensions["D"].width = 22
+    ws.column_dimensions["E"].width = 12
 
     # 시트 2: 불량유형별 집계 (시트명에 / 등 금지문자 사용 불가 -> 안전한 라틴명)
     ws2 = wb.create_sheet("Defects")

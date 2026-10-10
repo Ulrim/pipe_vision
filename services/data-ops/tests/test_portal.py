@@ -192,7 +192,10 @@ def test_export_ai_analysis_records_images_kpi(db, tmp_path):
     kpi = json.loads((out / "kpi/kpi_2026-09.json").read_text(encoding="utf-8"))
     assert kpi["total_inspected"] == 4 and kpi["defect_count"] == 1
     assert kpi["process_defect_ppm"] == pytest.approx(250000.0)
-    assert kpi["miss_count"] == 1 and kpi["misjudge_count"] == 0     # r3 review_flag & manual 미입력
+    # r3 은 재확인 대상인데 아직 사람이 안 봤다 → '재확인 대기'(판정 오류 아님).
+    # (2026-10-10 정의 수정 전에는 이것을 미검으로 셌다.)
+    assert kpi["miss_count"] == 0 and kpi["misjudge_count"] == 0
+    assert kpi["pending_review_count"] == 1
     assert kpi["mes_synced_count"] == 1 and kpi["storage_mes_rate_pct"] == pytest.approx(25.0)
     assert kpi["avg_proc_time_ms"] == pytest.approx(16.0)
     assert (out / "reports/fat_metrics.json").is_file() and (out / "reports/fat_metrics.md").is_file()

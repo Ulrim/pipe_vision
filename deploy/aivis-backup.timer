@@ -1,0 +1,11 @@
+# AIVIS 검사 DB 백업 — 매일 02:20(현장 시각). 꺼져 있던 동안 놓친 회차는 켜질 때 1회 실행.
+[Unit]
+Description=AIVIS 검사 DB 매일 백업
+
+[Timer]
+OnCalendar=*-*-* 02:20:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

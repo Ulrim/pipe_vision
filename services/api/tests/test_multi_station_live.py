@@ -235,3 +235,16 @@ def test_upload_refused_when_server_uses_supabase(client, tmp_path, monkeypatch)
     monkeypatch.setattr(insp_mod, "get_settings", lambda: _S())
     r = client.put("/inspection/images/raw/a_OK.jpg", content=_JPEG)
     assert r.status_code == 409
+
+
+def test_heartbeat_timings_reach_station_card(client, auth):
+    """처리시간 분해(취득·판정·저장·전송)가 실시간 현황까지 온다(2026-10-10)."""
+    r = client.post("/inspection/status", json={
+        "cam_id": "LIVE-TM", "item_code": "HPLIVE", "expected": 20, "detected": 20,
+        "ts": datetime.now(timezone.utc).isoformat(), "proc_time_ms": 640, "stage": "CUT_LENGTH",
+        "timings": {"grab_ms": 60, "infer_ms": 420, "save_ms": 160, "total_ms": 640,
+                    "per_ea_ms": 32, "n": 20, "post_ms": 9},
+    })
+    assert r.status_code == 202, r.text
+    st = _stations(client, auth)["LIVE-TM"]
+    assert st["timings"]["per_ea_ms"] == 32 and st["timings"]["grab_ms"] == 60

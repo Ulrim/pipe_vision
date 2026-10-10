@@ -6,6 +6,7 @@ import { fetchInspections, type InspectionQuery } from "@/api/endpoints";
 import { Pagination } from "@/components/Pagination";
 import { VerdictBadge } from "@/components/VerdictBadge";
 import { InspectionDetail } from "@/components/InspectionDetail";
+import { LotSummaryCard } from "@/components/LotSummaryCard";
 import { fmtNum, fmtTimeShort } from "@/lib/format";
 import { rowsToCsv, triggerBlobDownload } from "@/lib/download";
 import { STAGE_OPTIONS, stageLabel } from "@/lib/stage";
@@ -141,6 +142,9 @@ export function InspectionsPage(): JSX.Element {
           </button>
         </div>
       </div>
+
+      {/* LOT 으로 검색하면 그 LOT 의 종합 판정(길이·표면·개수 합친 결론)을 먼저 보여준다. */}
+      {applied.lot && <LotSummaryCard lot={applied.lot} />}
 
       <div className="flex items-center justify-between">
         <div className="text-sm text-slate-500">

@@ -53,6 +53,15 @@
 
 > 이 4개 지표는 단순 KPI가 아니라 **인수 합격 조건**이다. QA 에이전트는 이를 자동 검증하는 테스트 하니스를 만들어야 한다(§9 QA-Agent, §7.4).
 
+> **정의 고정(2026-10-10 개발 진척 점검 대응 — 되돌리지 말 것)**
+> - **처리속도 = 이미지 취득 시작 ~ 원본·결과 이미지 저장 완료**(워커 `proc_time_ms`·하니스 지표3 모두).
+>   판정 구간만 재면 안 된다. 다발은 1개당(프레임 ÷ N). 단계별 분해는 하트비트 `timings`.
+> - **오검 = AI NG → 재확인 OK, 미검 = AI OK → 재확인 NG.** 재확인 대상인데 안 본 건은 '재확인 대기'로
+>   따로 센다(검사불량률에 넣지 않는다). 백엔드 KPI 와 포털 내보내기가 같은 정의를 쓴다.
+> - **합성 데이터 결과는 인수 증빙이 아니다.** FAT/SAT 결과서에 그렇게 찍히고, 합성 1장 반복은 MSA 가 아니라
+>   '결정성 확인' 이다. 실물은 `AIVIS_DATASET_DIR=<정답셋>` 으로 재실행, MSA 는 `vision.tools.run_msa`.
+> - 목표값은 `AIVIS_KPI_PROFILE=plan`(위 표, 기본) | `contract`(협약 성과지표 — 협약서 대조 후).
+
 ---
 
 ## 2. 개발 범위 정의 (스코프 경계)
@@ -415,7 +424,9 @@ CREATE TABLE sys_log (
 나란히 띄운다. 파이 상태는 워커가 하트비트(`host`)로 보낸다 — `/system/status` 의
 자원은 API 가 도는 1호기 것뿐이다. 허브 구성에서 2호기 이상은
 `AIVIS_STORAGE_BACKEND=api` 로 사진을 1호기에 올린다(`PUT /inspection/images/{key}`,
-실패 시 스풀 보존 후 재전송). 하루 경계("오늘")는 KST 0시. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
+실패 시 스풀 보존 후 재전송). 하루 경계("오늘")는 KST 0시. 모드 간 결합(길이+표면+개수)은
+**LOT 단위**로 한다(`GET /inspection/lot-summary`) — 다발 튜브는 스테이션 사이 낱개 추적이 안 된다.
+파이 GPIO: 근접센서 트리거(`AIVIS_TRIGGER=gpio`), 경광등·부저(`AIVIS_TOWER_*`) — `docs/OPERATIONS_PI.md` §11. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
 (허용 −0.10)", "유분기 0.62 > 기준 0.40", "개수 18 / 기준 20 (−2)".
 
 ### 7.3 MES 연계 인터페이스 (`docs/MES_INTERFACE.md`)
@@ -423,6 +434,8 @@ CREATE TABLE sys_log (
 - DB 테이블 방식: `mes_quality_if` 스테이징 테이블에 검사결과를 INSERT, MES가 폴링/트리거로 적재. 컬럼은 `inspection`의 식별자+판정 핵심값.
 - REST 방식: `POST /mes/quality` (멱등키 = `lot+item+inspected_at+cam_id`), 실패 시 지수 백오프 재전송 큐.
 - **연계율 100% 보장**: 미전송 행 `mes_synced=false` 워치독이 주기 재시도, 대시보드에 연계 상태 모니터.
+- **가짜 성공 금지(2026-10-10)**: REST 주소가 없으면 연계 **보류**(가짜 전송 자동 사용 금지 — `MES_REST_FAKE=true` 로만).
+  KPI·리포트에 `mes_mode`(table|rest|rest_fake|rest_unconfigured)와 MES 수신 확인 건수를 함께 낸다.
 
 ### 7.4 백엔드 REST API 요약 (`docs/API.md`)
 ```

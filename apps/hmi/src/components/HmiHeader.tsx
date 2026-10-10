@@ -55,6 +55,10 @@ function useLiveHealth() {
   if (status?.error) {
     return { mark: "!", text: "취득 오류", tone: "bad" as const };
   }
+  // 근접센서 트리거: 제품이 안 와서 안 찍은 것 — 이상이 아니다(무채색).
+  if (status?.waiting) {
+    return { mark: "•", text: "제품 대기", tone: "idle" as const };
+  }
   if (status && status.detected === 0) {
     return { mark: "!", text: "미검출", tone: "warn" as const };
   }

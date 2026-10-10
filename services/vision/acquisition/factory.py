@@ -12,6 +12,7 @@ from typing import Optional
 from .camera import CameraAdapter, GenICamCamera, PiCameraAdapter, SimulatorCamera
 from .trigger import (
     DigitalIOTrigger,
+    GpioTrigger,
     MqttTrigger,
     TimerTrigger,
     TriggerSource,
@@ -25,7 +26,7 @@ def get_camera_mode() -> str:
 def get_trigger_mode() -> str:
     """실 트리거 소스 선택(genicam 모드 한정). 기본은 timer.
 
-    AIVIS_TRIGGER=timer|filewatch|dio|mqtt.
+    AIVIS_TRIGGER=timer|filewatch|dio|mqtt|gpio (gpio = 라즈베리파이 근접센서).
     sim 모드에서는 항상 timer/filewatch(시뮬레이터)만 사용한다.
     """
     return os.environ.get("AIVIS_TRIGGER", "timer").strip().lower()
@@ -70,7 +71,10 @@ def create_trigger(interval_s: float = 0.0) -> TriggerSource:
     if mode == "sim":
         return TimerTrigger(interval_s=interval_s)
     if mode == "picam":
-        # TODO: GPIO 근접센서 하드웨어 트리거 소스 추가. 현재는 SW 타이머 기본.
+        # 라즈베리파이: AIVIS_TRIGGER=gpio 면 컨베이어 근접센서(GPIO)로 찍는다.
+        # 기본은 종전대로 SW 타이머(센서 결선 전에도 돌아가게).
+        if get_trigger_mode() == "gpio":
+            return GpioTrigger()
         return TimerTrigger(interval_s=interval_s)
     # genicam 모드: 실 트리거 결선(생성은 성공, 대기 시 SDK/드라이버 필요).
     tmode = get_trigger_mode()
@@ -78,5 +82,7 @@ def create_trigger(interval_s: float = 0.0) -> TriggerSource:
         return DigitalIOTrigger()
     if tmode == "mqtt":
         return MqttTrigger()
+    if tmode == "gpio":
+        return GpioTrigger()
     # timer/filewatch 등은 시뮬 트리거로 폴백(개발/계측용).
     return TimerTrigger(interval_s=interval_s)

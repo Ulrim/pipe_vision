@@ -51,6 +51,7 @@ from .factory import (
 from .trigger import (
     DigitalIOTrigger,
     FileWatchTrigger,
+    GpioTrigger,
     MqttTrigger,
     TimerTrigger,
     TriggerSDKError,
@@ -211,6 +212,7 @@ __all__ = [
     "TimerTrigger",
     "FileWatchTrigger",
     "DigitalIOTrigger",
+    "GpioTrigger",
     "MqttTrigger",
     "TriggerSDKError",
     "create_camera",

@@ -588,6 +588,11 @@ class StationLive(BaseModel):
     mismatch: Optional[bool] = None
     error: Optional[str] = None
     proc_time_ms: Optional[int] = None
+    #: 마지막 사이클 단계별 ms — grab(취득)·infer(판정)·save(이미지 저장)·
+    #: total·per_ea(다발이면 1개당)·n·post(직전 결과 전송).
+    timings: Optional[dict[str, int]] = None
+    #: 센서 트리거 대기 중(제품 없음 — 촬영 안 함). 미검출과 다르다.
+    waiting: bool = False
     host: Optional[StationHost] = None
     last_hour: StationWindow
     today: StationWindow
@@ -756,6 +761,8 @@ def system_stations(
                 mismatch=cycle.get("mismatch"),
                 error=cycle.get("error"),
                 proc_time_ms=cycle.get("proc_time_ms"),
+                timings=cycle.get("timings"),
+                waiting=bool(cycle.get("waiting", False)),
                 host=StationHost(**beat.host) if beat and beat.host else None,
                 last_hour=hour.get(cam, zero),
                 today=today.get(cam, zero),

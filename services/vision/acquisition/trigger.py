@@ -15,6 +15,11 @@ from typing import Optional, Set
 class TriggerSource(ABC):
     """트리거 소스 인터페이스. wait_for_trigger() 가 1회 검사 신호를 블로킹 대기."""
 
+    #: 실제 사건(제품 도착)으로 울리는 트리거인가. True 면 timeout(False 반환) 때
+    #: 워커가 **촬영하지 않는다**(빈 컨베이어를 찍어 '미검출' 을 쏟아내지 않게).
+    #: 타이머는 False — 시간이 되면 무조건 찍는다(종전 동작).
+    event_driven: bool = False
+
     @abstractmethod
     def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
         """트리거 도착까지 대기. 도착하면 True, timeout 이면 False."""
@@ -114,6 +119,8 @@ class DigitalIOTrigger(TriggerSource):
     2. wait_for_trigger(): 채널 상승 에지를 폴링/인터럽트 대기(타임아웃 적용).
     """
 
+    event_driven = True
+
     def __init__(self, channel: Optional[int] = None) -> None:
         env_ch = os.environ.get("AIVIS_DIO_CHANNEL")
         self.channel = channel if channel is not None else (
@@ -153,6 +160,8 @@ class MqttTrigger(TriggerSource):
        subscribe(topic) + loop_start(). on_message 에서 _event 셋.
     2. wait_for_trigger(): _event 를 timeout 까지 대기(threading.Event).
     """
+
+    event_driven = True
 
     def __init__(
         self,
@@ -197,3 +206,96 @@ class MqttTrigger(TriggerSource):
             self.connect()  # 미설치/미연결이면 안내 예외.
         # TODO(P7): threading.Event 를 timeout 까지 대기.
         raise TriggerSDKError("MqttTrigger.wait_for_trigger: MQTT 결선 필요(P7).")
+
+
+class GpioTrigger(TriggerSource):
+    """라즈베리파이 GPIO 근접센서 트리거 — 제품이 오면 찍는다(2026-10-10 점검 보완).
+
+    종전에는 파이에서도 소프트웨어 타이머로만 찍었다(점검: "촬영 신호가 타이머뿐").
+    컨베이어 근접센서(광전/유도형)를 GPIO 에 물려, **비활성 → 활성 에지** 마다
+    한 번 찍는다. 제품이 센서 앞에 머물러 있으면 다시 비활성이 될 때까지 다음
+    촬영을 하지 않는다(같은 제품을 여러 번 찍지 않게).
+
+    환경변수:
+      AIVIS_TRIGGER_GPIO        BCM 핀 번호(필수)
+      AIVIS_TRIGGER_ACTIVE_LOW  true(기본) — NPN 센서(감지 시 GND). PNP 면 false
+      AIVIS_TRIGGER_DEBOUNCE_MS 기본 30 — 접점 떨림 무시
+      AIVIS_TRIGGER_SETTLE_MS   기본 150 — 감지 후 촬영까지 대기. 파이 카메라는
+                                롤링 셔터라 **멈춘 뒤** 찍어야 길이가 안 틀어진다
+                                (컨베이어 정지·진동이 가라앉는 시간에 맞춘다)
+
+    생성은 늘 성공한다(§6.1). GPIO 를 실제로 여는 것은 첫 대기 때이고, 파이가
+    아니거나 gpiozero 가 없으면 그때 안내 예외(TriggerSDKError).
+    """
+
+    event_driven = True
+
+    def __init__(
+        self,
+        pin: Optional[int] = None,
+        *,
+        active_low: Optional[bool] = None,
+        debounce_ms: Optional[int] = None,
+        settle_ms: Optional[int] = None,
+        backend=None,
+    ) -> None:
+        env_pin = os.environ.get("AIVIS_TRIGGER_GPIO")
+        self.pin = pin if pin is not None else (int(env_pin) if env_pin else None)
+        self.active_low = (
+            active_low if active_low is not None
+            else os.environ.get("AIVIS_TRIGGER_ACTIVE_LOW", "true").lower() in ("1", "true", "yes")
+        )
+        self.debounce_ms = int(
+            debounce_ms if debounce_ms is not None else os.environ.get("AIVIS_TRIGGER_DEBOUNCE_MS", 30)
+        )
+        self.settle_ms = int(
+            settle_ms if settle_ms is not None else os.environ.get("AIVIS_TRIGGER_SETTLE_MS", 150)
+        )
+        self._backend = backend
+        self._ready = False
+        #: 직전 촬영 뒤 센서가 다시 비활성이 됐나(같은 제품 중복 촬영 방지).
+        self._armed = True
+        self.fired = 0
+
+    def _ensure(self) -> None:
+        if self._ready:
+            return
+        if self.pin is None:
+            raise TriggerSDKError(
+                "GpioTrigger: AIVIS_TRIGGER_GPIO(BCM 핀 번호)가 없습니다. "
+                "근접센서를 물린 핀을 적거나 AIVIS_TRIGGER=timer 로 두세요."
+            )
+        if self._backend is None:
+            from vision.fieldio.gpio import GpioUnavailable, build_gpio_backend
+
+            try:
+                self._backend = build_gpio_backend()
+            except GpioUnavailable as exc:
+                raise TriggerSDKError(f"GpioTrigger: {exc}") from exc
+        self._backend.setup_input(self.pin, active_low=self.active_low, bounce_ms=self.debounce_ms)
+        self._armed = not self._backend.is_active(self.pin)
+        self._ready = True
+
+    def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
+        self._ensure()
+        deadline = None if timeout is None else time.monotonic() + timeout
+        if not self._armed:
+            # 직전 제품이 아직 센서 앞에 있다 — 빠질 때까지 기다린다.
+            if not self._backend.wait_inactive(self.pin, timeout):
+                return False
+            self._armed = True
+        remain = None if deadline is None else max(0.0, deadline - time.monotonic())
+        if not self._backend.wait_active(self.pin, remain):
+            return False
+        self._armed = False
+        self.fired += 1
+        if self.settle_ms > 0:
+            time.sleep(self.settle_ms / 1000.0)
+        return True
+
+    def close(self) -> None:
+        if self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception:  # noqa: BLE001
+                pass

@@ -1,0 +1,23 @@
+# AIVIS 검사 DB 백업(독립형 sqlite) — 1회 실행 서비스. aivis-backup.timer 가 매일 부른다.
+#
+# 설치:
+#   sudo cp /opt/aivis/deploy/aivis-backup.service /opt/aivis/deploy/aivis-backup.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now aivis-backup.timer
+# 확인:
+#   systemctl list-timers aivis-backup.timer
+#   journalctl -u aivis-backup.service -n 20
+#
+# 경로가 다르면 아래 Environment 를 고친다. SD 카드 고장 대비로 AIVIS_BACKUP_DIR 을
+# USB 메모리(/media/...)나 NAS 마운트로 두기를 권한다.
+[Unit]
+Description=AIVIS 검사 DB 백업 (sqlite 온라인 백업)
+
+[Service]
+Type=oneshot
+User=pi
+Environment=AIVIS_HOME=/var/lib/aivis
+Environment=AIVIS_BACKUP_DIR=/var/lib/aivis/backups
+Environment=AIVIS_BACKUP_KEEP=14
+ExecStart=/bin/bash /opt/aivis/scripts/aivis.sh backup
+Nice=10
+IOSchedulingClass=idle

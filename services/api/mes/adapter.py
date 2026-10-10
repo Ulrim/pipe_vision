@@ -24,7 +24,13 @@ from aivis_types import LogCategory
 from core.logging import write_log
 from db.models import Inspection, MesQualityIf
 from mes.config import MesConfig, get_mes_config
-from mes.transport import FakeMesTransport, HttpxMesTransport, MesTransport, MesTransportError
+from mes.transport import (
+    FakeMesTransport,
+    HttpxMesTransport,
+    MesTransport,
+    MesTransportError,
+    UnconfiguredMesTransport,
+)
 
 
 def make_idem_key_from_row(row: Inspection) -> str:
@@ -64,15 +70,20 @@ def _row_to_payload(row: Inspection, idem_key: str) -> dict[str, Any]:
 
 
 def _build_transport(cfg: MesConfig) -> MesTransport:
-    """rest 모드 전송 객체 생성. URL 미설정이면 FakeMesTransport(끊김 방지)."""
+    """rest 모드 전송 객체 생성.
+
+    URL 있음 → 실제 전송. URL 없음 → 연계 보류(UnconfiguredMesTransport).
+    가짜 전송(FakeMesTransport)은 MES_REST_FAKE=true 로 명시했을 때만 — 시험·시연용.
+    """
     if cfg.rest_url:
         return HttpxMesTransport(
             cfg.rest_url,
             timeout_s=cfg.rest_timeout_s,
             idem_header=cfg.idem_header,
         )
-    # 통합 전: 더미 전송으로 파이프라인 유지(연계율 100% 설계 — 운영 전 단계).
-    return FakeMesTransport()
+    if cfg.rest_fake:
+        return FakeMesTransport()
+    return UnconfiguredMesTransport()
 
 
 class MesAdapter:
@@ -87,8 +98,11 @@ class MesAdapter:
         self.cfg = cfg or get_mes_config()
         # rest 모드에서만 transport 필요. table 모드면 lazy.
         self._transport = transport
+        #: 설정으로 만든 가짜 전송인가(MES_REST_FAKE). 주입된 전송은 실제로 본다.
+        self._fake = False
         if self.cfg.is_rest and self._transport is None:
             self._transport = _build_transport(self.cfg)
+            self._fake = isinstance(self._transport, FakeMesTransport)
 
     @property
     def transport(self) -> MesTransport | None:
@@ -181,9 +195,11 @@ class MesAdapter:
         assert self._transport is not None
         payload = _row_to_payload(row, idem_key)
         self._transport.send(payload, idem_key=idem_key)
-        # 전송 성공 시 추적용으로 스테이징도 멱등 기록(consumed 표시).
+        # 전송 성공 시 추적용으로 스테이징도 멱등 기록. consumed 는 **실제 MES 가
+        # 받았을 때만** — 가짜 전송은 MES 가 받은 것이 아니다.
         staged = self.ensure_staged(db, row, idem_key)
-        staged.consumed = True
+        if not self._fake:
+            staged.consumed = True
 
 
 def build_adapter(

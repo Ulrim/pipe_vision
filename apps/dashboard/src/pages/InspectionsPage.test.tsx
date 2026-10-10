@@ -8,9 +8,11 @@ import { renderApp } from "@/test/utils";
 // 엔드포인트 모킹(네트워크 차단).
 const fetchInspections = vi.fn();
 const fetchInspectionImageBlob = vi.fn();
+const fetchLotSummary = vi.fn();
 vi.mock("@/api/endpoints", () => ({
   fetchInspections: (...a: unknown[]) => fetchInspections(...a),
   fetchInspectionImageBlob: (...a: unknown[]) => fetchInspectionImageBlob(...a),
+  fetchLotSummary: (...a: unknown[]) => fetchLotSummary(...a),
 }));
 
 import { InspectionsPage } from "./InspectionsPage";
@@ -24,6 +26,14 @@ const row: InspectionResult = {
 };
 
 beforeEach(() => {
+  fetchLotSummary.mockReset();
+  fetchLotSummary.mockResolvedValue({
+    lot: "LOT-A", item_codes: ["HP12"], final_verdict: "NG",
+    reasons: ["길이 검사 NG 1개 / 20개 (LEN 1)", "표면 검사 결과 없음"],
+    required_stages: ["CUT_LENGTH", "POST_WASH_SURFACE"], missing_stages: ["POST_WASH_SURFACE"],
+    stages: [{ stage: "CUT_LENGTH", label: "길이 검사", cam_ids: ["PI-CAM1"], total: 20, ng: 1,
+      ng_rate_pct: 5, by_code: { LEN: 1 }, pending_review: 1, first_at: null, last_at: null }],
+  });
   fetchInspections.mockReset();
   fetchInspectionImageBlob.mockReset();
   // 상세 모달이 raw/result 이미지를 인증 fetch→Blob→objectURL 로 표시.
@@ -75,6 +85,21 @@ describe("InspectionsPage", () => {
       const lastCall = fetchInspections.mock.calls.at(-1)?.[0];
       expect(lastCall).toMatchObject({ cam_id: "PI-CAM2", stage: "CRATE_COUNT" });
     });
+  });
+
+  it("LOT 으로 검색하면 LOT 종합 판정(모드별 결과를 합친 결론)이 뜬다", async () => {
+    fetchInspections.mockResolvedValue([row]);
+    renderApp(<InspectionsPage />);
+    await screen.findByText("LOT-A");
+    expect(screen.queryByTestId("lot-summary")).not.toBeInTheDocument();
+    await userEvent.type(screen.getByTestId("filter-lot"), "LOT-A");
+    await userEvent.click(screen.getByTestId("apply-filters"));
+    const card = await screen.findByTestId("lot-summary");
+    expect(card).toHaveAttribute("data-verdict", "NG");
+    expect(card).toHaveTextContent("LOT NG");
+    expect(screen.getByTestId("lot-reasons")).toHaveTextContent("표면 검사 결과 없음");
+    expect(screen.getByTestId("lot-stage-CUT_LENGTH")).toHaveTextContent("LEN 1");
+    expect(fetchLotSummary).toHaveBeenCalledWith("LOT-A");
   });
 
   it("행 클릭 시 상세 모달 + raw/result 이미지 인증 조회", async () => {

@@ -6,7 +6,7 @@
 #   bash scripts/aivis.sh              # 번호 선택 메뉴
 #   bash scripts/aivis.sh <명령>       # 자동화/원격용 직접 실행
 #
-# 명령: start | stop | restart | status | monitor | update | logs | urls | help
+# 명령: start | stop | restart | status | monitor | update | logs | urls | backup | help
 #
 # 환경변수(선택):
 #   AIVIS_HOME=/var/lib/aivis   데이터 루트(로그·PID 저장)
@@ -258,12 +258,28 @@ AIVIS 통합 조작
   update    프로그램 업데이트 (scripts/aivis-update.sh)
   logs      로그 보기(실시간)
   urls      접속 주소 표시
+  backup    검사 DB 백업(지금 1회). 보관 위치 AIVIS_BACKUP_DIR(기본 $AIVIS_HOME/backups)
   menu      번호 선택 메뉴 강제 실행
   help      이 도움말
 
 예)  bash scripts/aivis.sh urls
      bash scripts/aivis.sh update --restart
 TXT
+}
+
+# 검사 DB(독립형 sqlite) 온라인 백업 — 2026-10-10 점검 보완("파이 단독 DB 백업 없음").
+# 검사 중에도 안전하다(sqlite 백업 API). SD 카드 고장 대비로 AIVIS_BACKUP_DIR 을
+# USB 메모리/NAS 로 두기를 권한다. 매일 자동: deploy/aivis-backup.timer.
+cmd_backup() {
+  local db="${AIVIS_DB_PATH:-$AIVIS_HOME/db/aivis.db}"
+  local out="${AIVIS_BACKUP_DIR:-$AIVIS_HOME/backups}"
+  local keep="${AIVIS_BACKUP_KEEP:-14}"
+  if [ ! -f "$db" ]; then
+    err "DB 파일이 없습니다: $db (AIVIS_DB_PATH 로 지정)"
+    return 1
+  fi
+  say "검사 DB 백업: $db → $out (최근 ${keep}개 보관)"
+  python3 "$REPO/services/api/tools/backup_sqlite.py" --db "$db" --out "$out" --keep "$keep"
 }
 
 menu() {
@@ -276,6 +292,7 @@ menu() {
     echo "   3) 재시작               4) 상태 보기"
     echo "   5) 실시간 모니터        6) 프로그램 업데이트"
     echo "   7) 로그 보기            8) 접속 주소 표시"
+    echo "   9) 검사 DB 백업(지금)"
     echo "   0) 종료"
     echo "==============================================================="
     printf "  번호를 입력하고 Enter: "
@@ -290,9 +307,10 @@ menu() {
       6) cmd_update ;;
       7) cmd_logs ;;
       8) show_urls ;;
+      9) cmd_backup ;;
       0|q|Q) say "종료합니다."; return 0 ;;
       "") ;;
-      *) warn "1~8 또는 0 을 입력하세요." ;;
+      *) warn "1~9 또는 0 을 입력하세요." ;;
     esac
     if [ -t 0 ]; then
       printf "  ${C_D}계속하려면 Enter…${C_0}"
@@ -313,6 +331,7 @@ case "$CMD" in
   update)  cmd_update "$@" ;;
   logs)    cmd_logs ;;
   urls)    show_urls ;;
+  backup)  cmd_backup ;;
   menu)    menu ;;
   help|-h|--help) usage ;;
   "")

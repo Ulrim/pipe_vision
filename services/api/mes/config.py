@@ -52,6 +52,11 @@ class MesConfig:
     max_retry: int                # 행별 최대 재시도 횟수(초과 시 실패로 표시)
     backoff_base_s: float         # 지수 백오프 기준(초)
     backoff_max_s: float          # 지수 백오프 상한(초)
+    #: rest 모드인데 MES_REST_URL 이 없을 때 가짜 전송을 쓸지(시험·시연 전용).
+    #: 2026-10-10 점검: 종전엔 URL 이 없으면 **자동으로** 가짜 전송이 켜져
+    #: mes_synced=true 가 찍혔다 → "연계율 100%" 가 실제 MES 와 무관하게 나왔다.
+    #: 이제 명시적으로 켜야 하고, 켜면 KPI·리포트에 '가짜 전송'으로 표시된다.
+    rest_fake: bool = False
 
     @property
     def is_rest(self) -> bool:
@@ -60,6 +65,21 @@ class MesConfig:
     @property
     def is_table(self) -> bool:
         return self.mode == "table"
+
+    @property
+    def effective_mode(self) -> str:
+        """KPI·리포트에 적을 연계 방식.
+
+        table            스테이징 테이블 적재(MES 가 폴링해 가져감 — consumed 로 확인)
+        rest             실제 MES REST 응답으로 확인
+        rest_fake        가짜 전송(MES_REST_FAKE=true) — 인수 증빙이 아니다
+        rest_unconfigured  rest 인데 URL 없음 — 연계 보류(행은 미연계로 남는다)
+        """
+        if self.is_table:
+            return "table"
+        if self.rest_url:
+            return "rest"
+        return "rest_fake" if self.rest_fake else "rest_unconfigured"
 
 
 def get_mes_config() -> MesConfig:
@@ -75,6 +95,7 @@ def get_mes_config() -> MesConfig:
     return MesConfig(
         mode=mode,
         rest_url=os.getenv("MES_REST_URL") or None,
+        rest_fake=(os.getenv("MES_REST_FAKE", "false").strip().lower() in ("1", "true", "yes")),
         rest_timeout_s=_float("MES_REST_TIMEOUT_S", 5.0),
         idem_header=os.getenv("MES_IDEM_HEADER", "X-Idempotency-Key"),
         watchdog_interval_s=_float("MES_WATCHDOG_INTERVAL_S", 10.0),

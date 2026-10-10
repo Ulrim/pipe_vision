@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aivis_types import KpiManual, KpiSummary, Role
@@ -27,7 +27,8 @@ from aivis_types import KpiManual, KpiSummary, Role
 from core import report as report_gen
 from core.security import CurrentUser, require_min_role
 from db.base import get_db
-from db.models import Inspection, KpiManual as KpiManualRow
+from db.models import Inspection, KpiManual as KpiManualRow, MesQualityIf
+from mes.config import get_mes_config
 
 router = APIRouter(prefix="/kpi", tags=["kpi"])
 
@@ -87,17 +88,26 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
     auto_inspected = sum(1 for r in rows if r.final_verdict)
     auto_inspection_rate_pct = _rate(auto_inspected, total_inspected, 100.0)
 
-    # 검사불량률: (오검 + 미검) ÷ 총 검사수량 × 100
-    #  - 오검(misjudge): 작업자 재확인(manual_verdict)이 입력됐고 AI 판정과 불일치
-    #  - 미검(miss): 재확인 대상(review_flag=True)인데 manual_verdict 미입력
-    misjudge_count = sum(
-        1
-        for r in rows
-        if r.manual_verdict is not None and r.manual_verdict != r.final_verdict
-    )
-    miss_count = sum(
-        1 for r in rows if r.review_flag and r.manual_verdict is None
-    )
+    # 검사불량률: (오검 + 미검) ÷ 총 검사수량 × 100   (§1.1 산출식 그대로)
+    #
+    # 정의(2026-10-10 점검 보완 — 종전 정의가 틀렸다):
+    #  - 오검(과검출) = AI 가 NG 라 했는데 사람이 다시 보니 OK
+    #  - 미검(놓친 불량) = AI 가 OK 라 했는데 사람이 다시 보니 NG
+    # 종전에는 "재확인 대상인데 아직 안 본 건" 을 미검으로 셌고, 진짜 미검(AI 가
+    # 통과시킨 불량)은 오검에 섞여 있었다. 안 본 건은 이제 '재확인 대기' 로 따로
+    # 센다 — 그것은 판정 오류가 아니라 처리 지연이다.
+    #
+    # 미검을 알려면 AI 가 OK 라 한 것도 사람이 일부 다시 봐야 한다(표본 감사).
+    # 작업자 화면에서 아무 결과나 눌러 재확인을 입력하면 된다. 표본이 0 이면
+    # 미검은 0 으로 나오지만 '없다' 가 아니라 '모른다' 다 — audited_count 를 같이 낸다.
+    def _mv(r) -> str | None:
+        v = r.manual_verdict
+        return None if v is None else str(getattr(v, "value", v)).upper()
+
+    misjudge_count = sum(1 for r in rows if r.final_verdict == "NG" and _mv(r) == "OK")
+    miss_count = sum(1 for r in rows if r.final_verdict == "OK" and _mv(r) == "NG")
+    pending_review_count = sum(1 for r in rows if r.review_flag and _mv(r) is None)
+    audited_count = sum(1 for r in rows if _mv(r) is not None)
     inspection_defect_rate_pct = _rate(
         misjudge_count + miss_count, total_inspected, 100.0
     )
@@ -108,12 +118,35 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
     stored_count = len(all_rows)
     mes_synced_count = sum(1 for r in all_rows if r.mes_synced)
     storage_mes_rate_pct = _rate(mes_synced_count, stored_count, 100.0)
+    # 무엇으로 '연계' 를 셌는지 같이 낸다(점검: "연계율 100% 는 자기 테이블 적재율").
+    #  table: mes_synced = 스테이징 적재. MES 가 실제로 가져갔는지는 consumed 로만 안다.
+    #  rest : mes_synced = 실제 MES 응답. rest_fake 면 가짜 — 판정에서 뺀다.
+    mes_mode = get_mes_config().effective_mode
+    ids = [r.id for r in all_rows]
+    mes_consumed_count = 0
+    for i in range(0, len(ids), 500):  # sqlite 변수 상한 회피
+        chunk = ids[i:i + 500]
+        mes_consumed_count += db.execute(
+            select(func.count(MesQualityIf.id)).where(
+                MesQualityIf.inspection_id.in_(chunk), MesQualityIf.consumed.is_(True)
+            )
+        ).scalar() or 0
 
     proc_times = [r.proc_time_ms for r in rows if r.proc_time_ms is not None]
     avg_proc_time_ms = (sum(proc_times) / len(proc_times)) if proc_times else None
 
     # 수기 KPI(있으면 함께 노출): 해당 월 1일 키.
     manual = db.get(KpiManualRow, datetime(start.year, start.month, 1))
+    # Claim 연 누계: 목표가 "건/년" 이라 월값으로는 판정할 수 없다. 해당 연도
+    # 1월~이번 달 입력값의 합. 한 달도 입력이 없으면 None(0 이 아니다).
+    ytd_rows = db.execute(
+        select(KpiManualRow.claim_count).where(
+            KpiManualRow.period >= datetime(start.year, 1, 1),
+            KpiManualRow.period <= datetime(start.year, start.month, 1),
+            KpiManualRow.claim_count.is_not(None),
+        )
+    ).all()
+    claim_count_ytd = sum(int(c) for (c,) in ytd_rows) if ytd_rows else None
 
     # 출하유출불량률(ppm) — **계약 성과지표**. 공정불량률과 다른 지표다.
     #   공정불량률 = 공정 중 걸러낸 불량 ÷ 총 검사수량   (시스템이 자동 산출)
@@ -148,6 +181,13 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
         shipped_qty=shipped_qty,
         leak_defect_qty=leak_defect_qty,
         shipment_leak_ppm=shipment_leak_ppm,
+        pending_review_count=pending_review_count,
+        audited_count=audited_count,
+        misjudge_rate_pct=round(_rate(misjudge_count, total_inspected, 100.0), 3),
+        miss_rate_pct=round(_rate(miss_count, total_inspected, 100.0), 3),
+        mes_mode=mes_mode,
+        mes_consumed_count=int(mes_consumed_count),
+        claim_count_ytd=claim_count_ytd,
     )
     return summary, rows
 
@@ -172,6 +212,10 @@ def kpi_targets(
             "target_value": float(bound),
             # lte = 낮을수록 좋음(불량률), gte = 높을수록 좋음(달성률)
             "direction": "lower" if op == "lte" else "higher",
+            # 구축 전 기준값(전후 비교). 구축 전 수치가 없는 지표는 null.
+            "baseline_value": report_gen.kpi_baseline(key),
+            # 목표 출처: plan(사업계획서·개발지침) | contract(협약 성과지표)
+            "profile": report_gen.kpi_profile(),
         })
     return out
 
@@ -242,6 +286,7 @@ def kpi_report_preview(
             "label": ko,
             "label_en": latin,
             "target": target_text,
+            "baseline": report_gen.baseline_text(key),
             "actual": report_gen.target_actual_text(key, summary, rows),
             "achieved": passed,  # True/False/None(판정보류)
         }

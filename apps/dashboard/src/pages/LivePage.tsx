@@ -179,6 +179,11 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
           {health.text}
           <span className="whitespace-nowrap font-normal opacity-80">· {agoKo(s.last_seen_s)}</span>
         </span>
+        {s.waiting && s.state === "up" && (
+          <span className="rounded border border-slate-300 px-1.5 text-xs text-slate-600" data-testid="card-waiting">
+            제품 대기(센서)
+          </span>
+        )}
       </header>
 
       {s.error && (
@@ -257,12 +262,7 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
       <dl className="grid grid-cols-3 gap-2 border-t border-slate-100 pt-2 text-sm" data-testid="card-stats">
         <Stat k="최근 1시간" v={`${s.last_hour.total} / NG ${s.last_hour.ng}`} sub={`NG율 ${fmtNum(s.last_hour.ng_rate_pct, 1)}%`} />
         <Stat k="오늘" v={`${s.today.total} / NG ${s.today.ng}`} sub={`NG율 ${fmtNum(s.today.ng_rate_pct, 1)}%`} />
-        <Stat
-          k="처리"
-          v={s.proc_time_ms === null ? "—" : `${s.proc_time_ms}ms`}
-          sub={s.proc_time_ms !== null && s.proc_time_ms > 300 ? "⚠ 300ms 초과" : "목표 300ms"}
-          alert={s.proc_time_ms !== null && s.proc_time_ms > 300}
-        />
+        <ProcStat s={s} />
       </dl>
 
       <HostRow host={s.host} />
@@ -280,6 +280,34 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
       )}
     </section>
   );
+}
+
+/**
+ * 처리시간(§1.2 지표3: 취득~저장, 300ms/ea). 다발이면 1개당으로 판정하고
+ * 단계별 분해(취득·판정·저장)를 같이 적어 어디가 느린지 바로 보이게 한다.
+ */
+export function procView(s: Pick<StationLive, "proc_time_ms" | "timings">): {
+  value: string; sub: string; alert: boolean;
+} {
+  const t = s.timings ?? null;
+  const n = t?.n ?? 1;
+  const ea = t?.per_ea_ms ?? s.proc_time_ms;
+  if (ea === null || ea === undefined) return { value: "—", sub: "목표 300ms/ea", alert: false };
+  const parts = [
+    t?.grab_ms !== undefined ? `취득 ${t.grab_ms}` : null,
+    t?.infer_ms !== undefined ? `판정 ${t.infer_ms}` : null,
+    t?.save_ms !== undefined ? `저장 ${t.save_ms}` : null,
+  ].filter(Boolean).join(" · ");
+  const over = ea > 300;
+  const head = n > 1 ? `${ea}ms/ea` : `${ea}ms`;
+  const frame = n > 1 && t?.total_ms !== undefined ? `한 장 ${t.total_ms}ms ÷ ${n}개` : "";
+  const sub = [over ? "⚠ 300ms 초과" : "목표 300ms/ea", frame, parts].filter(Boolean).join(" · ");
+  return { value: head, sub, alert: over };
+}
+
+function ProcStat({ s }: { s: StationLive }) {
+  const v = procView(s);
+  return <Stat k="처리(취득~저장)" v={v.value} sub={v.sub} alert={v.alert} />;
 }
 
 function Stat({ k, v, sub, alert }: { k: string; v: string; sub: string; alert?: boolean }) {

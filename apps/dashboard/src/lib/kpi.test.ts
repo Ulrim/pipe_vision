@@ -117,3 +117,31 @@ describe("buildKpiGauges", () => {
     );
   });
 });
+
+describe("buildKpiGauges — 2026-10-10 점검 보완", () => {
+  const T = (key: string, v: number, dir: "lower" | "higher" = "lower"): KpiTarget => ({
+    key, label: key, label_en: key, target_text: `${v}`, target_value: v, direction: dir,
+  });
+  const base = {
+    period: "2026-06", total_inspected: 10, defect_count: 0, process_defect_ppm: 0,
+    auto_inspected: 10, auto_inspection_rate_pct: 100, misjudge_count: 0, miss_count: 0,
+    inspection_defect_rate_pct: 0, stored_count: 10, mes_synced_count: 10,
+    storage_mes_rate_pct: 100,
+  } as KpiSummary;
+
+  it("수기 KPI 는 입력이 있을 때만 게이지(Claim 연 누계·리드타임·공수)", () => {
+    const targets = [T("claim_count_ytd", 2), T("lead_time_days", 5), T("workload_index", 50)];
+    expect(buildKpiGauges(base, targets)).toHaveLength(0);
+    const g = buildKpiGauges(
+      { ...base, claim_count_ytd: 3, lead_time_days: 6, workload_index: 45 }, targets,
+    );
+    expect(g.map((x) => x.key)).toEqual(["claim_count_ytd", "lead_time_days", "workload_index"]);
+    expect(g[0].unit).toBe("건");
+  });
+
+  it("가짜 MES 전송으로 센 연계율은 게이지로 그리지 않는다", () => {
+    const targets = [T("storage_mes_rate_pct", 100, "higher")];
+    expect(buildKpiGauges(base, targets)).toHaveLength(1);
+    expect(buildKpiGauges({ ...base, mes_mode: "rest_fake" }, targets)).toHaveLength(0);
+  });
+});

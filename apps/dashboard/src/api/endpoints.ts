@@ -45,6 +45,63 @@ export function fetchInspections(
   return requestJson<InspectionResult[]>(`/inspection${toQuery({ ...q })}`);
 }
 
+/** GET /inspection/stats 응답 — 서버가 전 건을 집계(표본 아님). */
+export interface InspectionStatsResponse {
+  total: number;
+  ng: number;
+  by_code: { code: string; count: number }[];
+  /** 한국 시각 기준 월. */
+  monthly: { month: string; total: number; ng: number; defect_rate_pct: number }[];
+}
+
+export interface InspectionStatsQuery {
+  item?: string;
+  from?: string;
+  to?: string;
+  cam_id?: string;
+  stage?: string;
+}
+
+/**
+ * GET /inspection/stats — 불량유형 분포·월별 불량률(서버 집계).
+ * 종전에는 행 5,000건을 받아 화면에서 셌는데 목록 API 상한(2,000)을 넘어
+ * 요청이 실패했다(2026-10-10 점검). 행을 내려받지 않는다.
+ */
+export function fetchInspectionStats(
+  q: InspectionStatsQuery = {},
+): Promise<InspectionStatsResponse> {
+  return requestJson<InspectionStatsResponse>(`/inspection/stats${toQuery({ ...q })}`);
+}
+
+/** LOT 종합 판정의 모드(스테이션)별 집계. */
+export interface LotStageSummary {
+  stage: string;
+  label: string;
+  cam_ids: string[];
+  total: number;
+  ng: number;
+  ng_rate_pct: number;
+  by_code: Record<string, number>;
+  pending_review: number;
+  first_at: string | null;
+  last_at: string | null;
+}
+
+/** GET /inspection/lot-summary — LOT 단위 통합 판정(모드별 결과를 합친 결론). */
+export interface LotSummary {
+  lot: string;
+  item_codes: string[];
+  final_verdict: "OK" | "NG" | "INCOMPLETE" | "NONE";
+  reasons: string[];
+  required_stages: string[];
+  missing_stages: string[];
+  stages: LotStageSummary[];
+}
+
+export function fetchLotSummary(lot: string): Promise<LotSummary> {
+  return requestJson<LotSummary>(`/inspection/lot-summary${toQuery({ lot })}`);
+}
+
 /** GET /inspection/{id} — 단건. */
 export function fetchInspection(id: number): Promise<InspectionResult> {
   return requestJson<InspectionResult>(`/inspection/${id}`);
@@ -83,6 +140,10 @@ export interface KpiTarget {
   target_text: string;
   target_value: number;
   direction: "lower" | "higher";
+  /** 구축 전 기준값(전후 비교). 구축 전 수치가 없는 지표는 null. */
+  baseline_value?: number | null;
+  /** 목표 출처: plan(사업계획서·개발지침) | contract(협약 성과지표). */
+  profile?: "plan" | "contract";
 }
 
 /** GET /kpi/targets — 리포트와 화면이 공유하는 목표치. */
@@ -106,6 +167,8 @@ export interface ReportTarget {
   label: string;
   label_en: string;
   target: string;
+  /** 구축 전 기준값 문자열("-" = 구축 전 수치 없음). */
+  baseline?: string;
   actual: string;
   achieved: boolean | null;
 }
@@ -367,6 +430,13 @@ export interface StationLive {
   mismatch: boolean | null;
   error: string | null;
   proc_time_ms: number | null;
+  /** 마지막 사이클 단계별 ms(취득·판정·저장·전체·1개당·개수·직전 전송). */
+  timings?: {
+    grab_ms?: number; infer_ms?: number; save_ms?: number; total_ms?: number;
+    per_ea_ms?: number; n?: number; post_ms?: number;
+  } | null;
+  /** 센서 트리거 대기 중(제품 없음 — 촬영 안 함). */
+  waiting?: boolean;
   host: StationHost | null;
   last_hour: StationWindow;
   today: StationWindow;

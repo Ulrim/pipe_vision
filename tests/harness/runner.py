@@ -142,28 +142,69 @@ def latency_batch(
     n: int = 1000,
     pipeline: Optional[InspectionPipeline] = None,
 ) -> mt.LatencyReport:
-    """N장 배치 proc_time_ms 백분위. 정답셋이 N보다 적으면 순환 재사용."""
+    """N장 처리시간 백분위 — §1.2 정의(**이미지 취득 ~ 결과 저장**) 그대로.
+
+    2026-10-10 개발 진척 점검: 종전에는 이미지를 미리 디코드해 두고 판정만 쟀다
+    ("디스크 I/O 를 측정에서 제외 — 처리속도 KPI 는 추론 시간"). 계획서 정의와
+    다르고, 파이에서 실제로 시간이 드는 취득·JPEG 저장이 빠졌다. 이제 한 장마다
+    ① 읽기(취득 대용: 디스크 → 프레임) ② 판정 ③ 원본·결과 JPEG 저장 을 모두 잰다.
+    판정만의 백분위는 infer_only 로 참고만 남긴다(합격 판정에 쓰지 않는다).
+    정답셋이 N보다 적으면 순환 재사용.
+    """
+    import shutil
+    import tempfile
+    import time
+
+    from vision.imaging import save_inspection_images
+
     pipe = pipeline or InspectionPipeline()
-    # 이미지 사전 디코드(디스크 I/O 를 측정에서 제외 — 처리속도 KPI 는 추론 시간).
-    decoded = []
-    for gt in gt_items:
-        img = cv2.imread(gt.path)
-        if img is not None:
-            decoded.append(img)
-    if not decoded:
+    paths = [gt.path for gt in gt_items if Path(gt.path).exists()]
+    if not paths:
         return mt.latency_report([])
 
-    # 워밍업.
-    pipe.run(decoded[0], item)
+    workdir = tempfile.mkdtemp(prefix="aivis_latency_")
+    try:
+        warm = cv2.imread(paths[0])
+        if warm is not None:
+            pipe.run(warm, item)  # 워밍업(캐시 초기화) — 측정 제외
 
-    proc_times: List[float] = []
-    i = 0
-    while len(proc_times) < n:
-        img = decoded[i % len(decoded)]
-        v = pipe.run(img, item)
-        proc_times.append(float(v.proc_time_ms))
-        i += 1
-    return mt.latency_report(proc_times)
+        e2e: List[float] = []
+        infer: List[float] = []
+        read_s: List[float] = []
+        save_s: List[float] = []
+        i = 0
+        while len(e2e) < n:
+            path = paths[i % len(paths)]
+            i += 1
+            t0 = time.perf_counter()
+            img = cv2.imread(path)
+            t1 = time.perf_counter()
+            if img is None:
+                continue
+            v = pipe.run(img, item)
+            t2 = time.perf_counter()
+            save_inspection_images(
+                img, v, images_dir=workdir, lot="LATENCY", item_code=item.item_code,
+                inspected_at=datetime.now(timezone.utc), item=item, cam_id="HARNESS",
+            )
+            t3 = time.perf_counter()
+            read_s.append((t1 - t0) * 1000.0)
+            infer.append((t2 - t1) * 1000.0)
+            save_s.append((t3 - t2) * 1000.0)
+            e2e.append((t3 - t0) * 1000.0)
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+    rep = mt.latency_report(e2e)
+    rep.scope = "acquire_to_save"
+    rep.breakdown = {
+        "read_ms": sum(read_s) / len(read_s),
+        "infer_ms": sum(infer) / len(infer),
+        "save_ms": sum(save_s) / len(save_s),
+    }
+    rep.infer_only = mt.latency_report(infer).as_dict()
+    rep.infer_only.pop("infer_only", None)
+    return rep
 
 
 # ---------------------------------------------------------------------------

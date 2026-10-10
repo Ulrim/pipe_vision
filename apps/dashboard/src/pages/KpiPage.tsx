@@ -65,17 +65,25 @@ export function KpiPage(): JSX.Element {
             <Stat k="불량수" v={fmtNum(data.defect_count, 0)} />
             <Stat k="자동검사 완료" v={fmtNum(data.auto_inspected, 0)} />
           </StatGroup>
+          {/* 오검 = AI NG 인데 사람이 OK, 미검 = AI OK 인데 사람이 NG(놓친 불량).
+              재확인 대기는 판정 오류가 아니다 — 아직 사람이 안 본 것. 미검은 AI 가
+              OK 라 한 것도 일부 다시 봐야(표본 감사) 알 수 있으므로 표본 수를 함께. */}
           <StatGroup title="판정 품질">
-            <Stat k="오검수" v={fmtNum(data.misjudge_count, 0)} />
-            <Stat k="미검수" v={fmtNum(data.miss_count, 0)} />
+            <Stat k="오검 (AI NG→사람 OK)" v={`${fmtNum(data.misjudge_count, 0)} (${fmtNum(data.misjudge_rate_pct, 2)}%)`} />
+            <Stat k="미검 (AI OK→사람 NG)" v={`${fmtNum(data.miss_count, 0)} (${fmtNum(data.miss_rate_pct, 2)}%)`} />
+            <Stat k="재확인 대기" v={fmtNum(data.pending_review_count, 0)} />
+            <Stat k="재확인 표본" v={fmtNum(data.audited_count, 0)} />
           </StatGroup>
           <StatGroup title="저장·연계·속도">
             <Stat k="저장건수" v={fmtNum(data.stored_count, 0)} />
             <Stat k="MES 연계" v={fmtNum(data.mes_synced_count, 0)} />
+            <Stat k="MES 수신 확인" v={fmtNum(data.mes_consumed_count, 0)} />
+            <Stat k="연계 방식" v={mesModeLabel(data.mes_mode)} />
             <Stat k="평균 처리(ms)" v={fmtNum(data.avg_proc_time_ms, 1)} />
           </StatGroup>
           <StatGroup title="수기 입력 항목">
             <Stat k="Claim" v={fmtNum(data.claim_count, 0)} />
+            <Stat k="Claim 연 누계" v={fmtNum(data.claim_count_ytd, 0)} />
             <Stat k="작업공수지수" v={fmtNum(data.workload_index, 2)} />
             <Stat k="리드타임(일)" v={fmtNum(data.lead_time_days, 1)} />
             <Stat k="총 출하수량" v={fmtNum(data.shipped_qty, 0)} />
@@ -116,4 +124,20 @@ function Stat({ k, v }: { k: string; v: React.ReactNode }): JSX.Element {
       <dd className="text-lg font-semibold tabular-nums">{v}</dd>
     </div>
   );
+}
+
+/** MES 연계를 무엇으로 셌는지 — 가짜 전송은 증빙이 아니라고 화면에 적는다. */
+export function mesModeLabel(mode: string | null | undefined): string {
+  switch (mode) {
+    case "table":
+      return "DB 테이블 적재";
+    case "rest":
+      return "REST(실제 MES)";
+    case "rest_fake":
+      return "가짜 전송 — 증빙 아님";
+    case "rest_unconfigured":
+      return "REST 주소 미설정 — 보류";
+    default:
+      return "-";
+  }
 }

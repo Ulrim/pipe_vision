@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "12.000ms",
+      "measured": "16.921ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -138,12 +138,31 @@
     }
   },
   "metric3_latency": {
+    "scope": "acquire_to_save",
+    "breakdown_mean_ms": {
+      "read_ms": 1.507,
+      "infer_ms": 7.867,
+      "save_ms": 3.7
+    },
+    "infer_only": {
+      "scope": "acquire_to_save",
+      "breakdown_mean_ms": {},
+      "count": 1000,
+      "p50_ms": 7.575,
+      "p95_ms": 10.321,
+      "p99_ms": 12.096,
+      "max_ms": 34.657,
+      "mean_ms": 7.867,
+      "over_300_count": 0,
+      "threshold_ms": 300.0,
+      "passed": true
+    },
     "count": 1000,
-    "p50_ms": 9.0,
-    "p95_ms": 12.0,
-    "p99_ms": 14.0,
-    "max_ms": 17.0,
-    "mean_ms": 8.979,
+    "p50_ms": 12.575,
+    "p95_ms": 16.921,
+    "p99_ms": 19.909,
+    "max_ms": 40.473,
+    "mean_ms": 13.074,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -175,6 +194,13 @@
       "mes_synced_count": 0,
       "storage_mes_rate_pct": 0.0,
       "avg_proc_time_ms": null,
+      "pending_review_count": 0,
+      "audited_count": 0,
+      "misjudge_rate_pct": 0.0,
+      "miss_rate_pct": 0.0,
+      "mes_mode": "table",
+      "mes_consumed_count": 0,
+      "claim_count_ytd": null,
       "claim_count": null,
       "workload_index": null,
       "lead_time_days": null,
@@ -198,5 +224,6 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-10-09T07:08:06.135179+00:00"
+  "generated_at": "2026-10-10T07:08:27.247406+00:00",
+  "evidence": "synthetic-reference"
 }

@@ -7,8 +7,11 @@ rest 모드에서 외부 MES 로 검사 핵심값을 POST 한다. 멱등키를 �
 - HttpxMesTransport: 실제 httpx 기반 전송(외부 MES 통합 시).
 - FakeMesTransport : 통합 전/테스트용. 성공/실패/지연을 주입해 재시도 검증.
 
-외부 엔드포인트 미설정(MES_REST_URL 없음)이면 adapter 가 FakeMesTransport 를
-주입해 파이프라인이 끊기지 않게 한다(연계율 100% 보장 설계).
+외부 엔드포인트 미설정(MES_REST_URL 없음)이면 **연계를 보류**한다
+(UnconfiguredMesTransport — 매번 실패 → 행은 mes_synced=false 로 남고 워치독이
+주소가 생길 때까지 재시도). 2026-10-10 점검 전에는 이때 가짜 전송이 자동으로
+켜져 연계율이 MES 와 무관하게 100% 로 나왔다. 가짜 전송은 이제
+MES_REST_FAKE=true 로 **명시해야** 쓰이고, KPI 에 'rest_fake' 로 표시된다.
 """
 from __future__ import annotations
 
@@ -125,3 +128,17 @@ class FakeMesTransport(MesTransport):
     @property
     def sent_keys(self) -> list[str]:
         return [s["idem_key"] for s in self.sent]
+
+
+class UnconfiguredMesTransport(MesTransport):
+    """rest 모드인데 MES_REST_URL 이 없다 — 보내지 않고 실패로 돌려준다.
+
+    성공으로 치면 연계율이 거짓말을 한다. 실패로 두면 행이 미연계로 남고,
+    주소가 설정되는 순간 워치독이 밀린 것을 전부 보낸다(유실 없음).
+    """
+
+    def send(self, payload: Mapping[str, Any], *, idem_key: str) -> dict[str, Any]:
+        raise MesTransportError(
+            "MES_REST_URL 미설정 — 연계 보류(주소를 설정하면 워치독이 재전송한다). "
+            "시험용 가짜 전송은 MES_REST_FAKE=true"
+        )

@@ -35,8 +35,8 @@ def test_kpi_formulas(client, auth):
     구성: 총 10건.
       - NG 2건(공정 불량) -> ppm = 2/10*1e6 = 200000
       - mes_synced 7건    -> 저장&연계율 = 7/10*100 = 70
-      - 오검 1건(manual!=final), 미검 0건
-        -> 검사불량률 = (1+0)/10*100 = 10
+      - 미검 1건(AI OK → 재확인 NG), 오검 0건
+        -> 검사불량률 = (0+1)/10*100 = 10
       - 자동검사율: 모두 final_verdict 존재 -> 10/10*100 = 100
     """
     _ensure_kpi_item(client, auth)
@@ -47,9 +47,9 @@ def test_kpi_formulas(client, auth):
     _post(client, lot="NG0", final_verdict="NG", defect_codes=["LEN"], mes_synced=False)
     _post(client, lot="NG1", final_verdict="NG", defect_codes=["OIL"], mes_synced=False)
 
-    # 오검 1건: AI=OK, manual=NG (위 OK0 를 재확인 처리로 만들기 위해 새 행 추가 대신
-    # 별도 행 1건 더 넣고 재확인). -> 총 건수를 10으로 유지하려고 위 10건만 사용:
-    # 오검 1건: OK0 을 재확인 처리해 AI=OK, manual=NG 로 만든다(총건수 10 유지).
+    # 미검 1건: OK0 을 재확인해 AI=OK, 사람=NG 로 만든다(총건수 10 유지).
+    # (2026-10-10 정의 수정 전에는 이것을 '오검' 으로 셌다 — 틀렸다. AI 가 통과시킨
+    #  불량은 놓친 것, 즉 미검이다.)
     rows = client.get("/inspection", headers=auth("op1"), params={"lot": "OK0"}).json()
     ok0 = rows[0]["id"]
     client.patch(f"/inspection/{ok0}/review", headers=auth("qa1"),
@@ -66,18 +66,23 @@ def test_kpi_formulas(client, auth):
     assert summary["auto_inspection_rate_pct"] == 100.0
     assert summary["mes_synced_count"] == 7
     assert summary["storage_mes_rate_pct"] == 7 / 10 * 100
-    # 오검 1(OK0->manual NG), 미검 0(미검 행 없음) -> 검사불량률 = 1/10*100 = 10
-    assert summary["misjudge_count"] == 1
-    assert summary["miss_count"] == 0
+    # 미검 1(OK0: AI OK → 사람 NG), 오검 0 -> 검사불량률 = 1/10*100 = 10
+    assert summary["misjudge_count"] == 0
+    assert summary["miss_count"] == 1
+    assert summary["miss_rate_pct"] == 10.0
+    assert summary["audited_count"] == 1
     assert summary["inspection_defect_rate_pct"] == 1 / 10 * 100
     assert summary["avg_proc_time_ms"] == 100.0
 
 
-def test_kpi_miss_count(client, auth):
-    """미검(review_flag=True & manual None) 카운트 검증. 다른 월(2026-04)."""
+def test_unreviewed_is_pending_not_a_miss(client, auth):
+    """재확인 대상인데 아직 안 본 것은 '재확인 대기' 다 — 미검이 아니다.
+
+    2026-10-10 점검: 종전에는 이것을 미검으로 세어 검사불량률이 처리 지연만으로
+    올라갔다. 판정 오류가 아니라 사람이 아직 안 본 것이다. 다른 월(2026-04).
+    """
     _ensure_kpi_item(client, auth)
     when = datetime(2026, 4, 2, 9, 0, tzinfo=timezone.utc).isoformat()
-    # review_flag True, manual 미입력 = 미검 1건
     r = client.post("/inspection", json={
         "lot": "M", "item_code": "KPI", "cam_id": "C", "inspected_at": when,
         "final_verdict": "NG", "defect_codes": ["SCR"], "review_flag": True,
@@ -87,8 +92,37 @@ def test_kpi_miss_count(client, auth):
     s = client.get("/kpi/summary", headers=auth("op1"),
                    params={"period": "2026-04"}).json()
     assert s["total_inspected"] == 1
-    assert s["miss_count"] == 1
-    assert s["inspection_defect_rate_pct"] == 1 / 1 * 100
+    assert s["miss_count"] == 0
+    assert s["misjudge_count"] == 0
+    assert s["pending_review_count"] == 1
+    assert s["inspection_defect_rate_pct"] == 0.0
+
+
+def test_false_reject_and_escape_are_separated(client, auth):
+    """오검 = AI NG → 사람 OK(과검출), 미검 = AI OK → 사람 NG(놓친 불량)."""
+    _ensure_kpi_item(client, auth)
+    def at(i):
+        return datetime(2026, 3, 3, 9, 0, i, tzinfo=timezone.utc).isoformat()
+    ids = {}
+    for i, (lot, v) in enumerate([("FR", "NG"), ("ES", "OK"), ("TN", "NG"), ("TP", "OK")]):
+        ids[lot] = client.post("/inspection", json={
+            "lot": f"SEP-{lot}", "item_code": "KPI", "cam_id": "C", "inspected_at": at(i),
+            "final_verdict": v, "defect_codes": ["LEN"] if v == "NG" else [],
+            "review_flag": v == "NG", "mes_synced": False, "proc_time_ms": 90,
+        }).json()["id"]
+    rv = lambda lot, mv: client.patch(  # noqa: E731
+        f"/inspection/{ids[lot]}/review", headers=auth("qa1"),
+        json={"manual_verdict": mv, "review_flag": False})
+    rv("FR", "OK")   # AI NG, 사람 OK  → 오검
+    rv("ES", "NG")   # AI OK, 사람 NG  → 미검(표본 감사로 찾음)
+    rv("TN", "NG")   # AI NG, 사람 NG  → 정상 판정
+    rv("TP", "OK")   # AI OK, 사람 OK  → 정상 판정(감사 표본)
+    s = client.get("/kpi/summary", headers=auth("op1"), params={"period": "2026-03"}).json()
+    assert s["total_inspected"] == 4
+    assert (s["misjudge_count"], s["miss_count"]) == (1, 1)
+    assert (s["misjudge_rate_pct"], s["miss_rate_pct"]) == (25.0, 25.0)
+    assert s["audited_count"] == 4 and s["pending_review_count"] == 0
+    assert s["inspection_defect_rate_pct"] == 50.0
 
 
 def test_kpi_empty_period_no_divzero(client, auth):

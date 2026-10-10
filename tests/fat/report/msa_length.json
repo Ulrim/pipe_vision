@@ -1,5 +1,5 @@
 {
-  "title": "AIVIS MSA 분석 결과서 (길이 반복성/재현성, §5 M3)",
+  "title": "AIVIS 길이 측정 결정성 확인 (합성 — MSA 결과서 아님)",
   "dataset_source": "synthetic OK 샘플 1장 반복 측정",
   "sample_count": 1,
   "overall_passed": true,
@@ -26,8 +26,10 @@
   },
   "notes": [
     "동일 샘플 30회 × 3조건 반복 측정.",
-    "파이프라인 결정성으로 반복성(EV)이 0 에 수렴 → 측정시스템 우수.",
+    "파이프라인 결정성으로 반복성(EV)이 0 — 같은 입력이면 같은 출력(회귀 확인용).",
+    "측정시스템 능력(실제 %GR&R)은 실물 부품·실제 카메라로만 확인된다: python -m vision.tools.run_msa (docs/LENGTH_TOLERANCE.md).",
     "재현성(AV)은 surface_inset_ratio 조건 변동에 대한 길이측정 안정성."
   ],
-  "generated_at": "2026-10-09T07:07:41.627791+00:00"
+  "generated_at": "2026-10-10T07:08:00.954172+00:00",
+  "evidence": "synthetic-reference"
 }

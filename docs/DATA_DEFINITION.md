@@ -534,7 +534,8 @@ ai-analysis/                           ← 포털 업로드 코드(AI 모델·�
 | 수량 | total_inspected / defect_count | ai_analysis_result | 총 검사수량 / 공정 중 불량수량(NG) | 22000 / 11 | 개 |
 | 품질 KPI | process_defect_ppm | ai_analysis_result | 공정불량률 = NG ÷ 총검사 × 1,000,000 (목표 600 이하) | 500.0 | ppm |
 | 품질 KPI | auto_inspected / auto_inspection_rate_pct | ai_analysis_result | AI 자동판정 완료수량 / 자동검사율 (목표 100%) | 22000 / 100.0 | 개, % |
-| 품질 KPI | misjudge_count / miss_count | ai_analysis_result | 오검(AI≠사람 재확인) / 미검(재확인 대상 미입력) 수량 | 30 / 5 | 개 |
+| 품질 KPI | misjudge_count / miss_count | ai_analysis_result | 오검(AI NG → 사람 재확인 OK) / 미검(AI OK → 사람 재확인 NG) 수량. 2026-10-10 정의 수정 — 종전 "재확인 대상 미입력" 은 미검이 아니라 재확인 대기 | 30 / 5 | 개 |
+| 품질 KPI | pending_review_count | ai_analysis_result | 재확인 대기(재확인 대상인데 아직 사람이 안 본 건) — 판정 오류 아님 | 12 | 개 |
 | 품질 KPI | inspection_defect_rate_pct | ai_analysis_result | 검사불량률 = (오검+미검) ÷ 총검사 × 100 (목표 30 이하) | 0.159 | % |
 | 연계 KPI | stored_count / mes_synced_count / storage_mes_rate_pct | ai_analysis_result | 저장 건수 / MES 연계 건수 / 저장·연계율 (목표 100%) | 22000 / 22000 / 100.0 | 개, % |
 | 속도 KPI | avg_proc_time_ms | ai_analysis_result | 평균 처리속도 (목표 ≤300ms/ea) | 15.2 | ms |

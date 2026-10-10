@@ -131,7 +131,10 @@ describe("OrderSetup 화면", () => {
 
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(onSaved).toHaveBeenCalled();
-    const [url, init] = (globalThis.fetch as any).mock.calls[0];
+    const fetchMock = globalThis.fetch as unknown as {
+      mock: { calls: [string, RequestInit & { body: string }][] };
+    };
+    const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toContain("/master/items/HP12/spec");
     expect(init.method).toBe("PUT");
     const sent = JSON.parse(init.body);

@@ -147,6 +147,7 @@ export function ReportPage(): JSX.Element {
               <thead>
                 <tr className="bg-slate-50 text-left text-slate-500">
                   <th className="p-2">항목</th>
+                  <th className="p-2 text-center">구축 전</th>
                   <th className="p-2 text-center">목표</th>
                   <th className="p-2 text-center">실적</th>
                   <th className="p-2 text-center">달성 여부</th>
@@ -156,6 +157,7 @@ export function ReportPage(): JSX.Element {
                 {preview.targets.map((t: ReportTarget) => (
                   <tr key={t.key} className="border-t border-slate-100">
                     <td className="p-2">{t.label}</td>
+                    <td className="p-2 text-center tabular-nums text-slate-500">{t.baseline ?? "-"}</td>
                     <td className="p-2 text-center tabular-nums">{t.target}</td>
                     <td className="p-2 text-center tabular-nums">{t.actual}</td>
                     <td className="p-2 text-center">

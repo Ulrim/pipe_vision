@@ -43,6 +43,8 @@ export interface StatusData {
   error: string | null;
   /** 지금 돌고 있는 검사 모드(InspectionStage 값). 첫 결과 전에도 헤더가 모드를 보여준다. */
   stage?: string | null;
+  /** 센서 트리거 대기 중 — 제품이 아직 안 와서 찍지 않았다(미검출 아님). */
+  waiting?: boolean;
 }
 
 export interface StatusEvent {

@@ -185,6 +185,22 @@ AIVIS 에도 같은 규격의 수신부가 있다 — `POST /mes/quality`. 통�
 
 ---
 
+### 6.1 '연계율' 을 무엇으로 셌는가 (2026-10-10 점검 보완)
+
+점검 지적: "MES 주소가 없으면 가짜 전송이 자동으로 켜짐, '연계율 100%' 는 자기 테이블
+적재율". 둘 다 맞았다. 고친 뒤의 규칙:
+
+| 방식(`mes_mode`) | `mes_synced=true` 의 뜻 | MES 가 실제로 받았는지 |
+|---|---|---|
+| `table` | `mes_quality_if` 에 **적재됨** | MES 가 `consumed=true` 로 표시해야 '수신 확인'(`mes_consumed_count`) |
+| `rest` | 실제 MES 가 2xx 로 **응답함** | 응답 = 수신(`consumed=true` 도 함께 기록) |
+| `rest_fake` | 가짜 전송(시험) | **아니다** — 연계율 판정 보류 |
+| `rest_unconfigured` | (찍히지 않음) | 주소 미설정 — 연계 보류 |
+
+KPI·월간 리포트에 `mes_mode` 와 `mes_consumed_count` 가 함께 나간다. **테이블 방식으로
+인수받으려면 "스테이징 적재 = 연계 완료" 를 도입기업과 서면으로 합의**하거나, MES 쪽이
+`consumed` 를 갱신하도록 요청해 수신 확인 건수로 연계율을 보인다.
+
 ## 7. 설정 항목
 
 AIVIS 측 환경변수. MES 담당자는 굵게 표시된 두 개만 정해 주면 된다.
@@ -192,7 +208,8 @@ AIVIS 측 환경변수. MES 담당자는 굵게 표시된 두 개만 정해 주�
 | 변수 | 기본값 | 설명 |
 |---|---|---|
 | **`MES_MODE`** | `table` | **`table`** 또는 **`rest`** |
-| **`MES_REST_URL`** | (없음) | rest 모드의 MES 수신 URL |
+| **`MES_REST_URL`** | (없음) | rest 모드의 MES 수신 URL. **없으면 연계 보류**(행은 미연계로 남고, 주소가 생기면 워치독이 밀린 것을 전부 보낸다) |
+| `MES_REST_FAKE` | `false` | 시험·시연 전용 가짜 전송. 켜면 KPI·리포트에 '가짜 전송 — 증빙 아님' 으로 표시되고 연계율 판정에서 빠진다 |
 | `MES_IDEM_HEADER` | `X-Idempotency-Key` | 멱등키 헤더명(MES 규약에 맞춰 변경) |
 | `MES_REST_TIMEOUT_S` | `5.0` | 요청 타임아웃(초) |
 | `MES_WATCHDOG_INTERVAL_S` | `10.0` | 재전송 워치독 주기(초) |

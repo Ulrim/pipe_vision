@@ -50,6 +50,8 @@ from aivis_types import DefectCode, InspectionResult, InspectionStage, Verdict  
 
 from .client import ApiClient
 from .hostinfo import HostInfo
+from .timing import CycleClock, per_ea_ms
+from vision.fieldio import SignalTower  # noqa: E402
 from .config import WorkerConfig
 from .dataset import ensure_dataset
 from .spool import SpoolQueue
@@ -102,6 +104,7 @@ class Worker:
         pipeline: Optional[InspectionPipeline] = None,
         spool: Optional[SpoolQueue] = None,
         image_uploader=None,
+        tower=None,
     ) -> None:
         self.cfg = config
         self._owns_client = client is None
@@ -126,6 +129,11 @@ class Worker:
         # 이 파이 자신의 상태(온도·디스크 등)를 하트비트에 싣는다 — 파이가 여러
         # 대면 사무실 화면이 각 대의 건강을 따로 봐야 한다(5s 캐시).
         self._host = HostInfo(config.images_dir)
+        # 직전 사이클의 결과 전송(POST→DB 커밋) 시간. 행에는 못 담으므로 하트비트로.
+        self._last_post_ms: Optional[int] = None
+        # 경광등·부저(파이 GPIO). 핀 env 가 없으면 NullTower — 아무것도 안 한다.
+        # 서버가 끊겨도 현장 경보는 파이가 직접 울린다(M6).
+        self.tower = tower if tower is not None else SignalTower.from_env()
         self.item: Optional[ItemMaster] = None
         # 마지막 기준정보 리로드 시각(UTC). startup 성공 시 now 로 세팅되어 이후
         # item_reload_s 주기로 재조회한다(핫리로드 — 재시작 없이 캘리브레이션 반영).
@@ -440,6 +448,7 @@ class Worker:
         proc_time_ms: int,
         ts: str,
         error: Optional[str],
+        timings: Optional[dict] = None,
     ) -> None:
         """검사 사이클 상태 하트비트 1건을 API 에 베스트에포트로 보낸다.
 
@@ -462,10 +471,48 @@ class Worker:
                     "ts": ts,
                     "error": error,
                     "host": self._host.snapshot(),
+                    # 단계별 처리시간(취득·판정·저장·직전 전송) — 어디가 느린지.
+                    "timings": timings,
                 }
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("status 하트비트 구성/전송 예외(무시): %s", exc)
+
+    def _send_idle_status(self) -> None:
+        """센서 트리거 대기 중(제품 없음) 하트비트 — 촬영은 안 했다.
+
+        이게 없으면 제품이 안 오는 동안 하트비트가 끊겨 화면에 '정지' 로 뜬다.
+        detected=0 이지만 '미검출' 이 아니라 waiting=True(제품 대기)다.
+        """
+        try:
+            self.client.post_status(
+                {
+                    "cam_id": self.cfg.cam_id,
+                    "item_code": self._cur_item_code(),
+                    "stage": self._cur_stage(),
+                    "expected": int(getattr(self.item, "expected_count", 1) or 1),
+                    "detected": 0,
+                    "ng": 0,
+                    "mismatch": False,
+                    "proc_time_ms": 0,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "error": None,
+                    "host": self._host.snapshot(),
+                    "waiting": True,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("대기 하트비트 예외(무시): %s", exc)
+
+    def _timed_post(self, payload: dict) -> tuple[int, str]:
+        """결과 전송 + 그 시간을 기록(다음 하트비트의 timings.post_ms)."""
+        import time as _t
+
+        t = _t.perf_counter()
+        try:
+            return self.client.post_inspection_json(payload)
+        finally:
+            self._last_post_ms = int(round((_t.perf_counter() - t) * 1000.0))
 
     # --- 검사 사이클 디스패치(단일 / 배치) ---
     def run_once(self) -> bool:
@@ -499,11 +546,13 @@ class Worker:
         status = -1
         detail = ""
         pending_images: list[str] = []
+        clock = CycleClock()  # 취득 시작 = 처리시간 기준점(§1.2 지표3)
         try:
             grab = self.acq.grab_with_retry()
             if not grab.ok:
                 log.warning("프레임 취득 실패: %s", grab.error)
                 self.failure += 1
+                self.tower.fault()
                 # 취득 실패(카메라 프리즈)도 하트비트로 알린다 — HMI 가 죽은
                 # 듯 보이지 않도록. detected=0, error 로 원인 전달.
                 self._send_status(
@@ -516,14 +565,15 @@ class Worker:
                     error=grab.error,
                 )
                 return False
+            clock.mark("grab")
             inspected_at = datetime.now(timezone.utc)
-            # proc_time_ms KPI(<300ms) 에 이미지 I/O 가 포함되지 않도록
-            # 판정(pipeline.run) 을 먼저 끝낸 뒤 raw/result 를 저장한다.
-            # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를
-            # 그린다(계측 이후 데이터라 처리속도 KPI 영향 없음 — 사용자 피드백②).
+            # 판정 → 이미지 저장 순. 처리시간은 계획서 정의대로 **취득 시작 ~ 이미지
+            # 저장 완료**를 잰다(2026-10-10 점검: 종전엔 판정 구간만 재 짧게 나왔다).
+            # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를 그린다.
             verdict, length_span = self.pipeline.run_with_geometry(
                 grab.frame, self.item, stage=self._cur_stage()
             )
+            clock.mark("infer")
             saved = save_inspection_images(
                 grab.frame,
                 verdict,
@@ -536,6 +586,7 @@ class Worker:
                 cam_id=self.cfg.cam_id,
                 length_span=length_span,
             )
+            clock.mark("save")
             if saved.error:
                 # 디스크 쓰기 실패는 검사결과 적재를 막지 않는다(경로 None 로 진행).
                 log.warning("이미지 저장 실패(계속 진행): %s", saved.error)
@@ -552,6 +603,9 @@ class Worker:
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,
             )
+            # 행의 처리시간 = 취득~저장(파이프라인 내부 시간 → 사이클 전체로 교체).
+            result = result.model_copy(update={"proc_time_ms": clock.total_ms()})
+            self.tower.signal(ng=bool(_ng_flag(result.final_verdict)))
             # 라이브니스 하트비트: 검출 1건 성공 사이클(적재 성공/실패와 무관).
             # 판정(NG)은 최종 result.final_verdict 로 판단한다.
             self._send_status(
@@ -562,6 +616,7 @@ class Worker:
                 proc_time_ms=int(result.proc_time_ms or 0),
                 ts=inspected_at.isoformat(),
                 error=None,
+                timings=clock.breakdown(post_ms=self._last_post_ms),
             )
             pending_images = list(getattr(saved, "pending_images", ()) or ())
             if pending_images:
@@ -574,7 +629,7 @@ class Worker:
                     len(pending_images),
                 )
                 return False
-            status, detail = self.client.post_inspection_json(
+            status, detail = self._timed_post(
                 result.model_dump(mode="json")
             )
         except Exception as exc:  # noqa: BLE001
@@ -613,7 +668,7 @@ class Worker:
         4xx 영구 오류는 실패 계상. 이미지 pending 은 호출자가 사전에 처리한다.
         """
         try:
-            status, detail = self.client.post_inspection_json(
+            status, detail = self._timed_post(
                 result.model_dump(mode="json")
             )
         except Exception as exc:  # noqa: BLE001
@@ -644,11 +699,13 @@ class Worker:
         튜브가 적재 성공하면 True.
         """
         assert self.item is not None and self.acq is not None
+        clock = CycleClock()
         try:
             grab = self.acq.grab_with_retry()
             if not grab.ok:
                 log.warning("프레임 취득 실패(배치): %s", grab.error)
                 self.failure += 1
+                self.tower.fault()
                 # 취득 실패도 하트비트로 알린다(detected=0, error). HMI 라이브니스.
                 self._send_status(
                     expected=int(getattr(self.item, "expected_count", 1) or 1),
@@ -660,13 +717,14 @@ class Worker:
                     error=grab.error,
                 )
                 return False
+            clock.mark("grab")
             inspected_at = datetime.now(timezone.utc)
             expected = int(getattr(self.item, "expected_count", 1) or 1)
-            # 판정(proc_time KPI)을 먼저 끝낸 뒤 이미지 저장(§4).
             batch = inspect_batch(
                 grab.frame, self.item, expected_count=expected,
                 axis=self._orientation(), stage=self._cur_stage(),
             )
+            clock.mark("infer")
             saved = save_batch_images(
                 grab.frame,
                 batch,
@@ -677,6 +735,7 @@ class Worker:
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
             )
+            clock.mark("save")
             if saved.error:
                 log.warning("배치 이미지 저장 실패(계속 진행): %s", saved.error)
 
@@ -697,6 +756,13 @@ class Worker:
             results = [
                 tube_to_inspection(t, batch_meta=meta) for t in batch.tubes
             ]
+            # 처리시간 = 프레임 전체(취득~저장) ÷ 개수 → ms/ea(지표 단위). 프레임
+            # 전체는 하트비트 timings.total_ms 로 함께 남긴다.
+            frame_ms = clock.total_ms()
+            ea = per_ea_ms(frame_ms, len(results))
+            results = [r.model_copy(update={"proc_time_ms": ea}) for r in results]
+            # 한 장에 1개라도 NG(또는 개수 불일치)면 경광등 적색.
+            self.tower.signal(ng=bool(batch.ng_count) or bool(batch.count_mismatch))
 
             log.info(
                 "배치 검사: detected=%d/%s NG=%d mismatch=%s tubes=%d",
@@ -726,19 +792,16 @@ class Worker:
                     all_ok = False
             # 라이브니스 하트비트: 0검출(빈 배치) 사이클에서도 반드시 보낸다 —
             # detected=0 이면 POST 가 0건이라 HMI 가 죽은 듯 보이는 문제를 막는다.
-            # proc_time 은 튜브들 proc_time_ms 중 최댓값(없으면 0)으로 근사한다.
-            proc = max(
-                (int(getattr(t, "proc_time_ms", 0) or 0) for t in batch.tubes),
-                default=0,
-            )
+            # proc_time_ms = 프레임 전체(취득~저장). 1개당은 timings.per_ea_ms.
             self._send_status(
                 expected=expected,
                 detected=batch.count_detected,
                 ng=batch.ng_count,
                 mismatch=bool(batch.count_mismatch),
-                proc_time_ms=proc,
+                proc_time_ms=frame_ms,
                 ts=inspected_at.isoformat(),
                 error=None,
+                timings=clock.breakdown(post_ms=self._last_post_ms, n=max(1, len(results))),
             )
             return all_ok and len(results) > 0
         except Exception as exc:  # noqa: BLE001
@@ -760,18 +823,22 @@ class Worker:
         """
         assert self.item is not None and self.acq is not None
         expected = int(getattr(self.item, "expected_count", 1) or 1)
+        clock = CycleClock()
         try:
             grab = self.acq.grab_with_retry()
             if not grab.ok:
                 log.warning("프레임 취득 실패(개수): %s", grab.error)
                 self.failure += 1
+                self.tower.fault()
                 self._send_status(expected=expected, detected=0, ng=0, mismatch=True,
                                   proc_time_ms=0,
                                   ts=datetime.now(timezone.utc).isoformat(),
                                   error=grab.error)
                 return False
+            clock.mark("grab")
             inspected_at = datetime.now(timezone.utc)
             bundle = count_bundle(grab.frame)
+            clock.mark("infer")
             detected = int(bundle.count)
             mismatch = detected != expected
             verdict = Verdict.NG.value if mismatch else Verdict.OK.value
@@ -786,6 +853,7 @@ class Worker:
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
             )
+            clock.mark("save")
             if saved.error:
                 log.warning("개수 이미지 저장 실패(계속 진행): %s", saved.error)
 
@@ -805,10 +873,11 @@ class Worker:
                 confidence=round(conf, 4),
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,
-                proc_time_ms=int(bundle.proc_time_ms),
+                proc_time_ms=clock.total_ms(),  # 취득~저장(§1.2 정의)
                 review_flag=mismatch,
             )
             log.info("개수 확인: detected=%d expected=%d → %s", detected, expected, verdict)
+            self.tower.signal(ng=mismatch)
 
             pending_images = list(getattr(saved, "pending_images", ()) or ())
             if pending_images:
@@ -821,8 +890,9 @@ class Worker:
                 ok = self._post_or_classify(result)
             self._send_status(expected=expected, detected=detected,
                               ng=1 if mismatch else 0, mismatch=mismatch,
-                              proc_time_ms=int(bundle.proc_time_ms),
-                              ts=inspected_at.isoformat(), error=None)
+                              proc_time_ms=clock.total_ms(),
+                              ts=inspected_at.isoformat(), error=None,
+                              timings=clock.breakdown(post_ms=self._last_post_ms))
             return ok
         except Exception as exc:  # noqa: BLE001
             log.exception("개수 확인 사이클 예외: %s", exc)
@@ -861,12 +931,24 @@ class Worker:
         n = 0
         while not self._stop:
             # 트리거(주기 sleep). 종료 신호를 빠르게 반영하기 위해 짧은 timeout.
+            fired = True
+            event_driven = bool(getattr(self.trigger, "event_driven", False))
             try:
-                self.trigger.wait_for_trigger(timeout=self.cfg.interval_s or None)
+                fired = self.trigger.wait_for_trigger(
+                    timeout=(self.cfg.trigger_idle_s if event_driven else (self.cfg.interval_s or None))
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("트리거 대기 예외(%s) — 계속", exc)
+                fired = not event_driven
             if self._stop:
                 break
+            if event_driven and not fired:
+                # 센서 트리거인데 제품이 안 왔다 — 찍지 않는다(빈 컨베이어 촬영 금지).
+                # 대기 하트비트만 보내고 기준정보·스풀은 평소처럼 돌린다.
+                self._maybe_reload_item(datetime.now(timezone.utc))
+                self._send_idle_status()
+                self.flush_spool()
+                continue
             # 기준정보 핫리로드(주기 경과 시에만 실제 재조회) — 검사 직전에 반영해
             # 이번 사이클부터 최신 캘리브레이션/공차/임계값/expected_count 를 쓴다.
             self._maybe_reload_item(datetime.now(timezone.utc))
@@ -923,6 +1005,10 @@ class Worker:
         try:
             if self.trigger is not None:
                 self.trigger.close()
+        except Exception as exc:  # noqa: BLE001
+            log.debug("트리거 종료 예외(무시): %s", exc)
+        try:
+            self.tower.close()  # 경광등·부저 끄기
         except Exception:  # noqa: BLE001
             pass
         if self._owns_client:

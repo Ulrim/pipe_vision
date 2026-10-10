@@ -1,9 +1,10 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { fetchInspections } from "@/api/endpoints";
+import { fetchInspectionStats } from "@/api/endpoints";
 import { DefectPie } from "@/components/DefectPie";
 import { TrendChart } from "@/components/TrendChart";
-import { defectDistribution, monthlyDefectTrend } from "@/lib/stats";
+import { distFromServer, trendFromServer } from "@/lib/stats";
+import { fmtNum } from "@/lib/format";
 
 /** M11 — 불량유형별 통계 + 월별 추이. 기간/품목 필터. */
 export function StatisticsPage(): JSX.Element {
@@ -12,20 +13,16 @@ export function StatisticsPage(): JSX.Element {
   const [item, setItem] = useState("");
   const [applied, setApplied] = useState({ from: "", to: "", item: "" });
 
-  const { data, isFetching } = useQuery({
-    queryKey: ["stats-inspections", applied],
+  // 서버가 전 건을 센다(표본 아님). 종전에는 행 5,000건을 요청했는데 목록 API
+  // 상한이 2,000건이라 요청이 실패했다(2026-10-10 점검 지적).
+  const { data, isFetching, isError, error } = useQuery({
+    queryKey: ["stats-server", applied],
     queryFn: () =>
-      fetchInspections({
-        from: applied.from,
-        to: applied.to,
-        item: applied.item,
-        limit: 5000, // 집계 표본
-      }),
+      fetchInspectionStats({ from: applied.from, to: applied.to, item: applied.item }),
   });
 
-  const rows = data ?? [];
-  const dist = useMemo(() => defectDistribution(rows), [rows]);
-  const trend = useMemo(() => monthlyDefectTrend(rows), [rows]);
+  const dist = useMemo(() => distFromServer(data), [data]);
+  const trend = useMemo(() => trendFromServer(data), [data]);
 
   return (
     <div className="space-y-4">
@@ -50,7 +47,18 @@ export function StatisticsPage(): JSX.Element {
           적용
         </button>
         {isFetching && <span className="text-sm text-slate-400">집계 중…</span>}
+        {data && (
+          <span className="text-sm text-slate-500" data-testid="stats-total">
+            전체 {fmtNum(data.total, 0)}건 · NG {fmtNum(data.ng, 0)}건 (전 건 집계)
+          </span>
+        )}
       </div>
+
+      {isError && (
+        <div className="card bg-ng-bg p-3 text-sm text-ng-fg" data-testid="stats-error">
+          통계 조회 실패: {(error as Error)?.message}
+        </div>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="card p-4">

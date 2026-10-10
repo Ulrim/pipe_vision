@@ -10,7 +10,7 @@ vi.mock("@/api/endpoints", () => ({
   fetchInspectionImageBlob: (...a: unknown[]) => fetchInspectionImageBlob(...a),
 }));
 
-import { LivePage, agoKo, gridCols } from "./LivePage";
+import { LivePage, agoKo, gridCols, procView } from "./LivePage";
 
 const NOW = new Date().toISOString();
 
@@ -173,6 +173,18 @@ describe("LivePage — 파이 여러 대를 한 화면에", () => {
     expect(gridCols(3)).toContain("2xl:grid-cols-3");
     expect(gridCols(4)).toBe("lg:grid-cols-2");
     expect(gridCols(6)).toContain("2xl:grid-cols-3");
+  });
+
+  it("procView — 취득~저장 기준, 다발은 1개당으로 판정하고 단계별로 나눠 적는다", () => {
+    const single = procView({ proc_time_ms: 316, timings: { grab_ms: 40, infer_ms: 191, save_ms: 85, total_ms: 316, n: 1, per_ea_ms: 316 } });
+    expect(single.value).toBe("316ms");
+    expect(single.alert).toBe(true);
+    expect(single.sub).toContain("취득 40 · 판정 191 · 저장 85");
+    const bundle = procView({ proc_time_ms: 640, timings: { total_ms: 640, n: 20, per_ea_ms: 32 } });
+    expect(bundle.value).toBe("32ms/ea");
+    expect(bundle.alert).toBe(false);
+    expect(bundle.sub).toContain("한 장 640ms ÷ 20개");
+    expect(procView({ proc_time_ms: null, timings: null }).value).toBe("—");
   });
 
   it("agoKo — 초/분/시간, 기록 없음", () => {

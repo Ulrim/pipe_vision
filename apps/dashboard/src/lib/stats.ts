@@ -4,6 +4,7 @@
  */
 import type { InspectionResult } from "@aivis/shared-types";
 import { DefectCode, Verdict } from "@aivis/shared-types";
+import type { InspectionStatsResponse } from "@/api/endpoints";
 
 export interface DefectDist {
   code: DefectCode;
@@ -49,4 +50,23 @@ export function monthlyDefectTrend(rows: InspectionResult[]): MonthlyTrendPoint[
       ng,
       defectRatePct: total === 0 ? 0 : (ng / total) * 100,
     }));
+}
+
+/** 서버 집계(GET /inspection/stats) → 차트 입력. 코드 순서는 코드표 순. */
+export function distFromServer(res: InspectionStatsResponse | undefined): DefectDist[] {
+  if (!res) return [];
+  const by = new Map(res.by_code.map((c) => [c.code, c.count]));
+  return (Object.values(DefectCode) as DefectCode[])
+    .map((code) => ({ code, count: by.get(code) ?? 0 }))
+    .filter((d) => d.count > 0);
+}
+
+export function trendFromServer(res: InspectionStatsResponse | undefined): MonthlyTrendPoint[] {
+  if (!res) return [];
+  return res.monthly.map((m) => ({
+    month: m.month,
+    total: m.total,
+    ng: m.ng,
+    defectRatePct: m.defect_rate_pct,
+  }));
 }

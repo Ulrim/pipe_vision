@@ -273,6 +273,21 @@ export interface KpiSummary {
   leak_defect_qty?: number | null;
   /** 출하유출불량률(ppm). 수기 입력이 없으면 null. */
   shipment_leak_ppm?: number | null;
+
+  /** 재확인 대기(재확인 대상인데 아직 사람이 안 봄). 미검이 아니다. */
+  pending_review_count?: number | null;
+  /** 사람이 재확인한 건수 — 오검·미검을 알 수 있는 표본. */
+  audited_count?: number | null;
+  /** 오검률(%) = AI NG → 사람 OK, ÷ 총검사. */
+  misjudge_rate_pct?: number | null;
+  /** 미검률(%) = AI OK → 사람 NG, ÷ 총검사. */
+  miss_rate_pct?: number | null;
+  /** MES 연계를 무엇으로 셌나: table | rest | rest_fake(가짜 전송 — 증빙 아님). */
+  mes_mode?: string | null;
+  /** MES 가 실제로 받아갔음이 확인된 건수. */
+  mes_consumed_count?: number | null;
+  /** Claim 연 누계(해당 연도 1월~해당 월). */
+  claim_count_ytd?: number | null;
 }
 
 /* =========================================================================

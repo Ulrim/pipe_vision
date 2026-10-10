@@ -115,8 +115,12 @@ def test_suffixes_do_not_collide():
 def test_matching_agrees_with_vision_benchmark():
     """vision 쪽 매칭과 결과가 같아야 한다 — 구현이 둘이라 조용히 갈라지면 안 된다."""
     import sys
+    from pathlib import Path
 
-    sys.path.insert(0, "/home/user/pipe_vision/services")
+    # 저장소 기준 상대경로(종전엔 개발 PC 절대경로라 CI 에서 'No module named vision').
+    services = str(Path(__file__).resolve().parents[2])
+    if services not in sys.path:
+        sys.path.insert(0, services)
     from vision.tools.bundle_benchmark import match as vmatch
 
     gt = [(10.0, 10.0, 5.0), (50.0, 50.0, 5.0), (90.0, 90.0, 5.0)]

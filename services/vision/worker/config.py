@@ -100,6 +100,9 @@ class WorkerConfig:
     # 방해하지 않는다. 기본 15.0s: 현장에서 웹으로 값을 고친 뒤 늦어도 15초 안에
     # 반영되도록(체감 즉시) 하되, 정상 상황에서 재조회는 GET 1회로 저렴하다.
     item_reload_s: float = 15.0
+    # 센서(GPIO) 트리거 대기 상한(초). 이 시간 동안 제품이 안 오면 촬영 없이 대기
+    # 하트비트만 보낸다(서버의 '정상' 기준 15초보다 짧게).
+    trigger_idle_s: float = 5.0
     # POST 타임아웃.
     http_timeout_s: float = 5.0
     # GET /master 인증 폴백용 시드 계정.
@@ -154,6 +157,7 @@ class WorkerConfig:
             api_wait_timeout_s=_env_int("AIVIS_API_WAIT_TIMEOUT_S", 120),
             item_wait_timeout_s=_env_int("AIVIS_ITEM_WAIT_TIMEOUT_S", 120),
             item_reload_s=_env_float("AIVIS_ITEM_RELOAD_S", 15.0),
+            trigger_idle_s=_env_float("AIVIS_TRIGGER_IDLE_S", 5.0),
             http_timeout_s=float(_env_int("AIVIS_HTTP_TIMEOUT_MS", 5000)) / 1000.0,
             seed_admin_user=_env("AIVIS_SEED_ADMIN_USER", "admin") or "admin",
             seed_admin_password=_env("AIVIS_SEED_ADMIN_PASSWORD", "admin1234")

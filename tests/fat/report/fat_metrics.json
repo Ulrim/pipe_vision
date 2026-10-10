@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "12.000ms",
+      "measured": "17.592ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -132,12 +132,31 @@
     }
   },
   "metric3_latency": {
+    "scope": "acquire_to_save",
+    "breakdown_mean_ms": {
+      "read_ms": 1.499,
+      "infer_ms": 7.749,
+      "save_ms": 3.701
+    },
+    "infer_only": {
+      "scope": "acquire_to_save",
+      "breakdown_mean_ms": {},
+      "count": 1000,
+      "p50_ms": 7.388,
+      "p95_ms": 10.807,
+      "p99_ms": 12.328,
+      "max_ms": 31.705,
+      "mean_ms": 7.749,
+      "over_300_count": 0,
+      "threshold_ms": 300.0,
+      "passed": true
+    },
     "count": 1000,
-    "p50_ms": 9.0,
-    "p95_ms": 12.0,
-    "p99_ms": 14.0,
-    "max_ms": 23.0,
-    "mean_ms": 8.872,
+    "p50_ms": 12.448,
+    "p95_ms": 17.592,
+    "p99_ms": 19.936,
+    "max_ms": 36.451,
+    "mean_ms": 12.949,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -156,5 +175,6 @@
     "임계값은 ItemMaster(기준정보)에서 읽음 — 하드코딩 아님.",
     "지표4: POST /inspection(내부토큰) 적재 → DB 조회 + MES watchdog 1회 연계."
   ],
-  "generated_at": "2026-10-09T07:07:40.987582+00:00"
+  "generated_at": "2026-10-10T07:08:00.256173+00:00",
+  "evidence": "synthetic-reference"
 }
