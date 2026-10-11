@@ -19,6 +19,7 @@ from aivis_types import LogCategory
 from core.logging import write_log
 from db.base import SessionLocal
 from db.models import Inspection
+from core.training import not_training
 from mes.adapter import MesAdapter, build_adapter
 from mes.config import MesConfig, get_mes_config
 
@@ -52,11 +53,13 @@ class LinkageStatus:
 def get_linkage_status(db: Session, cfg: MesConfig | None = None) -> LinkageStatus:
     """연계 상태 집계. total/synced/pending/rate."""
     cfg = cfg or get_mes_config()
-    total = db.execute(select(func.count()).select_from(Inspection)).scalar_one()
+    # 수집용 LOT(TRAIN-…)은 연계 대상이 아니다 — 분모에서도 뺀다(2026-10-11).
+    prod = not_training(Inspection.lot)
+    total = db.execute(select(func.count()).select_from(Inspection).where(prod)).scalar_one()
     synced = db.execute(
         select(func.count())
         .select_from(Inspection)
-        .where(Inspection.mes_synced.is_(True))
+        .where(Inspection.mes_synced.is_(True), prod)
     ).scalar_one()
     pending = total - synced
     rate = (synced / total * 100.0) if total else 100.0
@@ -73,7 +76,7 @@ def _pending_rows(db: Session, batch_size: int) -> list[Inspection]:
     """미전송(mes_synced=false) 행을 오래된 순으로 batch_size 만큼."""
     stmt = (
         select(Inspection)
-        .where(Inspection.mes_synced.is_(False))
+        .where(Inspection.mes_synced.is_(False), not_training(Inspection.lot))
         .order_by(Inspection.inspected_at.asc())
         .limit(batch_size)
     )

@@ -36,7 +36,7 @@
 
 ### inspection — 검사결과 (제품 1개 = 1행) (§5 M7,M8)
 식별/메타: `id`(BIGSERIAL PK), `lot`(NOT NULL), `work_order`, `item_code`(FK→item_master),
-`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `shift`, `operator`.
+`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `tube_bbox`(JSONB, 2026-10-11 마이그레이션 0011 — 그 튜브의 원본 프레임 픽셀 박스 `[x0,y0,x1,y1]`. 라벨링 화면이 어느 튜브인지 강조하고 `labeling.cli dataset` 이 그 튜브만 잘라 학습셋에 넣는다. 단일 사진·이전 적재분은 NULL), `shift`, `operator`.
 길이: `ref_length_mm`, `meas_length_mm`, `deviation_mm`, `length_verdict`(OK/NG).
 표면(0~1): `oil_score`, `discolor_score`, `scratch_score` (NUMERIC(5,4)).
 종합: `final_verdict`(NOT NULL OK/NG), `defect_codes`(TEXT[] {LEN,OIL,DIS,SCR,MULTI}),

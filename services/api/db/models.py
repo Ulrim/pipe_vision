@@ -113,6 +113,8 @@ class Inspection(Base):
     )
     # 배치 내 튜브 순번(0=단일 튜브/현행). 자연키 구성요소(ux_insp_natkey).
     tube_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # 다발 사진 속 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 라벨링 강조·튜브 단위 학습셋.
+    tube_bbox: Mapped[list | None] = mapped_column(JsonB)
     shift: Mapped[str | None] = mapped_column(Text)
     operator: Mapped[str | None] = mapped_column(Text)
 

@@ -29,6 +29,7 @@ from core.logging import write_log
 from core.security import CurrentUser, require_min_role
 from db.base import get_db
 from db.models import ActiveOrder, ItemMaster, StationConfig
+from core.training import is_training_lot
 from db.serialize import item_to_schema
 
 router = APIRouter(prefix="/master/items", tags=["master"])
@@ -91,6 +92,8 @@ class ActiveOrderOut(ActiveOrderIn):
     updated_by: Optional[str] = None
     updated_at: Optional[datetime] = None
     stage_source: Optional[str] = None  # "station" | "order" | None
+    #: LOT 이 수집용(TRAIN-…)인가 — KPI·통계·MES 에서 빠진다(2026-10-11).
+    training: bool = False
 
 
 class StationOut(BaseModel):
@@ -113,6 +116,7 @@ def _active_out(row: ActiveOrder, station: Optional[StationConfig] = None) -> Ac
         stage_source=source,
         updated_by=row.updated_by,
         updated_at=row.updated_at,
+        training=is_training_lot(row.lot),
     )
 
 

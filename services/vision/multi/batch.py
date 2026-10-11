@@ -256,6 +256,17 @@ class BatchMeta:
     result_image_path: Optional[str] = None
 
 
+def _bbox_list(bbox) -> Optional[list]:
+    """(x0,y0,x1,y1) → [int,...]. 형식이 이상하면 None(저장을 막지 않는다)."""
+    try:
+        vals = [int(round(float(v))) for v in bbox]
+    except (TypeError, ValueError):
+        return None
+    if len(vals) != 4 or vals[2] <= vals[0] or vals[3] <= vals[1]:
+        return None
+    return vals
+
+
 def tube_to_inspection(
     tube: TubeResult,
     *,
@@ -277,6 +288,8 @@ def tube_to_inspection(
         inspection_stage=batch_meta.inspection_stage,
         inspected_at=batch_meta.inspected_at,
         tube_index=max(0, int(tube.index) - 1),
+        # 사진 속 위치 — 라벨링 화면 강조·튜브 단위 학습셋 자르기(2026-10-11).
+        tube_bbox=_bbox_list(tube.bbox),
         shift=batch_meta.shift,
         operator=batch_meta.operator,
         ref_length_mm=batch_meta.ref_length_mm,

@@ -64,6 +64,9 @@ export function KpiPage(): JSX.Element {
             <Stat k="총 검사수" v={fmtNum(data.total_inspected, 0)} />
             <Stat k="불량수" v={fmtNum(data.defect_count, 0)} />
             <Stat k="자동검사 완료" v={fmtNum(data.auto_inspected, 0)} />
+            {/* 수집용 LOT(TRAIN-…)은 결함 시료를 일부러 섞어 찍은 학습 데이터라
+                전부 뺐다. 몇 건 뺐는지 보여야 "왜 검사수가 적지?" 를 설명할 수 있다. */}
+            <Stat k="제외(수집용 LOT)" v={fmtNum(data.excluded_training_count ?? 0, 0)} />
           </StatGroup>
           {/* 오검 = AI NG 인데 사람이 OK, 미검 = AI OK 인데 사람이 NG(놓친 불량).
               재확인 대기는 판정 오류가 아니다 — 아직 사람이 안 본 것. 미검은 AI 가

@@ -27,6 +27,7 @@ from aivis_types import (
 from core import heartbeat, local_queue
 from core.config import get_settings
 from core.inspection_service import save_inspection
+from core.training import is_training_lot, not_training
 from core.logging import write_log
 from core.security import (
     CurrentUser,
@@ -84,6 +85,8 @@ class BatchStatus(BaseModel):
     timings: Optional[dict[str, int]] = None
     # 센서 트리거 대기 중(제품 없음) — 촬영 안 함. '미검출' 과 다르다.
     waiting: bool = False
+    # 지금 LOT — 수집용(TRAIN-…)이면 화면에 "데이터 수집 중 — KPI 제외" 를 띄운다.
+    lot: Optional[str] = None
 
 # write_log(DB 기반 sys_log)와 local_queue(파일) 는 둘 다 같은 디스크에 쓴다.
 # 디스크 동시 소진 등으로 두 경로가 함께 실패하면(§M7 DoD 위반: 검사결과 완전
@@ -255,10 +258,15 @@ async def broadcast_status(
             "error": body.error,
             "timings": body.timings,
             "waiting": body.waiting,
+            "lot": body.lot,
+            "training": is_training_lot(body.lot),
         },
         host=body.host.model_dump() if body.host else None,
     )
-    await hub.broadcast(make_event("status", body.model_dump(mode="json")))
+    # 수집용 판정은 서버가 한다(접두어 설정이 서버에만 있다) — 화면은 이 값만 본다.
+    payload = body.model_dump(mode="json")
+    payload["training"] = is_training_lot(body.lot)
+    await hub.broadcast(make_event("status", payload))
     return {"status": "broadcast"}
 
 
@@ -350,7 +358,10 @@ class InspectionStats(BaseModel):
 _STAT_CODES = ("LEN", "OIL", "DIS", "SCR", "COUNT", "MULTI")
 
 
-def _stats_filters(stmt, *, item, from_, to, cam_id, stage):
+def _stats_filters(stmt, *, item, from_, to, cam_id, stage, include_training=False):
+    if not include_training:
+        # 수집용 LOT(TRAIN-…)은 일부러 결함을 섞은 학습 데이터 — 생산 통계에서 뺀다.
+        stmt = stmt.where(not_training(Inspection.lot))
     if item:
         stmt = stmt.where(Inspection.item_code == item)
     if cam_id:
@@ -372,6 +383,7 @@ def inspection_stats(
     to: Optional[datetime] = Query(None),
     cam_id: Optional[str] = Query(None),
     stage: Optional[str] = Query(None),
+    include_training: bool = Query(False, description="수집용 LOT(TRAIN-…)도 포함"),
     _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
 ):
     """불량유형 분포 + 월별(KST) 불량률 — 전 건을 DB 에서 집계(표본 아님).
@@ -381,7 +393,8 @@ def inspection_stats(
     """
     from sqlalchemy import case, func, literal_column
 
-    kw = dict(item=item, from_=from_, to=to, cam_id=cam_id, stage=stage)
+    kw = dict(item=item, from_=from_, to=to, cam_id=cam_id, stage=stage,
+              include_training=include_training)
     total, ng = db.execute(
         _stats_filters(
             select(

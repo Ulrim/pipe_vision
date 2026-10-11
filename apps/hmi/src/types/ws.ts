@@ -45,6 +45,10 @@ export interface StatusData {
   stage?: string | null;
   /** 센서 트리거 대기 중 — 제품이 아직 안 와서 찍지 않았다(미검출 아님). */
   waiting?: boolean;
+  /** 지금 찍고 있는 LOT(첫 결과 전에도 헤더가 보여준다). */
+  lot?: string | null;
+  /** 수집용 LOT(TRAIN-…) — 이 결과는 KPI·MES 에서 빠진다(서버가 판정). */
+  training?: boolean;
 }
 
 export interface StatusEvent {

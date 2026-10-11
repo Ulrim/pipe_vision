@@ -61,7 +61,9 @@ def _cmd_dataset(args: argparse.Namespace) -> int:
     """대시보드 라벨(GET /labels/export)을 학습용 폴더 구조로 펼친다.
 
     라벨을 붙여도 학습을 돌릴 수 없으면 아무 일도 일어나지 않는다 — 이 명령이
-    라벨링 화면과 train_anomaly.py 사이의 빈 칸을 메운다.
+    라벨링 화면과 train_anomaly.py 사이의 빈 칸을 메운다. 다발 사진은 튜브
+    하나씩 잘라 넣고, 파일마다 라벨 사이드카를 쓰므로 출력 폴더를 그대로
+    AIVIS_DATASET_DIR 로 지정하면 FAT 하니스가 항목별 정확도를 잰다.
     """
     images = args.images or os.getenv("AIVIS_IMAGES_DIR")
     if not images:

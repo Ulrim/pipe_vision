@@ -79,6 +79,15 @@ class LabelQueueItem(BaseModel):
     meas_length_mm: Optional[float] = None
     has_result_image: bool = False
     has_raw_image: bool = False
+    # 다발 사진(2026-10-11): 한 장이 튜브 수만큼 행이 된다. 어느 튜브의 라벨인지
+    # 화면이 알아야 라벨이 뒤섞이지 않는다. 번호는 결과 사진의 "#n" 과 같다(=tube_index+1).
+    cam_id: Optional[str] = None
+    inspection_stage: Optional[str] = None
+    tube_index: int = 0
+    frame_total: int = 1
+    tube_bbox: Optional[List[int]] = None
+    #: 수집용 LOT(TRAIN-…) — KPI 에서 빠지는 학습 데이터.
+    training: bool = False
 
 
 class LabelProgress(BaseModel):

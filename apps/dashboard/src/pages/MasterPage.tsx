@@ -218,7 +218,8 @@ function ActiveOrderCard({
         <div>
           <span className="label">LOT</span>
           <input className="input" value={lot} placeholder="예: LOT20260821-01"
-            onChange={(e) => setLot(e.target.value)} data-testid="order-lot" />
+            onChange={(e) => setLot(e.target.value)} data-testid="order-lot"
+            title="학습 데이터 수집용 촬영은 TRAIN- 으로 시작(KPI·MES 제외)" />
         </div>
         <div>
           <span className="label">작업지시(선택)</span>
@@ -239,6 +240,23 @@ function ActiveOrderCard({
           </button>
         )}
       </div>
+
+      {/* 수집용 LOT 안내 — 결함 시료를 일부러 섞어 찍을 때는 LOT 을 TRAIN- 으로
+          시작한다. 끝나면 생산 LOT 으로 되돌려야 실적이 KPI 에 들어간다. */}
+      {active?.training ? (
+        <div
+          className="mt-2 rounded border-2 border-sky-700 bg-sky-50 px-3 py-2 text-sm text-sky-900"
+          data-testid="order-training"
+        >
+          ◆ 지금 LOT(<b>{active.lot}</b>)은 <b>데이터 수집용</b>입니다 — 결과가 KPI·MES 에서
+          빠집니다. 생산을 시작하면 LOT 을 바꾸세요.
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-slate-400">
+          학습 데이터 수집(결함 시료 촬영)은 LOT 을 <code>TRAIN-</code> 으로 시작하세요 —
+          KPI·통계·MES 에서 빠집니다.
+        </p>
+      )}
 
       {msg && (
         <div className="mt-2 text-sm text-slate-600" data-testid="order-msg">

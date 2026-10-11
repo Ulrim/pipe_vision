@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from aivis_types import InspectionResult
 from db.models import Inspection, MesQualityIf
+from core.training import is_training_lot
 
 
 def make_idem_key(r: InspectionResult) -> str:
@@ -103,6 +104,7 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
         inspection_stage=_verdict_value(result.inspection_stage),
         inspected_at=result.inspected_at,
         tube_index=result.tube_index,
+        tube_bbox=list(result.tube_bbox) if result.tube_bbox else None,
         shift=result.shift,
         operator=result.operator,
         ref_length_mm=result.ref_length_mm,
@@ -125,7 +127,9 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
     db.add(row)
     db.flush()  # row.id 확보
 
-    if mes_mode == "table":
+    # 수집용 LOT(TRAIN-…)은 MES 로 넘기지 않는다 — 고객 품질 DB 에 시험 데이터가
+    # 섞이면 안 된다(2026-10-11). 재전송 워치독도 같은 규칙으로 건너뛴다.
+    if mes_mode == "table" and not is_training_lot(result.lot):
         idem = make_idem_key(result)
         exists = db.execute(
             select(MesQualityIf.id).where(MesQualityIf.idem_key == idem)

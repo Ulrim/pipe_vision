@@ -125,7 +125,12 @@ def load_item(image_path: str) -> GroundTruthItem:
             source="sidecar",
             meta={
                 k: data[k]
-                for k in ("lighting", "inspector", "captured_at", "note")
+                for k in (
+                    "lighting", "inspector", "captured_at", "note",
+                    # labeling.cli dataset 가 쓰는 되짚기용 식별자(DB 행·다발 튜브).
+                    "inspection_id", "lot", "cam_id", "tube_index", "frame_total",
+                    "crop_box", "source_image",
+                )
                 if k in data
             },
         )
@@ -144,6 +149,22 @@ def load_item(image_path: str) -> GroundTruthItem:
     )
 
 
+def _view_of(path: str) -> str | None:
+    """구도: 파일명 규칙 우선, 아니면 사이드카(labeling.cli dataset 산출물은 이름이 다르다)."""
+    try:
+        return parse_filename(path)["view"]
+    except LabelParseError:
+        pass
+    sidecar = _sidecar_path(path)
+    if os.path.exists(sidecar):
+        try:
+            with open(sidecar, encoding="utf-8") as f:
+                return json.load(f).get("view")
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def _iter_images(root: str, view: str | None = None) -> list[str]:
     """root 하위 이미지 경로 수집(정렬). view 필터(END|SIDE) 옵션."""
     found: list[str] = []
@@ -152,12 +173,8 @@ def _iter_images(root: str, view: str | None = None) -> list[str]:
             ext = os.path.splitext(fn)[1].lower()
             if ext not in _IMG_EXTS:
                 continue
-            if view is not None:
-                try:
-                    if parse_filename(fn)["view"] != view:
-                        continue
-                except LabelParseError:
-                    continue
+            if view is not None and _view_of(os.path.join(dirpath, fn)) != view:
+                continue
             found.append(os.path.join(dirpath, fn))
     return sorted(found)
 

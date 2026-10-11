@@ -217,6 +217,28 @@ def test_compute_kpi_matches_backend_formula(db):
         assert mine[key] == getattr(summary, key), key
 
 
+def test_compute_kpi_excludes_training_lot_like_backend(db):
+    """수집용 LOT(TRAIN-…)은 포털 KPI 에서도 백엔드와 똑같이 빠진다(2026-10-11)."""
+    _seed(db)
+    # 결함 시료를 일부러 섞어 찍은 수집 데이터 — NG 3건이 KPI 에 들어가면 공정불량률이 망가진다.
+    for m in range(3):
+        _add(db, datetime(2026, 9, 3, 9, m), lot="TRAIN-OIL-01", final_verdict="NG",
+             defect_codes=["OIL"], inspection_stage="POST_WASH_SURFACE")
+    try:
+        from routers.kpi import _compute_summary
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"api 라우터 import 불가: {exc.__class__.__name__}")
+    from portal.export import _month_rows
+
+    summary, _rows = _compute_summary("2026-09", db)
+    mine = compute_kpi(_month_rows(db, 2026, 9), "2026-09")
+    assert mine["excluded_training_count"] == 3 == summary.excluded_training_count
+    assert mine["total_inspected"] == 4 and mine["defect_count"] == 1
+    for key in ("total_inspected", "defect_count", "process_defect_ppm", "stored_count",
+                "mes_synced_count", "storage_mes_rate_pct", "pending_review_count"):
+        assert mine[key] == getattr(summary, key), key
+
+
 # ---------------------------------------------------------------------------
 # 내보내기: 가공
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ def inspection_to_schema(row: Inspection) -> InspectionResult:
         inspection_stage=row.inspection_stage,
         inspected_at=row.inspected_at,
         tube_index=row.tube_index if row.tube_index is not None else 0,
+        tube_bbox=list(row.tube_bbox) if row.tube_bbox else None,
         shift=row.shift,
         operator=row.operator,
         ref_length_mm=_f(row.ref_length_mm),

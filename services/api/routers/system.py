@@ -32,6 +32,7 @@ from core import updater
 from core.config import get_settings
 from core.heartbeat import all_beats as heartbeat_all_beats
 from core.heartbeat import get as heartbeat_get
+from core.training import is_training_lot, not_training
 from core.heartbeat import last_seen as heartbeat_last_seen
 from core.report import proc_time_percentiles
 from core.security import CurrentUser, require_min_role
@@ -390,7 +391,9 @@ def _inspection_stats(db: Session, now: datetime) -> InspectionStats:
 
     # MES 미연계 백로그(누적) — 0 이 아니면 워치독/연계 상태를 봐야 한다(§7.3).
     mes_pending = db.execute(
-        select(func.count(Inspection.id)).where(Inspection.mes_synced.is_(False))
+        select(func.count(Inspection.id)).where(
+            Inspection.mes_synced.is_(False), not_training(Inspection.lot)
+        )
     ).scalar()
 
     return InspectionStats(
@@ -593,6 +596,9 @@ class StationLive(BaseModel):
     timings: Optional[dict[str, int]] = None
     #: 센서 트리거 대기 중(제품 없음 — 촬영 안 함). 미검출과 다르다.
     waiting: bool = False
+    #: 지금 LOT(하트비트, 없으면 마지막 결과)과 수집용 여부(TRAIN-… → KPI 제외).
+    lot: Optional[str] = None
+    training: bool = False
     host: Optional[StationHost] = None
     last_hour: StationWindow
     today: StationWindow
@@ -763,6 +769,8 @@ def system_stations(
                 proc_time_ms=cycle.get("proc_time_ms"),
                 timings=cycle.get("timings"),
                 waiting=bool(cycle.get("waiting", False)),
+                lot=(cycle.get("lot") or (latest.lot if latest else None)),
+                training=is_training_lot(cycle.get("lot") or (latest.lot if latest else None)),
                 host=StationHost(**beat.host) if beat and beat.host else None,
                 last_hour=hour.get(cam, zero),
                 today=today.get(cam, zero),

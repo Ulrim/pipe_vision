@@ -268,6 +268,8 @@ export interface ActiveOrder {
   work_order: string | null;
   updated_by: string | null;
   updated_at: string | null;
+  /** 수집용 LOT(TRAIN-…) — 이 오더의 결과는 KPI·MES 에서 빠진다. */
+  training?: boolean;
 }
 
 export interface ActiveOrderIn {
@@ -437,6 +439,10 @@ export interface StationLive {
   } | null;
   /** 센서 트리거 대기 중(제품 없음 — 촬영 안 함). */
   waiting?: boolean;
+  /** 지금 찍고 있는 LOT. */
+  lot?: string | null;
+  /** 수집용 LOT(TRAIN-…) 촬영 중 — KPI·MES 에서 빠진다. */
+  training?: boolean;
   host: StationHost | null;
   last_hour: StationWindow;
   today: StationWindow;
@@ -546,6 +552,16 @@ export interface LabelQueueItem {
   meas_length_mm?: number | null;
   has_result_image: boolean;
   has_raw_image: boolean;
+  cam_id?: string | null;
+  inspection_stage?: string | null;
+  /** 다발 사진 안의 튜브 순서(0-base). 화면·오버레이 표기는 #(tube_index+1). */
+  tube_index?: number;
+  /** 같은 사진의 튜브 수. 1 이면 단일 제품 사진. */
+  frame_total?: number;
+  /** 이 튜브의 원본 프레임 픽셀 박스 [x0, y0, x1, y1]. */
+  tube_bbox?: number[] | null;
+  /** 수집용 LOT(TRAIN-…) — KPI·MES 에서 빠진다. */
+  training?: boolean;
 }
 
 /** 저장된 라벨 1건. labels 빈 배열 = 정상(OK). */
@@ -580,6 +596,19 @@ export function fetchLabelQueue(limit = 30, itemCode?: string): Promise<LabelQue
 /** GET /labels/progress — 무엇이 부족한지. */
 export function fetchLabelProgress(): Promise<LabelProgress> {
   return requestJson<LabelProgress>("/labels/progress");
+}
+
+/** GET /labels/export 응답 — labeling.cli dataset --manifest 에 그대로 넣는다. */
+export interface LabelExport {
+  generated_at: string;
+  item_code: string | null;
+  count: number;
+  items: Record<string, unknown>[];
+}
+
+/** GET /labels/export — 정답 매니페스트(quality+). */
+export function fetchLabelExport(itemCode?: string): Promise<LabelExport> {
+  return requestJson<LabelExport>(`/labels/export${toQuery({ item_code: itemCode })}`);
 }
 
 /** PUT /labels/{id} — 라벨 저장(quality+). */

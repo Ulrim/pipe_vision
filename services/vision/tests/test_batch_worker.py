@@ -67,6 +67,14 @@ def test_tube_to_inspection_maps_index_and_shared_meta(item):
         assert r.review_flag == tube.review_flag
         assert [str(c) for c in r.defect_codes] == list(tube.defect_codes)
         assert r.ref_length_mm == float(item.ref_length_mm)
+        # 튜브 위치(원본 프레임 픽셀) — 라벨링 화면 강조·데이터셋 튜브 자르기용.
+        assert r.tube_bbox == [int(v) for v in tube.bbox]
+    # 박스는 프레임 안, 겹치지 않게 위→아래 순서(오버레이의 #1..#N 과 같은 순서).
+    h, w = img.shape[:2]
+    tops = [r.tube_bbox[1] for r in results]
+    assert tops == sorted(tops)
+    assert all(0 <= b[0] < b[2] <= w and 0 <= b[1] < b[3] <= h
+               for b in (r.tube_bbox for r in results))
 
 
 def test_tube_to_inspection_defect_tube_flags_ng(item):

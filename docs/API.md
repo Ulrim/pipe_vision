@@ -82,7 +82,7 @@
 ## KPI (§5 M12, §1.1 — 산출식 그대로)
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
-| GET | `/kpi/summary?period=YYYY-MM` | operator+ | 월별 자동 산출 → `KpiSummary`. 2026-10-10 추가 필드: `pending_review_count`(재확인 대기), `audited_count`(사람이 재확인한 표본), `misjudge_rate_pct`/`miss_rate_pct`, `mes_mode`(table\|rest\|rest_fake\|rest_unconfigured), `mes_consumed_count`(MES 수신 확인), `claim_count_ytd`(Claim 연 누계) |
+| GET | `/kpi/summary?period=YYYY-MM` | operator+ | 월별 자동 산출 → `KpiSummary`. 2026-10-10 추가 필드: `pending_review_count`(재확인 대기), `audited_count`(사람이 재확인한 표본), `misjudge_rate_pct`/`miss_rate_pct`, `mes_mode`(table\|rest\|rest_fake\|rest_unconfigured), `mes_consumed_count`(MES 수신 확인), `claim_count_ytd`(Claim 연 누계). 2026-10-11 `excluded_training_count`(수집용 LOT 으로 빠진 행 수 — 아래 '수집용 LOT') |
 | GET | `/kpi/targets` | operator+ | 목표표(리포트·화면 단일 출처). 행마다 `baseline_value`(구축 전), `profile`(plan\|contract). 수기 KPI 목표(`claim_count_ytd`·`lead_time_days`·`workload_index`) 포함 |
 | POST | `/kpi/manual` | quality+ | 작업공수/리드타임/Claim upsert |
 | GET | `/kpi/report?period=&fmt=pdf\|xlsx` | quality+ | 월간 리포트 **파일** 생성(PDF=reportlab / XLSX=openpyxl). `attachment` 다운로드. `period` 미지정 시 당월 |
@@ -114,13 +114,31 @@
   검사불량률 40%·Claim 3·리드타임 6일 — **협약서 원문과 대조 후 사용**). 개별 `AIVIS_KPI_TARGET_*` 가 그 위에 덮인다.
   구축 전 기준값 `AIVIS_KPI_BASELINE_PROCESS_PPM/_LEAK_PPM/_CLAIM/_LEAD_DAYS/_WORKLOAD`(기본 2000/2000/5/7/100)
 
+## 정답 라벨링 (§5 M16, 부록 A.2/A.5)
+| 메서드 | 경로 | 권한 | 설명 |
+|---|---|---|---|
+| GET | `/labels/queue?limit=&item_code=&include_labeled=` | operator+ | 라벨링 대기열(재확인 대상 → NG → 나머지, 같은 순위는 오래된 것부터). **다발 사진의 튜브들은 연달아** 나온다. 항목: `inspection_id, lot, item_code, inspected_at, final_verdict, defect_codes, review_flag, meas_length_mm, has_result_image, has_raw_image` + 2026-10-11 `cam_id, inspection_stage, tube_index`(0-base — 화면·오버레이 표기 `#tube_index+1`), `frame_total`(같은 사진의 튜브 수), `tube_bbox`([x0,y0,x1,y1] 원본 프레임 픽셀), `training`(수집용 LOT) |
+| GET | `/labels/progress` | operator+ | 클래스별 라벨 수 vs 부록 A.2 목표 |
+| GET/PUT/DELETE | `/labels/{inspection_id}` | 조회 operator+ / 저장·삭제 quality+ | 라벨 1건(`labels[]` 빈 배열 = 정상, `border`, `length_mm_gt`, `note`) |
+| GET | `/labels/export?item_code=` | quality+ | 정답 매니페스트 `{generated_at, item_code, count, items[]}`. 항목에 정답(`labels, is_ok, border, length_mm_gt, labeled_by`)·시스템 판정(`system_verdict, system_defect_codes`)·원본/결과 경로와 함께 `cam_id, inspection_stage, view(SIDE\|END), tube_index, frame_total, tube_bbox, training`. 대시보드 라벨링 화면의 **정답 내보내기** 버튼이 이것을 `labels_YYYYMMDD.json` 으로 받는다 → `python -m labeling.cli dataset --manifest … --images $AIVIS_IMAGES_DIR --out dataset/raw` (다발은 튜브 단위로 잘라 넣고 파일마다 라벨 사이드카를 쓴다) |
+
+### 수집용 LOT (2026-10-11)
+LOT 이 `AIVIS_TRAINING_LOT_PREFIXES`(API 서버 env, 콤마, 기본 `TRAIN-`, 대소문자 무시, 빈 값 = 끔)로
+시작하면 **학습 데이터 수집**이다. 결함 시료를 일부러 섞어 찍으므로:
+- `/kpi/summary`·월간 리포트·포털 KPI 에서 **전부 제외**(저장·연계율 분모 포함). `KpiSummary.excluded_training_count` 로 몇 건 뺐는지 낸다.
+- `/inspection/stats` 기본 제외(`include_training=true` 로 포함).
+- MES: table 모드 스테이징 안 함, 워치독 재전송·연계 상태 집계에서 제외.
+- 저장·이미지·라벨링은 평소대로. 하트비트(`POST /inspection/status` 의 `lot`)·`/system/stations`(`lot`, `training`)·
+  `/master/active`(`training`)·WS inspection 이벤트(`training`)에 플래그를 실어 HMI·실시간 현황이
+  "데이터 수집 중 · KPI 제외" 를 띄운다 — 수집 후 LOT 을 되돌리지 않으면 생산 실적이 통째로 빠지기 때문.
+
 ## 로그 / MES / 실시간
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
 | POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
-| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `timings{grab_ms, infer_ms, save_ms, total_ms, per_ea_ms, n, post_ms}`(단계별 처리시간), `waiting`(센서 트리거 대기 — 제품 없음, 촬영 안 함), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
-| GET | `/inspection/stats?item=&from=&to=&cam_id=&stage=` | operator+ | 통계 **서버 집계**(2026-10-10): `{total, ng, by_code[{code,count}], monthly[{month(KST), total, ng, defect_rate_pct}]}`. 대시보드 통계 화면용 — 종전 행 5,000건 요청이 목록 상한 2,000건을 넘어 실패하던 버그 수정 |
+| POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `timings{grab_ms, infer_ms, save_ms, total_ms, per_ea_ms, n, post_ms}`(단계별 처리시간), `waiting`(센서 트리거 대기 — 제품 없음, 촬영 안 함), `lot`(지금 찍는 LOT — 수집용 판단), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
+| GET | `/inspection/stats?item=&from=&to=&cam_id=&stage=&include_training=` | operator+ | 통계 **서버 집계**(2026-10-10, 수집용 LOT 기본 제외): `{total, ng, by_code[{code,count}], monthly[{month(KST), total, ng, defect_rate_pct}]}`. 대시보드 통계 화면용 — 종전 행 5,000건 요청이 목록 상한 2,000건을 넘어 실패하던 버그 수정 |
 | GET | `/inspection/lot-summary?lot=&require=` | operator+ | **LOT 종합 판정**(2026-10-10): 모드(스테이션)별 결과를 LOT 단위로 합친다. `final_verdict` = NG(어느 모드든 NG 1건↑) \| INCOMPLETE(NG 없음 + 거쳐야 할 모드 결과 없음) \| OK \| NONE. `require` 미지정 시 스테이션 설정의 모드 전부. `reasons` 에 모드별 수치("길이 검사 NG 1개 / 20개 (LEN 1)") |
 | GET | `/inspection?…&cam_id=&stage=` | operator+ | 이력 조회 필터에 스테이션(`cam_id`)·검사 모드(`stage`, 대소문자 무관) 추가. KPI `/kpi/summary` 는 `CRATE_COUNT` 행(크레이트 1판 = 제품 아님)을 공정불량률·검사수량에서 **제외**하고 저장·연계율에는 포함한다 |
 | WS | `/ws/live?token=<JWT>` | 로그인 | 검사결과/알람 실시간 푸시. `token` 쿼리에 JWT 필요(무효/누락 시 accept 전 `1008` close). 이벤트 봉투 `{event, data}` (event=inspection\|alarm; alarm.data.kind = ng\|consecutive_ng) |

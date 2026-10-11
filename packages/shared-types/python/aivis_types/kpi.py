@@ -96,6 +96,10 @@ class KpiSummary(BaseModel):
     claim_count_ytd: Optional[int] = Field(
         None, ge=0, description="Claim 연 누계(해당 연도 1월~해당 월, 수기 입력 합)"
     )
+    excluded_training_count: Optional[int] = Field(
+        None, ge=0,
+        description="수집용 LOT(AIVIS_TRAINING_LOT_PREFIXES, 기본 TRAIN-) 으로 KPI 에서 뺀 건수",
+    )
 
     # 비자동 입력(있으면 함께 노출)
     claim_count: Optional[int] = Field(None, description="Claim 건수(수기 입력)")

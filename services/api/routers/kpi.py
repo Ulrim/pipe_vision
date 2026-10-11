@@ -29,6 +29,7 @@ from core.security import CurrentUser, require_min_role
 from db.base import get_db
 from db.models import Inspection, KpiManual as KpiManualRow, MesQualityIf
 from mes.config import get_mes_config
+from core.training import is_training_lot
 
 router = APIRouter(prefix="/kpi", tags=["kpi"])
 
@@ -69,7 +70,11 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
     base = select(Inspection).where(
         Inspection.inspected_at >= start, Inspection.inspected_at < end
     )
-    all_rows = list(db.execute(base).scalars().all())
+    fetched = list(db.execute(base).scalars().all())
+    # 수집용 LOT(TRAIN-…): 결함 시료를 일부러 섞어 찍은 학습 데이터다. KPI 에
+    # 넣으면 공정불량률이 망가진다 — 전부 뺀다(저장·연계율 분모 포함, 2026-10-11).
+    all_rows = [r for r in fetched if not is_training_lot(r.lot)]
+    excluded_training_count = len(fetched) - len(all_rows)
 
     # 개수 확인(CRATE_COUNT) 행은 **제품 1개가 아니라 크레이트 1판** 이다
     # (2026-10-08, 2대 구성). 제품 단위 지표(공정불량률·자동검사율·검사불량률)에
@@ -188,6 +193,7 @@ def _compute_summary(period: str, db: Session) -> tuple[KpiSummary, list[Inspect
         mes_mode=mes_mode,
         mes_consumed_count=int(mes_consumed_count),
         claim_count_ytd=claim_count_ytd,
+        excluded_training_count=excluded_training_count,
     )
     return summary, rows
 

@@ -155,6 +155,19 @@ describe("LivePage — 파이 여러 대를 한 화면에", () => {
     expect(within(c).getByTestId("card-no-result")).toBeInTheDocument();
   });
 
+  it("수집용 LOT 으로 찍는 스테이션은 'KPI 제외' 를 띄운다(되돌리기를 잊으면 실적이 빠진다)", async () => {
+    fetchStations.mockResolvedValue(resp([
+      station({ cam_id: "PI-CAM1", lot: "TRAIN-OIL-01", training: true }),
+      station({ cam_id: "PI-CAM2", lot: "L-1011", training: false }),
+    ]));
+    renderApp(<LivePage />);
+    const c1 = await screen.findByTestId("station-card-PI-CAM1");
+    expect(within(c1).getByTestId("card-training")).toHaveTextContent("KPI 제외");
+    expect(c1).toHaveTextContent("TRAIN-OIL-01");
+    const c2 = screen.getByTestId("station-card-PI-CAM2");
+    expect(within(c2).queryByTestId("card-training")).toBeNull();
+  });
+
   it("카메라가 하나도 없으면 안내", async () => {
     fetchStations.mockResolvedValue(resp([]));
     renderApp(<LivePage />);

@@ -12,15 +12,22 @@
  * - 저장하면 즉시 다음 장으로 넘어가고, 큐는 값이 큰 것부터 서버가 정렬해 준다.
  * - 시스템 판정은 **기본으로 감춘다**. 먼저 보면 사람이 거기에 끌려가서(anchoring)
  *   정답셋이 모델을 그대로 베끼게 되고, 그러면 정확도 측정이 무의미해진다.
+ *
+ * **다발 사진(2026-10-11)**: 다발 한 장은 튜브마다 한 행이라 같은 사진이 N번
+ * 나온다. 어느 튜브를 판정하는지 모르면 라벨이 엉뚱한 튜브에 붙는다. 그래서
+ * "튜브 #n / N" 을 크게 적고, 그 튜브 칸만 밝게 남기고 나머지를 흐린다.
+ * 번호는 판정 이미지에 찍힌 '#n' 과 같다.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  fetchLabelExport,
   fetchLabelQueue,
   fetchLabelProgress,
   putLabel,
   type LabelQueueItem,
 } from "@/api/endpoints";
+import { triggerBlobDownload } from "@/lib/download";
 import { useAuthedImage } from "@/hooks/useAuthedImage";
 import { useAuthStore, canEdit } from "@/store/auth";
 import { fmtDateTime, fmtNum } from "@/lib/format";
@@ -125,6 +132,20 @@ export function LabelingPage(): JSX.Element {
     [queue, cursor],
   );
 
+  // 정답 내보내기 — 학습 담당자가 터미널 없이 받아 labeling.cli dataset 에 넣는다.
+  const exporter = useMutation({
+    mutationFn: () => fetchLabelExport(),
+    onSuccess: (data) => {
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      triggerBlobDownload(blob, `labels_${stamp}.json`);
+    },
+  });
+
+  const bundle = (current?.frame_total ?? 1) > 1;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -136,6 +157,30 @@ export function LabelingPage(): JSX.Element {
           <span className="text-sm text-ng-fg">
             저장 권한이 없습니다(품질관리자 이상).
           </span>
+        )}
+        {editable && (
+          <div className="ml-auto flex items-center gap-2">
+            {exporter.isSuccess && (
+              <span className="text-sm text-slate-400" data-testid="label-export-done">
+                {exporter.data.count}건 내보냄
+              </span>
+            )}
+            {exporter.isError && (
+              <span className="text-sm text-ng-fg" role="alert">
+                내보내기 실패: {(exporter.error as Error)?.message}
+              </span>
+            )}
+            <button
+              type="button"
+              className="btn-ghost"
+              disabled={exporter.isPending}
+              onClick={() => exporter.mutate()}
+              title="라벨 전체를 labels.json 으로 받는다 — 학습 PC 에서 labeling.cli dataset 에 넣는다"
+              data-testid="label-export"
+            >
+              {exporter.isPending ? "내보내는 중…" : "정답 내보내기 (JSON)"}
+            </button>
+          </div>
         )}
       </div>
 
@@ -165,9 +210,21 @@ export function LabelingPage(): JSX.Element {
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="font-semibold">
                 검사 #{current.inspection_id} · LOT {current.lot}
+                {current.cam_id && (
+                  <span className="ml-1 font-normal text-slate-400">· {current.cam_id}</span>
+                )}
                 {current.review_flag && (
                   <span className="ml-2 rounded bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
                     재확인 대상
+                  </span>
+                )}
+                {current.training && (
+                  <span
+                    className="ml-2 rounded bg-sky-100 px-2 py-0.5 text-xs text-sky-800"
+                    title="수집용 LOT — KPI·MES 에서 빠진다"
+                    data-testid="label-training"
+                  >
+                    수집용
                   </span>
                 )}
               </span>
@@ -180,11 +237,24 @@ export function LabelingPage(): JSX.Element {
                 이미지 로딩…
               </div>
             )}
+            {bundle && (
+              <p
+                className="mb-2 rounded bg-brand/10 px-3 py-2 text-base"
+                data-testid="label-tube"
+              >
+                <b className="text-lg">튜브 #{(current.tube_index ?? 0) + 1}</b>
+                <span className="text-slate-500"> / {current.frame_total}개 다발</span>
+                <span className="ml-2 text-sm text-slate-500">
+                  — 밝게 남긴 칸의 튜브 하나만 판정하세요.
+                </span>
+              </p>
+            )}
             {img.url && (
-              <img
+              <TubeImage
+                key={current.inspection_id}
                 src={img.url}
                 alt={`검사 ${current.inspection_id} 판정 이미지`}
-                className="w-full rounded object-contain"
+                bbox={bundle ? current.tube_bbox ?? null : null}
               />
             )}
             {img.error && (
@@ -306,6 +376,51 @@ export function LabelingPage(): JSX.Element {
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 판정 이미지 + 이 튜브 강조. bbox 는 원본 프레임 픽셀이고 판정 이미지는 원본과
+ * 크기가 같으므로(오버레이는 원본 사본에 그린다) naturalWidth/Height 비율로 놓는다.
+ * 나머지는 box-shadow 로 흐린다 — 옆 튜브와 색을 비교할 수 있게 완전히 가리진 않는다.
+ */
+function TubeImage({
+  src,
+  alt,
+  bbox,
+}: {
+  src: string;
+  alt: string;
+  bbox: number[] | null;
+}): JSX.Element {
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  const box =
+    bbox && bbox.length === 4 && nat && nat.w > 0 && nat.h > 0
+      ? {
+          left: `${(Math.max(0, bbox[0]) / nat.w) * 100}%`,
+          top: `${(Math.max(0, bbox[1]) / nat.h) * 100}%`,
+          width: `${((bbox[2] - bbox[0]) / nat.w) * 100}%`,
+          height: `${((bbox[3] - bbox[1]) / nat.h) * 100}%`,
+        }
+      : null;
+  return (
+    <div className="relative overflow-hidden rounded">
+      <img
+        src={src}
+        alt={alt}
+        className="block w-full object-contain"
+        onLoad={(e) =>
+          setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })
+        }
+      />
+      {box && (
+        <div
+          className="pointer-events-none absolute rounded-sm outline outline-4 outline-sky-400"
+          style={{ ...box, boxShadow: "0 0 0 9999px rgba(15, 23, 42, 0.55)" }}
+          data-testid="label-tube-box"
+        />
       )}
     </div>
   );

@@ -171,6 +171,16 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
           {stageLabel(s.stage)}
         </span>
         {s.item_code && <span className="text-sm text-slate-500">{s.item_code}</span>}
+        {s.lot && <span className="text-sm text-slate-400">{s.lot}</span>}
+        {s.training && (
+          <span
+            className="rounded border-2 border-sky-700 bg-sky-100 px-1.5 text-sm font-bold text-sky-900"
+            title="수집용 LOT(TRAIN-…) — 이 스테이션의 결과는 KPI·MES 에서 빠진다"
+            data-testid="card-training"
+          >
+            ◆ 데이터 수집 중 · KPI 제외
+          </span>
+        )}
         <span
           className={`ml-auto inline-flex items-center gap-1 rounded px-2 py-0.5 text-sm font-bold ${SEV_BADGE[health.sev]}`}
           data-testid="card-health"

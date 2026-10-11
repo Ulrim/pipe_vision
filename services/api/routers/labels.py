@@ -36,6 +36,7 @@ from aivis_types import (
     Role,
 )
 from core.security import CurrentUser, require_min_role
+from core.training import is_training_lot
 from db.base import get_db
 from db.models import Inspection, InspectionLabel
 
@@ -50,6 +51,30 @@ CLASS_TARGETS: dict[str, int] = {
     DefectCode.DIS.value: 50,
     DefectCode.SCR.value: 50,
 }
+
+
+def _view_for(stage: str | None) -> str:
+    """구도: 크레이트 개수(단면) = END, 그 밖(길이·표면, 누운 다발) = SIDE (부록 A.4)."""
+    return "END" if stage == "CRATE_COUNT" else "SIDE"
+
+
+def _frame_totals(db: Session, rows: list[Inspection]) -> dict[tuple, int]:
+    """(cam_id, inspected_at) → 그 사진의 튜브 행 수. 다발이면 N, 단일이면 1.
+
+    다발 한 장은 같은 cam_id·inspected_at 으로 N행이 적재된다(vision/multi/batch).
+    내보내기는 수천 행이 될 수 있어 행마다 세지 않고 시각 묶음으로 한 번에 센다.
+    """
+    times = sorted({r.inspected_at for r in rows})
+    out: dict[tuple, int] = {}
+    for i in range(0, len(times), 500):
+        chunk = times[i:i + 500]
+        for cam, ts, n in db.execute(
+            select(Inspection.cam_id, Inspection.inspected_at, func.count(Inspection.id))
+            .where(Inspection.inspected_at.in_(chunk))
+            .group_by(Inspection.cam_id, Inspection.inspected_at)
+        ).all():
+            out[(cam, ts)] = int(n)
+    return out
 
 
 def _to_out(row: InspectionLabel) -> LabelOut:
@@ -106,7 +131,18 @@ def label_queue(
             ts = ts.replace(tzinfo=timezone.utc)
         return (rank, ts)
 
-    rows.sort(key=_rank)
+    # 같은 사진(다발)의 튜브들은 **붙여서** 준다 — 한 사진을 여러 번 오가며 보면
+    # 라벨이 뒤섞인다. 사진 단위 우선순위 = 그 사진 튜브들 중 가장 높은 순위.
+    frame_rank: dict[tuple, tuple[int, datetime]] = {}
+    for r in rows:
+        key = (r.cam_id, r.inspected_at)
+        rk = _rank(r)
+        if key not in frame_rank or rk < frame_rank[key]:
+            frame_rank[key] = rk
+    rows.sort(key=lambda r: (frame_rank[(r.cam_id, r.inspected_at)], r.cam_id or "",
+                             r.tube_index or 0))
+    rows = rows[:limit]
+    totals = _frame_totals(db, rows)
     return [
         LabelQueueItem(
             inspection_id=r.id,
@@ -121,8 +157,14 @@ def label_queue(
             ),
             has_result_image=bool(r.result_image_path),
             has_raw_image=bool(r.raw_image_path),
+            cam_id=r.cam_id,
+            inspection_stage=r.inspection_stage,
+            tube_index=int(r.tube_index or 0),
+            frame_total=totals.get((r.cam_id, r.inspected_at), 1),
+            tube_bbox=list(r.tube_bbox) if r.tube_bbox else None,
+            training=is_training_lot(r.lot),
         )
-        for r in rows[:limit]
+        for r in rows
     ]
 
 
@@ -181,6 +223,7 @@ def export_groundtruth(
     if item_code:
         q = q.where(Inspection.item_code == item_code)
     pairs = list(db.execute(q).all())
+    totals = _frame_totals(db, [insp for _lab, insp in pairs])
     items = [
         {
             "inspection_id": lab.inspection_id,
@@ -189,6 +232,14 @@ def export_groundtruth(
             "inspected_at": insp.inspected_at.isoformat(),
             "raw_image_path": insp.raw_image_path,
             "result_image_path": insp.result_image_path,
+            # 다발이면 이 튜브만 잘라 학습셋에 넣는다(labeling.cli dataset, 2026-10-11).
+            "cam_id": insp.cam_id,
+            "inspection_stage": insp.inspection_stage,
+            "view": _view_for(insp.inspection_stage),
+            "tube_index": int(insp.tube_index or 0),
+            "frame_total": totals.get((insp.cam_id, insp.inspected_at), 1),
+            "tube_bbox": list(insp.tube_bbox) if insp.tube_bbox else None,
+            "training": is_training_lot(insp.lot),
             # 사람이 붙인 정답
             "labels": list(lab.labels or []),
             "is_ok": not (lab.labels or []),

@@ -97,3 +97,22 @@ def test_watchdog_forever_max_cycles(db):
     # 새 세션을 쓰므로 현재 db 세션은 만료 캐시 갱신
     db.expire_all()
     assert get_linkage_status(db, _table_cfg()).pending == 0
+
+
+def test_training_lot_is_not_retried_or_counted(db):
+    """수집용 LOT(TRAIN-…)은 MES 로 보내지 않는다 — 재전송도, 연계율 분모도 아니다."""
+    t0 = datetime(2026, 6, 11, 8, 0, tzinfo=timezone.utc)
+    for i, lot in enumerate(("TRAIN-OIL-01", "TRAIN-OIL-01", "PROD-1")):
+        db.add(Inspection(
+            lot=lot, item_code="HP12", cam_id=f"TCAM{i}",
+            inspected_at=t0 + timedelta(seconds=i),
+            final_verdict="NG", defect_codes=["OIL"], mes_synced=False,
+        ))
+    db.commit()
+    cfg = _table_cfg(watchdog_batch_size=10)
+    st = get_linkage_status(db, cfg)
+    assert (st.total, st.pending) == (1, 1)
+    res = run_watchdog_once(db, cfg=cfg)
+    assert res.scanned == 1 and res.synced == 1
+    still = db.query(Inspection).filter(Inspection.lot == "TRAIN-OIL-01").all()
+    assert all(r.mes_synced is False for r in still)

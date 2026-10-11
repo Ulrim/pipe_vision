@@ -14,10 +14,17 @@ import { Role } from "@aivis/shared-types";
 const fetchLabelQueue = vi.fn();
 const fetchLabelProgress = vi.fn();
 const putLabel = vi.fn();
+const fetchLabelExport = vi.fn();
 vi.mock("@/api/endpoints", () => ({
   fetchLabelQueue: (...a: unknown[]) => fetchLabelQueue(...a),
   fetchLabelProgress: (...a: unknown[]) => fetchLabelProgress(...a),
   putLabel: (...a: unknown[]) => putLabel(...a),
+  fetchLabelExport: (...a: unknown[]) => fetchLabelExport(...a),
+}));
+
+const triggerBlobDownload = vi.fn();
+vi.mock("@/lib/download", () => ({
+  triggerBlobDownload: (...a: unknown[]) => triggerBlobDownload(...a),
 }));
 
 // 이미지 바이트는 이 테스트의 관심사가 아니다(별도 훅 테스트가 있다).
@@ -59,6 +66,11 @@ beforeEach(() => {
     by_class: { OK: { count: 2, target: 150 }, SCR: { count: 1, target: 50 } },
   });
   putLabel.mockReset().mockResolvedValue({});
+  fetchLabelExport.mockReset().mockResolvedValue({
+    generated_at: "2026-10-11T00:00:00Z", item_code: null, count: 2,
+    items: [{ inspection_id: 11 }, { inspection_id: 12 }],
+  });
+  triggerBlobDownload.mockReset();
   useAuthStore.getState().setAuth({ token: "t", username: "qa", role: Role.QUALITY });
 });
 
@@ -150,5 +162,63 @@ describe("LabelingPage", () => {
     const bar = await screen.findByTestId("label-progress");
     expect(bar).toHaveTextContent("2/150");
     expect(bar).toHaveTextContent("1/50");
+  });
+
+  it("다발 사진이면 튜브 번호와 위치를 보여준다(라벨이 엉뚱한 튜브에 붙지 않게)", async () => {
+    fetchLabelQueue.mockResolvedValue([
+      {
+        ...QUEUE[1], inspection_id: 21, lot: "TRAIN-OIL-01", cam_id: "CAM-02",
+        tube_index: 2, frame_total: 20, tube_bbox: [100, 200, 900, 240], training: true,
+      },
+    ]);
+    renderPage();
+    const tube = await screen.findByTestId("label-tube");
+    // 판정 이미지 오버레이의 '#3' 과 같은 번호(tube_index 0-base + 1).
+    expect(tube).toHaveTextContent("튜브 #3");
+    expect(tube).toHaveTextContent("20개 다발");
+    expect(screen.getByTestId("label-training")).toHaveTextContent("수집용");
+
+    // 이미지 크기를 알아야 박스를 놓는다 — 로드 이벤트를 흉내 낸다.
+    const img = screen.getByAltText("검사 21 판정 이미지") as HTMLImageElement;
+    Object.defineProperty(img, "naturalWidth", { value: 1000 });
+    Object.defineProperty(img, "naturalHeight", { value: 400 });
+    img.dispatchEvent(new Event("load"));
+    const box = await screen.findByTestId("label-tube-box");
+    expect(box.style.left).toBe("10%");
+    expect(box.style.top).toBe("50%");
+    expect(box.style.width).toBe("80%");
+    expect(box.style.height).toBe("10%");
+  });
+
+  it("단일 제품 사진에는 튜브 표시를 하지 않는다", async () => {
+    renderPage();
+    await screen.findByTestId("label-image");
+    expect(screen.queryByTestId("label-tube")).toBeNull();
+    expect(screen.queryByTestId("label-tube-box")).toBeNull();
+  });
+
+  it("정답 내보내기 버튼이 labels JSON 파일을 내려받는다", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByTestId("label-image");
+    await user.click(screen.getByTestId("label-export"));
+    await waitFor(() => expect(triggerBlobDownload).toHaveBeenCalled());
+    const [blob, name] = triggerBlobDownload.mock.calls[0];
+    expect(name).toMatch(/^labels_\d{8}\.json$/);
+    // jsdom 의 Blob 에는 text() 가 없다 — FileReader 로 읽는다.
+    const text = await new Promise<string>((resolve) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.readAsText(blob as Blob);
+    });
+    expect(JSON.parse(text).count).toBe(2);
+    expect(await screen.findByTestId("label-export-done")).toHaveTextContent("2건");
+  });
+
+  it("작업자(operator)에게는 내보내기 버튼이 없다", async () => {
+    useAuthStore.getState().setAuth({ token: "t", username: "op", role: Role.OPERATOR });
+    renderPage();
+    await screen.findByTestId("label-image");
+    expect(screen.queryByTestId("label-export")).toBeNull();
   });
 });

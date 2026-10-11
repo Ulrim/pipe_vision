@@ -248,6 +248,13 @@ aivis/
 
 ### M16. 모델 개선(AI 고도화) — `services/data-ops/retrain`
 - **오검·미검 이미지 별도 저장**, 재학습 대상 데이터 태깅, 임계값 보정 워크플로우.
+- **수집용 LOT(2026-10-11)**: LOT 이 `TRAIN-`(API env `AIVIS_TRAINING_LOT_PREFIXES`)으로 시작하면
+  학습 데이터 수집(결함 시료를 일부러 섞어 찍음) — KPI·리포트·통계·포털 KPI·MES 에서 **제외**
+  (`excluded_training_count`), 저장·라벨링은 평소대로. HMI·실시간 현황에 "데이터 수집 중 · KPI 제외".
+- **다발 라벨링**: 워커가 튜브 위치 `tube_bbox`(원본 픽셀)를 저장 → 라벨링 화면이 "튜브 #n / N" 과
+  그 칸을 강조, **정답 내보내기** 버튼 → `labeling.cli dataset` 이 다발을 **튜브 단위로 잘라**(추론과
+  같은 방식) 라벨 사이드카와 함께 저장 → 그 폴더가 그대로 `AIVIS_DATASET_DIR`. 위치 없는 다발 행은
+  넣지 않는다(사진 전체를 넣으면 OK 폴더가 오염). 절차 `docs/OPERATIONS_PI.md` §12.
 
 ---
 

@@ -159,6 +159,11 @@ class InspectionResult(BaseModel):
         description="배치 내 튜브 순번(0=단일 튜브/현행). 같은 프레임의 튜브 N개를 "
         "구분하는 자연키 구성요소(§7.1)",
     )
+    tube_bbox: Optional[list[int]] = Field(
+        None,
+        description="다발 사진에서 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 단일 튜브면 없음. "
+        "라벨링 화면 강조·데이터셋 튜브 단위 자르기에 쓴다(2026-10-11)",
+    )
     shift: Optional[str] = Field(None, description="작업 교대")
     operator: Optional[str] = Field(None, description="작업자")
 

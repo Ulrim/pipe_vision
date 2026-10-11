@@ -282,6 +282,8 @@ def test_worker_heartbeat_carries_host_and_files_carry_camera(tmp_path):
     assert isinstance(st.get("host"), dict)
     assert {"cpu_temp_c", "cpu_percent", "mem_percent", "disk_percent",
             "disk_free_gb", "throttled"} <= set(st["host"])
+    # 지금 찍는 LOT — 서버가 수집용(TRAIN-…)인지 판단해 화면에 'KPI 제외' 를 띄운다.
+    assert st.get("lot") == backend.posted[-1]["lot"]
     assert backend.posted, "시뮬레이터 1사이클이면 결과가 올라가야 한다"
     raw = backend.posted[-1]["raw_image_path"]
     assert raw and "_PI-CAM7_" in raw

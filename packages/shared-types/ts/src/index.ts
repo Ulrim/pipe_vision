@@ -149,6 +149,8 @@ export interface InspectionResult {
   inspection_stage?: InspectionStage | string | null;
   inspected_at: string; // ISO datetime
   tube_index?: number; // 배치 내 튜브 순번(0=단일 튜브/현행, 서버 기본값). 자연키 구성요소(§7.1)
+  /** 다발 사진 속 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 단일 튜브면 없음. */
+  tube_bbox?: number[] | null;
   shift?: string | null;
   operator?: string | null;
 
@@ -288,6 +290,8 @@ export interface KpiSummary {
   mes_consumed_count?: number | null;
   /** Claim 연 누계(해당 연도 1월~해당 월). */
   claim_count_ytd?: number | null;
+  /** 이 달 수집용 LOT(TRAIN-…) 으로 빠진 건수 — KPI 에 안 들어갔다. */
+  excluded_training_count?: number | null;
 }
 
 /* =========================================================================

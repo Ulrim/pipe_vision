@@ -34,6 +34,19 @@ afterEach(() => {
 });
 
 describe("HmiHeader (상단 상태 바)", () => {
+  it("수집용 LOT 이면 'KPI 제외' 경고를 가장 앞에 띄운다(되돌리기를 잊지 않게)", () => {
+    setStatus({ lot: "TRAIN-OIL-01", training: true });
+    render(<HmiHeader />);
+    expect(screen.getByTestId("header-training")).toHaveTextContent("데이터 수집 중 · KPI 제외");
+    expect(screen.getByTestId("header-lot")).toHaveTextContent("TRAIN-OIL-01");
+  });
+
+  it("생산 LOT 에서는 수집 경고가 없다", () => {
+    setStatus({ lot: "L-2026-1011", training: false });
+    render(<HmiHeader />);
+    expect(screen.queryByTestId("header-training")).toBeNull();
+  });
+
   it("검사 중인 품목과 검출 개수를 보여준다", () => {
     setStatus({ item_code: "HP20", detected: 3, expected: 4 });
     render(<HmiHeader />);

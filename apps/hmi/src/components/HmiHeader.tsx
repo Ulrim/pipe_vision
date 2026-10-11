@@ -92,7 +92,10 @@ export function HmiHeader() {
 
   // 품목/LOT: 최신 검사결과 우선, 없으면 워커 하트비트(오더 전환 즉시 반영).
   const itemCode = latest?.item_code ?? status?.item_code ?? "—";
-  const lot = latest?.lot;
+  const lot = status?.lot ?? latest?.lot;
+  // 수집용 LOT: 하트비트가 최신, 없으면 마지막 결과(서버가 실어 준 플래그).
+  const training =
+    status?.training ?? (latest as { training?: boolean } | null)?.training ?? false;
   // 검사 모드: 하트비트가 가장 최신(모드 전환 직후, 첫 결과 전에도 보인다).
   const stage = status?.stage ?? latest?.inspection_stage ?? null;
   // 스테이션: 화면이 고정된 카메라(?cam=)가 있으면 그것, 아니면 지금 들어온 것.
@@ -108,6 +111,19 @@ export function HmiHeader() {
           모드를 품목보다 앞에 둔다: 같은 품목이라도 길이/표면/개수 중 무엇을
           보는지에 따라 NG 의 뜻이 다르다(현장 요구 2026-10-05). */}
       <div className="flex min-w-0 items-baseline gap-2">
+        {/* 수집용 LOT 경고 — 학습 데이터 수집이 끝나고 LOT 을 되돌리지 않으면
+            그 뒤 생산 실적이 KPI·MES 에서 통째로 빠진다. 잊지 않게 가장 앞에 크게. */}
+        {training && (
+          <span
+            className="whitespace-nowrap rounded-lg border-2 border-sky-700 bg-sky-100 px-2 py-0.5 text-hmi-body font-black text-sky-900"
+            role="status"
+            data-testid="header-training"
+            title="LOT 이 수집용(TRAIN-…)입니다. 생산을 시작하면 LOT 을 바꾸세요."
+          >
+            <span aria-hidden className="mr-1">◆</span>
+            데이터 수집 중 · KPI 제외
+          </span>
+        )}
         <span
           className="whitespace-nowrap rounded-lg border-2 border-gray-800 bg-gray-800 px-2 py-0.5 text-hmi-body font-black text-white"
           data-testid="header-stage"

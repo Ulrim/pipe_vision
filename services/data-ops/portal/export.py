@@ -34,6 +34,7 @@ from typing import Any, Iterable, Sequence
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from core.training import is_training_lot
 from db.models import Inspection, ItemMaster, KpiManual
 from labeling.groundtruth import LabelParseError, build_groundtruth, parse_filename
 from portal.layout import (
@@ -574,8 +575,11 @@ def compute_kpi(rows: Sequence[Inspection], period: str, manual: KpiManual | Non
     - 자동검사율(%) = final_verdict 존재 ÷ 총검사 × 100
     - 저장&MES 연계율(%) = mes_synced ÷ 저장 × 100
     - 개수 확인(CRATE_COUNT) 행은 크레이트 1판이라 제품 지표에서 뺀다(저장·연계엔 포함).
+    - 수집용 LOT(TRAIN-…)은 통째로 뺀다 — 결함 시료를 일부러 섞어 찍은 학습 데이터다
+      (백엔드 core/training 과 같은 규칙, 2026-10-11).
     """
-    all_rows = list(rows)
+    fetched = list(rows)
+    all_rows = [r for r in fetched if not is_training_lot(getattr(r, "lot", None))]
     prod = [r for r in all_rows if getattr(r, "inspection_stage", None) != "CRATE_COUNT"]
 
     def _mv(r) -> str | None:
@@ -607,6 +611,7 @@ def compute_kpi(rows: Sequence[Inspection], period: str, manual: KpiManual | Non
         "mes_synced_count": synced,
         "storage_mes_rate_pct": round(_rate(synced, len(all_rows), 100.0), 3),
         "avg_proc_time_ms": round(avg_ms, 2) if avg_ms is not None else None,
+        "excluded_training_count": len(fetched) - len(all_rows),
         "claim_count": manual.claim_count if manual else None,
         "workload_index": _num(manual.workload_index) if manual else None,
         "lead_time_days": _num(manual.lead_time_days) if manual else None,
