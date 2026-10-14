@@ -5,6 +5,7 @@ import { renderApp } from "@/test/utils";
 import { useAuthStore } from "@/store/auth";
 import { Role } from "@aivis/shared-types";
 import App from "./App";
+import { NAV } from "@/components/NavMenu";
 
 // 페이지 데이터 fetch 가 보호 라우팅 검증과 무관하도록 엔드포인트 모킹(네트워크 차단).
 vi.mock("@/api/endpoints", () => ({
@@ -18,6 +19,28 @@ vi.mock("@/api/endpoints", () => ({
   putActiveOrder: vi.fn(),
   clearActiveOrder: vi.fn(),
   login: vi.fn(),
+}));
+
+// MES 화면도 네트워크 없이 — 빈 목록/빈 상태로 렌더만 확인한다.
+vi.mock("@/api/mes", () => ({
+  MES_UNREACHABLE: "MES 서버에 연결할 수 없습니다",
+  fetchWorkOrders: vi.fn().mockResolvedValue([]),
+  fetchSalesOrders: vi.fn().mockResolvedValue([]),
+  fetchWorkOrder: vi.fn(),
+  fetchUnassignedLots: vi.fn().mockResolvedValue([]),
+  fetchShipments: vi.fn().mockResolvedValue([]),
+  fetchClaims: vi.fn().mockResolvedValue([]),
+  fetchMonthlyKpi: vi.fn().mockRejectedValue(new Error("MES 서버에 연결할 수 없습니다")),
+  fetchIntakeStatus: vi.fn().mockRejectedValue(new Error("MES 서버에 연결할 수 없습니다")),
+  fetchQuality: vi.fn().mockResolvedValue([]),
+  createSalesOrder: vi.fn(),
+  createWorkOrder: vi.fn(),
+  patchSalesOrder: vi.fn(),
+  patchWorkOrder: vi.fn(),
+  createShipment: vi.fn(),
+  createClaim: vi.fn(),
+  patchClaim: vi.fn(),
+  pollIntake: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -84,5 +107,26 @@ describe("App 헤더 내비게이션 (심플 UI — 메뉴는 클릭해야 펼�
 
     expect(await screen.findByRole("heading", { name: "기준정보" })).toBeInTheDocument();
     expect(screen.queryByTestId("nav-menu")).not.toBeInTheDocument();
+  });
+});
+
+describe("App MES 라우트 (NAV 와 1:1 — 없는 경로는 /live 로 튕긴다)", () => {
+  beforeEach(() => {
+    useAuthStore.getState().setAuth({ token: "t.t.t", username: "kim", role: Role.QUALITY });
+  });
+
+  it.each(NAV.filter((n) => n.to.startsWith("/mes/")).map((n) => [n.to, n.label]))(
+    "%s → 헤더 제목 '%s'",
+    async (to, label) => {
+      renderApp(<App />, to);
+      expect(await screen.findByRole("heading", { name: label })).toBeInTheDocument();
+      expect(screen.queryByTestId("login-form")).not.toBeInTheDocument();
+    },
+  );
+
+  it("미인증이면 MES 화면도 로그인으로", () => {
+    useAuthStore.getState().clear();
+    renderApp(<App />, "/mes/orders");
+    expect(screen.getByTestId("login-form")).toBeInTheDocument();
   });
 });

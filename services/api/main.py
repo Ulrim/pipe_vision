@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -118,6 +119,29 @@ async def _retention_loop() -> None:
         await asyncio.sleep(interval_s)
 
 
+def _start_mes_watchdog():
+    """MES 재전송 워치독(§7.3 연계율 100%)을 API 프로세스 안에서 돌린다.
+
+    2026-10-14 발견: 워치독은 구현돼 있었지만 API·독립형 런처·compose 어디서도 기동되지
+    않았다 — rest 모드는 아무것도 보내지 않았고, table 모드는 로컬 큐 복구분이 스테이징되지
+    않았다. 이제 API 와 함께 뜬다. 끄려면 MES_WATCHDOG_ENABLED=false(별도 프로세스로
+    `python -m mes.cli` 를 돌릴 때).
+    """
+    if os.getenv("MES_WATCHDOG_ENABLED", "true").strip().lower() in ("0", "false", "no"):
+        return None, None
+    import threading
+
+    from mes.watchdog import run_watchdog_forever
+
+    stop = threading.Event()
+    # sleep_fn=stop.wait: 종료 시 주기 대기 중이어도 바로 깨어난다.
+    th = threading.Thread(target=run_watchdog_forever,
+                          kwargs={"stop_event": stop, "sleep_fn": stop.wait},
+                          name="mes-watchdog", daemon=True)
+    th.start()
+    return th, stop
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 개발/테스트(sqlite)는 테이블 자동 생성. 운영은 Alembic upgrade 로 관리.
@@ -128,9 +152,13 @@ async def lifespan(app: FastAPI):
     task = None
     if get_settings().retention_enabled:
         task = asyncio.create_task(_retention_loop())
+    wd_thread, wd_stop = _start_mes_watchdog()
     try:
         yield
     finally:
+        if wd_stop is not None:
+            wd_stop.set()
+            wd_thread.join(timeout=5)
         if task is not None:
             task.cancel()
             try:

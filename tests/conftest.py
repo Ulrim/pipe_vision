@@ -40,6 +40,8 @@ os.environ.setdefault("AIVIS_LOCAL_QUEUE_DIR", os.path.join(_TMPDIR, "queue"))
 os.environ.setdefault("JWT_SECRET", "qa-secret")
 os.environ.setdefault("AIVIS_SEED_ON_STARTUP", "false")
 os.environ.setdefault("MES_MODE", "table")
+# 워치독 스레드 대신 시험이 직접 돌린다(결정성).
+os.environ.setdefault("MES_WATCHDOG_ENABLED", "false")
 # 검사워커 내부 토큰: 설정해 POST /inspection 을 토큰 인증 경로로 검증.
 os.environ.setdefault("AIVIS_SERVICE_TOKEN", "qa-internal-token")
 # 시뮬레이터 카메라 강제 (실카메라 미연결).

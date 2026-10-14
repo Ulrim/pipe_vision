@@ -16,7 +16,8 @@ export class ApiError extends Error {
   }
 }
 
-function authHeaders(extra?: HeadersInit): HeadersInit {
+/** Authorization 헤더 첨부. MES 클라이언트(api/mes.ts)도 같은 토큰을 쓰므로 공유한다. */
+export function authHeaders(extra?: HeadersInit): HeadersInit {
   const token = getToken();
   return {
     ...(extra ?? {}),
@@ -28,8 +29,9 @@ function authHeaders(extra?: HeadersInit): HeadersInit {
  * 401(토큰 만료/무효) 공통 처리(§14 RBAC): auth 스토어를 비워
  * ProtectedRoute(App.tsx)가 /login 으로 리다이렉트하도록 만든다.
  * 미로그인 상태(토큰 없음)에서의 401 은 무시(중복 clear 방지).
+ * MES 도 AIVIS 가 발급한 같은 JWT 를 검증하므로 같은 처리를 공유한다(api/mes.ts).
  */
-function handleUnauthorized(status: number): void {
+export function handleUnauthorized(status: number): void {
   if (status === 401 && getToken()) {
     useAuthStore.getState().clear();
   }

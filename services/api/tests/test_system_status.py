@@ -147,6 +147,17 @@ def test_inspection_windows_and_boundaries(client, auth):
     _post_inspection(client, at=recent[1], lot="SYSW2", verdict="NG")
     _post_inspection(client, at=recent[2], lot="SYSW3", verdict="OK")
     _post_inspection(client, at=old, lot="SYSW4", verdict="NG")
+    # table 모드는 적재와 함께 연계됨(2026-10-14) — 백로그를 보려고 4건을 미연계로 되돌린다.
+    from db.base import SessionLocal
+    from db.models import Inspection
+
+    db = SessionLocal()
+    try:
+        db.query(Inspection).filter(Inspection.lot.in_(["SYSW1", "SYSW2", "SYSW3", "SYSW4"])
+                                    ).update({"mes_synced": False}, synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
 
     after = _status(client, auth)["inspection"]
 
@@ -168,7 +179,7 @@ def test_inspection_windows_and_boundaries(client, auth):
         expected = round(w["ng"] / w["total"] * 100.0, 1) if w["total"] else 0.0
         assert w["ng_rate_pct"] == expected
 
-    # mes_synced=false 로 4건 넣었으므로 백로그 +4.
+    # 미연계 4건 → 백로그 +4.
     assert after["mes_pending"] - before["mes_pending"] == 4
 
     # 처리속도(최근 1시간 표본)와 마지막 검사시각이 채워진다.

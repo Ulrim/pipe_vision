@@ -82,6 +82,10 @@
 - 산업용 카메라/렌즈/조명/트리거 센서/산업용 PC/HMI 패널/네트워크 스위치 **물리 구매·설치** (도입기업 자체 구축)
 - 카메라 벤더 SDK 자체 (단, **연동 어댑터**는 개발 — §6.1)
 - MES 솔루션 본체 (단, **연계 인터페이스**는 개발 — §7.3)
+  - **2026-10-14 범위 확대**: 도입기업에 연계할 MES 가 없어 **품질·생산실적 범위의 MES 를 별도
+    서비스로 개발**한다(`services/mes`, `docs/MES.md`) — 수주·작업지시·검사결과 수신·생산실적·
+    출하·클레임·월 KPI. 공정 라우팅·설비 가동·자재/재고·BOM 은 여전히 범위 밖. AIVIS 와는 §7.3
+    연계 인터페이스로만 주고받으므로 상용 MES 로 갈아끼워도 AIVIS 는 바뀌지 않는다.
 - 경광등/부저 물리 결선 (단, 이를 **트리거하는 신호 발신 모듈**은 개발)
 
 ---
@@ -132,9 +136,10 @@ aivis/
 │   │   ├── db/                    # SQLAlchemy 모델, Alembic 마이그레이션
 │   │   ├── ws/                    # WebSocket 허브
 │   │   └── mes/                   # MES 연계 어댑터 (REST/DB-table)
-│   └── data-ops/                  # [데이터/MES 에이전트 소유]
-│       ├── labeling/              # 라벨링 보조 CLI/UI 연동
-│       └── retrain/               # 오검·미검 태깅 → 데이터셋 빌드
+│   ├── data-ops/                  # [데이터/MES 에이전트 소유]
+│   │   ├── labeling/              # 라벨링 보조 CLI/UI 연동
+│   │   └── retrain/               # 오검·미검 태깅 → 데이터셋 빌드
+│   └── mes/                       # [데이터/MES 에이전트 소유] 품질·생산실적 MES(2026-10-14, 별도 서비스 :8100)
 ├── apps/
 │   ├── hmi/                       # [작업자 UI 에이전트 소유] 작업자 HMI
 │   └── dashboard/                 # [대시보드 에이전트 소유] 관리자 대시보드
@@ -443,6 +448,11 @@ CREATE TABLE sys_log (
 - **연계율 100% 보장**: 미전송 행 `mes_synced=false` 워치독이 주기 재시도, 대시보드에 연계 상태 모니터.
 - **가짜 성공 금지(2026-10-10)**: REST 주소가 없으면 연계 **보류**(가짜 전송 자동 사용 금지 — `MES_REST_FAKE=true` 로만).
   KPI·리포트에 `mes_mode`(table|rest|rest_fake|rest_unconfigured)와 MES 수신 확인 건수를 함께 낸다.
+- **연계 상대 = 자체 MES(2026-10-14)**: `services/mes` 가 `mes_quality_if` 를 10초마다 폴링해 가져가고
+  `consumed=true` 로 표시한다 → 'MES 수신 확인' = 실제 수신. 같은 멱등키(`…|cam_id|tube_index`)는 **갱신**
+  (재확인이 바뀌면 AIVIS 가 행을 `consumed=false` 로 되돌린다). table 모드는 스테이징과 같은 트랜잭션에서
+  `mes_synced=true`, 재전송 워치독은 **API 프로세스 안에서** 뜬다(종전엔 어디서도 기동되지 않았다).
+  로그인은 하나(MES 가 AIVIS JWT 를 같은 `JWT_SECRET` 으로 검증).
 
 ### 7.4 백엔드 REST API 요약 (`docs/API.md`)
 ```
@@ -460,6 +470,12 @@ POST   /mes/quality             # MES 연계(또는 DB-table 모드)
 WS     /ws/live                 # 실시간 검사결과/알람 푸시
 GET    /system/stations         # 카메라별 실시간 현황(파이 여러 대, 대시보드 /live)
 PUT    /inspection/images/{key} # 워커→허브 사진 업로드(서버 내부, 2호기 이상)
+
+# 품질·생산실적 MES (별도 서비스 :8100, docs/MES.md)
+GET/POST /orders  /work-orders  /shipments  /claims   # 수주·작업지시·출하·클레임
+GET    /work-orders/{id}        # 생산실적 상세(단계별·재확인 반영·크레이트 개수)
+GET    /kpi/monthly?period=     # 리드타임·Claim·출하수량·유출 → AIVIS POST /kpi/manual 반영(보낸 항목만)
+GET    /intake/status  POST /intake/poll  POST /intake/quality   # 연계 현황·수동 수신·REST 수신
 ```
 
 ---

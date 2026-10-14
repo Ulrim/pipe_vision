@@ -6,7 +6,11 @@ export interface NavItem {
   label: string;
 }
 
-/** 대시보드 화면 목록(M11~M13 + 현장 장비 모니터링/업데이트). App.tsx 라우트와 1:1 대응. */
+/**
+ * 대시보드 화면 목록(M11~M13 + MES + 현장 장비 모니터링/업데이트). App.tsx 라우트와 1:1 대응.
+ * MES 항목은 별도 서버(services/mes) 화면이라 라벨 앞에 "MES" 를 붙여 구분한다 —
+ * MES 가 꺼져 있을 때 "왜 이 화면만 안 되지?" 를 메뉴에서부터 짐작할 수 있게.
+ */
 export const NAV: NavItem[] = [
   { to: "/live", label: "실시간 현황" },
   { to: "/kpi", label: "KPI" },
@@ -15,6 +19,10 @@ export const NAV: NavItem[] = [
   { to: "/report", label: "월간리포트" },
   { to: "/labeling", label: "정답 라벨링" },
   { to: "/master", label: "기준정보" },
+  { to: "/mes/orders", label: "MES 작업지시" },
+  { to: "/mes/production", label: "MES 생산실적" },
+  { to: "/mes/shipping", label: "MES 출하·클레임" },
+  { to: "/mes/link", label: "MES 연계현황" },
   { to: "/monitor", label: "시스템 모니터링" },
   { to: "/update", label: "프로그램 업데이트" },
 ];

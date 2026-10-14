@@ -243,19 +243,22 @@ def upsert_kpi_manual(
     db: Session = Depends(get_db),
     _user: CurrentUser = Depends(require_min_role(Role.QUALITY)),
 ):
-    """작업공수/리드타임/Claim 등 비자동 KPI 입력(월 단위 upsert)."""
+    """작업공수/리드타임/Claim 등 비자동 KPI 입력(월 단위 upsert).
+
+    **보낸 항목만 바꾼다**(2026-10-14). MES 가 리드타임·Claim·출하수량·유출 부적합을
+    반영할 때 작업공수·비고를 지우면 안 되기 때문이다. 값을 지우려면 그 항목을
+    null 로 보낸다(키를 빼면 그대로 둔다). KPI 입력 화면은 모든 항목을 보낸다.
+    """
     # period 를 월 1일로 정규화.
     key = datetime(body.period.year, body.period.month, 1)
     row = db.get(KpiManualRow, key)
     if not row:
         row = KpiManualRow(period=key)
         db.add(row)
-    row.claim_count = body.claim_count
-    row.workload_index = body.workload_index
-    row.lead_time_days = body.lead_time_days
-    row.shipped_qty = body.shipped_qty
-    row.leak_defect_qty = body.leak_defect_qty
-    row.note = body.note
+    for field in ("claim_count", "workload_index", "lead_time_days", "shipped_qty",
+                  "leak_defect_qty", "note"):
+        if field in body.model_fields_set:
+            setattr(row, field, getattr(body, field))
     db.commit()
     return KpiManual(
         period=date(key.year, key.month, 1),

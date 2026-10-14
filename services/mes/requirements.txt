@@ -1,0 +1,12 @@
+# ===== AIVIS MES (품질·생산실적) — services/mes =====
+# AIVIS api 와 같은 버전을 쓴다(독립형 파이에서는 api venv 를 그대로 공유).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+SQLAlchemy==2.0.36
+psycopg[binary]==3.2.3
+python-jose[cryptography]==3.3.0
+
+# --- test only ---
+pytest==8.3.4
+httpx==0.28.1

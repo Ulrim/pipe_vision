@@ -113,6 +113,9 @@ def test_count_mode_switch_from_active_order(tmp_path):
     assert worker._cur_stage() == "CRATE_COUNT"
     worker.run_once()
     assert backend.posted[0]["inspection_stage"] == "CRATE_COUNT"
+    # 실제 개수·기준 개수를 결과에 싣는다 — MES 포장 실적(2026-10-14).
+    assert backend.posted[0]["count_expected"] == 20
+    assert backend.posted[0]["count_detected"] == 20
     worker.shutdown()
 
 

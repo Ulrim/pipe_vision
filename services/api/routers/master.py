@@ -211,8 +211,12 @@ def put_active_order(
     row.item_code = body.item_code
     row.lot = body.lot
     row.work_order = body.work_order
-    stage = body.inspection_stage
-    row.inspection_stage = stage.value if stage is not None else None
+    # 모드는 보낼 때만 바꾼다(2026-10-14). MES '검사기에 오더 내리기'·기준정보 오더 폼은
+    # 품목·LOT·작업지시만 보내는데, 그때 전역 모드가 기본값으로 지워지면 안 된다.
+    # 지우려면 inspection_stage 를 null 로 보낸다.
+    if "inspection_stage" in body.model_fields_set:
+        stage = body.inspection_stage
+        row.inspection_stage = stage.value if stage is not None else None
     row.updated_by = user.username
     row.updated_at = datetime.now(timezone.utc)
     write_log(

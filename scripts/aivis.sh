@@ -25,6 +25,7 @@ AIVIS_HOME="${AIVIS_HOME:-/var/lib/aivis}"
 API_PORT="${API_PORT:-8000}"
 HMI_PORT="${HMI_PORT:-5173}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5174}"
+MES_PORT="${MES_PORT:-8100}"
 ADMIN_PW="${AIVIS_ADMIN_PASSWORD:-aivis1234}"
 SERVICE_NAME="${AIVIS_SERVICE_NAME:-aivis-standalone.service}"
 
@@ -235,6 +236,7 @@ show_urls() {
   echo "   작업자 화면 (HMI)   ${C_B}http://$ip:$HMI_PORT${C_0}"
   echo "   관리자 대시보드      ${C_B}http://$ip:$DASHBOARD_PORT${C_0}"
   echo "   API/문서             ${C_B}http://$ip:$API_PORT${C_0}   (문서: /docs)"
+  echo "   MES(품질·생산실적)   ${C_B}http://$ip:$MES_PORT${C_0}   (화면은 대시보드 메뉴 'MES …')"
   echo "---------------------------------------------------------------"
   echo "   로그인   아이디: ${C_B}admin${C_0}   비밀번호: ${C_B}$ADMIN_PW${C_0}"
   echo "   ${C_D}파이 화면에서 직접 볼 때는 http://localhost:$HMI_PORT${C_0}"
@@ -279,7 +281,14 @@ cmd_backup() {
     return 1
   fi
   say "검사 DB 백업: $db → $out (최근 ${keep}개 보관)"
-  python3 "$REPO/services/api/tools/backup_sqlite.py" --db "$db" --out "$out" --keep "$keep"
+  python3 "$REPO/services/api/tools/backup_sqlite.py" --db "$db" --out "$out" --keep "$keep" || return 1
+  # MES DB(수주·작업지시·출하·클레임 — 손으로 넣은 기록, docs/MES.md). 있으면 함께.
+  local mesdb="${AIVIS_MES_DB_PATH:-$AIVIS_HOME/db/mes.db}"
+  if [ -f "$mesdb" ]; then
+    say "MES DB 백업: $mesdb → $out"
+    python3 "$REPO/services/api/tools/backup_sqlite.py" --db "$mesdb" --out "$out" \
+      --keep "$keep" --prefix mes_
+  fi
 }
 
 menu() {

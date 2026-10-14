@@ -118,6 +118,11 @@
    - `aivis-api` (web, Docker, `services/api/Dockerfile`, 루트 컨텍스트, `/health`, :8000)
    - `aivis-vision` (worker, Docker, `services/vision/Dockerfile`, 루트 컨텍스트)
    - `aivis-mes-watchdog` (worker, `python -m mes.cli watchdog`) — 데모 연계율 표시용(선택).
+     2026-10-14 부터 **api 프로세스 안에서도 워치독이 돈다**(`MES_WATCHDOG_ENABLED`, 기본 true).
+     둘 다 돌아도 멱등이라 안전하지만 중복이다 — 이 워커를 쓰면 api 에 `MES_WATCHDOG_ENABLED=false`.
+   - 품질·생산실적 MES(`services/mes`, `docs/MES.md`)는 이 블루프린트에 넣지 않았다(현장 독립형·
+     compose 대상). 클라우드에 올리려면 같은 Supabase DB 를 `MES_AIVIS_DB_URL` 로, 대시보드는
+     `VITE_MES_API_BASE` 로 빌드한다.
    - env group `aivis-shared` (JWT_SECRET/AIVIS_SERVICE_TOKEN 자동생성, 시드 admin).
 3. **환경변수 입력표** — Blueprint가 `sync:false`로 표시한 값들을 입력한다:
 

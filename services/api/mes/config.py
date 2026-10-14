@@ -57,6 +57,9 @@ class MesConfig:
     #: mes_synced=true 가 찍혔다 → "연계율 100%" 가 실제 MES 와 무관하게 나왔다.
     #: 이제 명시적으로 켜야 하고, 켜면 KPI·리포트에 '가짜 전송'으로 표시된다.
     rest_fake: bool = False
+    #: MES 수신 토큰(MES_REST_TOKEN). 있으면 `Authorization: Bearer <토큰>` 을 싣는다
+    #: (자체 MES 의 MES_INTAKE_TOKEN 과 같은 값, 2026-10-14).
+    rest_token: str | None = None
 
     @property
     def is_rest(self) -> bool:
@@ -96,6 +99,7 @@ def get_mes_config() -> MesConfig:
         mode=mode,
         rest_url=os.getenv("MES_REST_URL") or None,
         rest_fake=(os.getenv("MES_REST_FAKE", "false").strip().lower() in ("1", "true", "yes")),
+        rest_token=(os.getenv("MES_REST_TOKEN") or "").strip() or None,
         rest_timeout_s=_float("MES_REST_TIMEOUT_S", 5.0),
         idem_header=os.getenv("MES_IDEM_HEADER", "X-Idempotency-Key"),
         watchdog_interval_s=_float("MES_WATCHDOG_INTERVAL_S", 10.0),

@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from aivis_types import InspectionResult
 from db.models import Inspection, MesQualityIf
 from core.training import is_training_lot
+from mes.adapter import staging_values
 
 
 def make_idem_key(r: InspectionResult) -> str:
@@ -105,6 +106,8 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
         inspected_at=result.inspected_at,
         tube_index=result.tube_index,
         tube_bbox=list(result.tube_bbox) if result.tube_bbox else None,
+        count_detected=result.count_detected,
+        count_expected=result.count_expected,
         shift=result.shift,
         operator=result.operator,
         ref_length_mm=result.ref_length_mm,
@@ -135,20 +138,10 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
             select(MesQualityIf.id).where(MesQualityIf.idem_key == idem)
         ).first()
         if not exists:
-            db.add(
-                MesQualityIf(
-                    inspection_id=row.id,
-                    lot=result.lot,
-                    item_code=result.item_code,
-                    inspected_at=result.inspected_at,
-                    cam_id=result.cam_id,
-                    idem_key=idem,
-                    work_order=result.work_order,
-                    final_verdict=_verdict_value(result.final_verdict),
-                    defect_codes=defect_codes,
-                    meas_length_mm=result.meas_length_mm,
-                    deviation_mm=result.deviation_mm,
-                )
-            )
+            db.add(MesQualityIf(**staging_values(row), idem_key=idem))
+        # table 모드에서 '연계됨' = 스테이징 적재(MES_INTERFACE §6.1). 같은 트랜잭션이라
+        # 검사행만 남고 연계행이 빠지는 일은 없다. 종전엔 워치독이 나중에 true 로 바꿨는데
+        # 워치독이 어디서도 기동되지 않아 연계율이 0% 로 남았다(2026-10-14 발견).
+        row.mes_synced = True
 
     return row

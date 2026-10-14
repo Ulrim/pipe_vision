@@ -86,6 +86,36 @@ services:
     networks:
       - aivis-net
 
+  # ---------------- MES (품질·생산실적, 2026-10-14) ----------------
+  # AIVIS 와 별도 서비스·별도 DB. AIVIS DB 의 연계 테이블(mes_quality_if)을 폴링해
+  # 가져가고 consumed 로 표시한다(= AIVIS KPI 'MES 수신 확인'). 로그인은 AIVIS 와 하나
+  # (같은 JWT_SECRET). 대시보드 MES 메뉴가 :8100 으로 부른다. docs/MES.md
+  mes:
+    build:
+      context: .
+      dockerfile: services/mes/Dockerfile
+    restart: unless-stopped
+    environment:
+      MES_DATABASE_URL: ${MES_DATABASE_URL:-sqlite:////data/mes/mes.db}
+      MES_AIVIS_DB_URL: ${MES_AIVIS_DB_URL:-postgresql+psycopg://aivis:aivis@postgres:5432/aivis}
+      MES_POLL_INTERVAL_S: ${MES_POLL_INTERVAL_S:-10}
+      JWT_SECRET: ${JWT_SECRET:-change-me}
+    volumes:
+      - mes-data:/data/mes
+    ports:
+      - "8100:8100"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - aivis-net
+
   # ---------------- Vision worker (acquisition -> preprocess -> infer -> verdict) ----------------
   vision:
     build:
@@ -163,6 +193,7 @@ services:
 
 volumes:
   postgres-data:
+  mes-data:
   minio-data:
   images:
 

@@ -10,6 +10,10 @@ import { LabelingPage } from "@/pages/LabelingPage";
 import { MasterPage } from "@/pages/MasterPage";
 import { MonitorPage } from "@/pages/MonitorPage";
 import { UpdatePage } from "@/pages/UpdatePage";
+import { MesOrdersPage } from "@/pages/MesOrdersPage";
+import { MesProductionPage } from "@/pages/MesProductionPage";
+import { MesShippingPage } from "@/pages/MesShippingPage";
+import { MesLinkPage } from "@/pages/MesLinkPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NavMenu, useCurrentNavLabel } from "@/components/NavMenu";
 
@@ -128,6 +132,39 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <MasterPage />
+              </ProtectedRoute>
+            }
+          />
+          {/* MES(품질·생산실적) — 별도 서버(services/mes)지만 로그인은 같은 토큰. */}
+          <Route
+            path="/mes/orders"
+            element={
+              <ProtectedRoute>
+                <MesOrdersPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/production"
+            element={
+              <ProtectedRoute>
+                <MesProductionPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/shipping"
+            element={
+              <ProtectedRoute>
+                <MesShippingPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/link"
+            element={
+              <ProtectedRoute>
+                <MesLinkPage />
               </ProtectedRoute>
             }
           />

@@ -35,15 +35,19 @@ PREFIX = "aivis_"
 SUFFIX = ".db.gz"
 
 
-def backup(db: Path, out_dir: Path, *, keep: int = 14, now: Optional[datetime] = None) -> Path:
-    """db 를 out_dir 에 압축 백업하고 경로를 돌려준다. 실패하면 예외."""
+def backup(db: Path, out_dir: Path, *, keep: int = 14, now: Optional[datetime] = None,
+           prefix: str = PREFIX) -> Path:
+    """db 를 out_dir 에 압축 백업하고 경로를 돌려준다. 실패하면 예외.
+
+    prefix 로 파일 이름·보관 개수를 DB 마다 따로 센다(검사 DB `aivis_`, MES DB `mes_`).
+    """
     db = Path(db)
     if not db.is_file():
         raise FileNotFoundError(f"DB 파일이 없습니다: {db}")
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = (now or datetime.now(KST)).astimezone(KST).strftime("%Y%m%d_%H%M%S")
-    target = out_dir / f"{PREFIX}{stamp}{SUFFIX}"
+    target = out_dir / f"{prefix}{stamp}{SUFFIX}"
 
     with tempfile.TemporaryDirectory(dir=out_dir) as td:
         raw = Path(td) / "snapshot.db"
@@ -67,17 +71,17 @@ def backup(db: Path, out_dir: Path, *, keep: int = 14, now: Optional[datetime] =
         with open(raw, "rb") as fi, gzip.open(part, "wb", compresslevel=6) as fo:
             shutil.copyfileobj(fi, fo)
         part.replace(target)  # 반쯤 쓴 파일이 '최신 백업' 으로 보이지 않게
-    prune(out_dir, keep=keep)
+    prune(out_dir, keep=keep, prefix=prefix)
     return target
 
 
-def list_backups(out_dir: Path) -> List[Path]:
-    return sorted(Path(out_dir).glob(f"{PREFIX}*{SUFFIX}"))
+def list_backups(out_dir: Path, prefix: str = PREFIX) -> List[Path]:
+    return sorted(Path(out_dir).glob(f"{prefix}*{SUFFIX}"))
 
 
-def prune(out_dir: Path, *, keep: int) -> List[Path]:
-    """오래된 것부터 지워 keep 개만 남긴다. 지운 목록 반환."""
-    items = list_backups(out_dir)
+def prune(out_dir: Path, *, keep: int, prefix: str = PREFIX) -> List[Path]:
+    """오래된 것부터 지워 keep 개만 남긴다(같은 prefix 끼리). 지운 목록 반환."""
+    items = list_backups(out_dir, prefix)
     if keep <= 0 or len(items) <= keep:
         return []
     gone = items[: len(items) - keep]
@@ -91,14 +95,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--db", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--keep", type=int, default=14)
+    ap.add_argument("--prefix", default=PREFIX, help="백업 파일 접두어(MES DB 는 mes_)")
     a = ap.parse_args(argv)
     try:
-        p = backup(Path(a.db), Path(a.out), keep=a.keep)
+        p = backup(Path(a.db), Path(a.out), keep=a.keep, prefix=a.prefix)
     except Exception as exc:  # noqa: BLE001
         print(f"[backup] 실패: {exc}", file=sys.stderr)
         return 1
     size_mb = p.stat().st_size / 1024 / 1024
-    print(f"[backup] 완료: {p} ({size_mb:.1f} MB), 보관 {len(list_backups(p.parent))}개")
+    print(f"[backup] 완료: {p} ({size_mb:.1f} MB), 보관 {len(list_backups(p.parent, a.prefix))}개")
     return 0
 
 

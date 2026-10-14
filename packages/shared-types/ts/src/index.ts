@@ -151,6 +151,9 @@ export interface InspectionResult {
   tube_index?: number; // 배치 내 튜브 순번(0=단일 튜브/현행, 서버 기본값). 자연키 구성요소(§7.1)
   /** 다발 사진 속 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 단일 튜브면 없음. */
   tube_bbox?: number[] | null;
+  /** 개수 확인(CRATE_COUNT) 실제 개수 / 기준 개수 — MES 포장 실적(2026-10-14). */
+  count_detected?: number | null;
+  count_expected?: number | null;
   shift?: string | null;
   operator?: string | null;
 

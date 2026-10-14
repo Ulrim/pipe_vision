@@ -13,7 +13,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -46,27 +46,66 @@ def make_idem_key_from_row(row: Inspection) -> str:
     return f"{row.lot}|{row.item_code}|{ts_str}|{row.cam_id}|{tube_index}"
 
 
-def _row_to_payload(row: Inspection, idem_key: str) -> dict[str, Any]:
-    """MES 전송/스테이징용 핵심값 페이로드(§7.3 식별자+판정 핵심값)."""
+def staging_values(row: Inspection) -> dict[str, Any]:
+    """연계로 넘기는 값(검사 행 기준). 테이블 적재·보충·REST 본문이 모두 이것을 쓴다.
+
+    2026-10-14: 단계·튜브 번호·재확인 결과·크레이트 개수를 더했다 — MES 가 연계값만으로
+    생산실적(단계별 불량, 재확인 반영 양품, 포장 수량)을 셀 수 있어야 한다.
+    """
     return {
         "inspection_id": row.id,
         "lot": row.lot,
         "item_code": row.item_code,
-        "inspected_at": row.inspected_at.isoformat()
-        if isinstance(row.inspected_at, datetime)
-        else str(row.inspected_at),
+        "inspected_at": row.inspected_at,
         "cam_id": row.cam_id,
-        "idem_key": idem_key,
         "work_order": row.work_order,
         "final_verdict": row.final_verdict,
         "defect_codes": list(row.defect_codes or []),
-        "meas_length_mm": float(row.meas_length_mm)
-        if row.meas_length_mm is not None
-        else None,
-        "deviation_mm": float(row.deviation_mm)
-        if row.deviation_mm is not None
-        else None,
+        "meas_length_mm": row.meas_length_mm,
+        "deviation_mm": row.deviation_mm,
+        "inspection_stage": row.inspection_stage,
+        "tube_index": row.tube_index,
+        "manual_verdict": row.manual_verdict,
+        "count_detected": row.count_detected,
+        "count_expected": row.count_expected,
     }
+
+
+def _row_to_payload(row: Inspection, idem_key: str) -> dict[str, Any]:
+    """MES REST 본문(§7.3 식별자+판정 핵심값, JSON 직렬화)."""
+    out = staging_values(row)
+    ts = out["inspected_at"]
+    out["inspected_at"] = ts.isoformat() if isinstance(ts, datetime) else str(ts)
+    for k in ("meas_length_mm", "deviation_mm"):
+        out[k] = float(out[k]) if out[k] is not None else None
+    out["idem_key"] = idem_key
+    return out
+
+
+def restage_after_review(db: Session, row: Inspection, cfg: MesConfig | None = None) -> None:
+    """재확인 결과가 바뀌면 MES 가 다시 가져가게 한다(2026-10-14).
+
+    MES 생산실적의 양품 수량이 재확인으로 바뀌기 때문이다(AI NG → 사람 OK 면 양품).
+    - table: 연계 행의 manual_verdict 를 고치고 consumed=false·updated_at 갱신 → MES 가
+      다음 폴링에 같은 멱등키로 다시 읽어 갱신한다.
+    - rest: mes_synced=false 로 되돌려 워치독이 재확인 값을 실어 다시 보낸다.
+    수집용 LOT 은 처음부터 MES 로 가지 않으므로 건드리지 않는다. commit 은 호출자.
+    """
+    from core.training import is_training_lot
+
+    if is_training_lot(row.lot):
+        return
+    cfg = cfg or get_mes_config()
+    staged = db.execute(
+        select(MesQualityIf).where(MesQualityIf.inspection_id == row.id)
+    ).scalars().first()
+    if staged is not None and staged.manual_verdict != row.manual_verdict:
+        staged.manual_verdict = row.manual_verdict
+        staged.consumed = False
+        staged.consumed_at = None
+        staged.updated_at = datetime.now(timezone.utc)
+    if cfg.is_rest and row.mes_synced:
+        row.mes_synced = False
 
 
 def _build_transport(cfg: MesConfig) -> MesTransport:
@@ -80,6 +119,7 @@ def _build_transport(cfg: MesConfig) -> MesTransport:
             cfg.rest_url,
             timeout_s=cfg.rest_timeout_s,
             idem_header=cfg.idem_header,
+            token=cfg.rest_token,
         )
     if cfg.rest_fake:
         return FakeMesTransport()
@@ -128,19 +168,7 @@ class MesAdapter:
         if existing is not None:
             return existing
 
-        staged = MesQualityIf(
-            inspection_id=row.id,
-            lot=row.lot,
-            item_code=row.item_code,
-            inspected_at=row.inspected_at,
-            cam_id=row.cam_id,
-            idem_key=idem_key,
-            work_order=row.work_order,
-            final_verdict=row.final_verdict,
-            defect_codes=list(row.defect_codes or []),
-            meas_length_mm=row.meas_length_mm,
-            deviation_mm=row.deviation_mm,
-        )
+        staged = MesQualityIf(**staging_values(row), idem_key=idem_key)
         db.add(staged)
         db.flush()
         return staged

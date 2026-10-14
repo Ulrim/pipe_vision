@@ -38,6 +38,7 @@ from core.security import (
 from db.base import SessionLocal, get_db
 from db.models import Inspection
 from db.serialize import inspection_to_schema
+from mes.adapter import restage_after_review
 from ws.alarm import tracker
 from ws.hub import hub, make_event
 
@@ -770,6 +771,8 @@ def review_inspection(
     row.review_flag = bool(body.review_flag) if body.review_flag is not None else False
     if body.operator:
         row.operator = body.operator
+    # MES 생산실적이 재확인 결과로 바뀐다 — 연계 행을 되돌려 다시 가져가게 한다.
+    restage_after_review(db, row)
     write_log(
         db,
         category=LogCategory.USER,

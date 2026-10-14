@@ -872,6 +872,9 @@ class Worker:
                 ref_length_mm=float(self.item.ref_length_mm),
                 final_verdict=verdict,
                 defect_codes=codes,
+                # 실제 담긴 수 — MES 생산실적의 포장(양품) 수량이 된다(2026-10-14).
+                count_detected=int(detected),
+                count_expected=int(expected),
                 confidence=round(conf, 4),
                 raw_image_path=saved.raw_image_path,
                 result_image_path=saved.result_image_path,

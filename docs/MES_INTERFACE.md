@@ -12,8 +12,12 @@
 - 연계 방식은 두 가지이고 **설정 한 줄로 전환**된다. 기본은 ①.
   - ① **DB 인터페이스 테이블** — AIVIS 가 `mes_quality_if` 에 INSERT, MES 가 폴링해 가져간다.
   - ② **REST** — AIVIS 가 MES 의 엔드포인트로 POST 한다.
-- 중복 적재는 **멱등키**로 막는다: `lot | item_code | inspected_at | cam_id`.
+- 중복 적재는 **멱등키**로 막는다: `lot | item_code | inspected_at | cam_id | tube_index`.
+  같은 키가 다시 오면 **갱신**한다 — 재확인으로 값이 바뀐 행은 다시 나온다(§2.2).
 - 실패한 건은 사라지지 않는다. `mes_synced=false` 로 남아 워치독이 지수 백오프로 재시도한다(연계율 100% 목표, §1.2).
+- **연계 상대(2026-10-14)**: 도입기업에 MES 가 없어 **자체 품질·생산실적 MES**(`services/mes`,
+  `docs/MES.md`)를 만들었다. 이 규격의 ① 테이블 방식으로 가져간다. 상용 MES 를 들이면 그쪽이
+  같은 규격을 따르면 된다(AIVIS 는 바뀌지 않는다).
 
 **MES 측이 결정해야 하는 것은 두 가지뿐이다**: (1) ① 또는 ② 중 무엇을 쓸지, (2) ①이면 접속 정보, ②면 엔드포인트 URL·인증 방식.
 
@@ -55,9 +59,16 @@ AIVIS 가 검사결과를 저장하는 **같은 트랜잭션에서** 이 테이�
 | `defect_codes` | TEXT[] | Y | 불량유형 배열(§4) |
 | `meas_length_mm` | NUMERIC(10,3) | Y | 측정 길이(mm) |
 | `deviation_mm` | NUMERIC(10,3) | Y | 기준 대비 편차(mm) |
+| `inspection_stage` | TEXT | Y | 검사 모드 `CUT_LENGTH`\|`POST_WASH_SURFACE`\|`CRATE_COUNT` (2026-10-14) |
+| `tube_index` | INT | Y | 다발 사진 안의 튜브 순번(0-base) (2026-10-14) |
+| `manual_verdict` | TEXT | Y | 작업자 재확인 결과 `OK`\|`NG`. 바뀌면 행이 다시 나온다 (2026-10-14) |
+| `count_detected` | INT | Y | 개수 확인(CRATE_COUNT) 실제 개수 — 포장 실적 (2026-10-14) |
+| `count_expected` | INT | Y | 개수 확인 기준 개수 (2026-10-14) |
 | `consumed` | BOOLEAN | N | **MES 가 가져갔음** 표시(기본 false) |
+| `consumed_at` | TIMESTAMPTZ | Y | MES 가 가져간 시각(MES 가 기록, 2026-10-14) |
 | `retry_count` | INT | N | 재시도 횟수(AIVIS 가 관리) |
 | `created_at` | TIMESTAMPTZ | Y | 적재 시각 |
+| `updated_at` | TIMESTAMPTZ | Y | AIVIS 가 행을 고친 시각(재확인). 처음 적재 때는 NULL (2026-10-14) |
 
 ### 2.2 MES 측 처리 절차
 
@@ -70,15 +81,21 @@ SELECT * FROM mes_quality_if
 
 -- 2) MES 품질이력에 적재 (MES 트랜잭션)
 
--- 3) 가져갔음을 표시  ※ 반드시 2)가 커밋된 뒤에
-UPDATE mes_quality_if SET consumed = true WHERE id = ANY(:ids);
+-- 3) 가져갔음을 표시  ※ 반드시 2)가 커밋된 뒤에, 읽은 뒤 바뀌지 않은 행만
+UPDATE mes_quality_if SET consumed = true, consumed_at = now()
+ WHERE id = :id AND consumed = false
+   AND updated_at IS NOT DISTINCT FROM :updated_at_read;
 ```
 
-**주의 세 가지**
+**주의 네 가지**
 
 1. `consumed=true` 표시는 **MES 적재가 확정된 뒤**에 한다. 먼저 표시하고 적재에 실패하면 그 건은 영영 사라진다.
-2. 같은 `idem_key` 가 다시 보이면 **중복이므로 무시**한다(§3). UNIQUE 제약이 있어 정상 상황에서는 생기지 않지만, MES 측 재처리 시 방어가 필요하다.
-3. 폴링 주기는 MES 가 정한다. 검사 템포가 1.5초 내외이므로 **10~60초** 권장.
+2. 같은 `idem_key` 가 다시 보이면 **갱신**한다(2026-10-14 개정 — 종전 '무시'). 작업자가 재확인하면
+   AIVIS 가 그 행의 `manual_verdict` 를 고치고 `consumed=false` 로 되돌린다. 무시하면 생산실적의
+   양품 수량이 틀어진다.
+3. 읽은 뒤 `updated_at` 이 바뀐 행은 **표시하지 않는다**(위 3)의 조건). 읽는 사이 재확인이 들어온 행을
+   표시해 버리면 재확인 값이 MES 로 가지 않는다. 다음 폴링에 새 값으로 다시 읽힌다.
+4. 폴링 주기는 MES 가 정한다. 검사 템포가 1.5초 내외이므로 **10~60초** 권장(자체 MES 기본 10초).
 
 행 삭제는 MES 가 하지 않는다. 보관·정리는 AIVIS 측 정책이다.
 
@@ -106,9 +123,17 @@ X-Idempotency-Key: <멱등키>        ← 헤더명은 설정 가능(MES_IDEM_HE
   "final_verdict": "NG",
   "defect_codes": ["SCR"],
   "meas_length_mm": 125.412,
-  "deviation_mm": 0.412
+  "deviation_mm": 0.412,
+  "inspection_stage": "CUT_LENGTH",
+  "tube_index": 3,
+  "manual_verdict": null,
+  "count_detected": null,
+  "count_expected": null
 }
 ```
+
+`MES_REST_TOKEN` 을 설정하면 `Authorization: Bearer <토큰>` 헤더도 싣는다(2026-10-14).
+재확인 결과가 바뀌면 같은 멱등키로 **다시 보낸다**(`manual_verdict` 가 채워진 채로).
 
 멱등키는 **헤더와 본문 양쪽**에 실린다. MES 는 편한 쪽을 쓰면 된다.
 
@@ -122,7 +147,7 @@ X-Idempotency-Key: <멱등키>        ← 헤더명은 설정 가능(MES_IDEM_HE
 
 본문 형식은 제약하지 않는다(JSON 이 아니어도 무방). **HTTP 상태코드만 본다.**
 
-**중복 요청은 정상 동작이다.** 네트워크가 끊겼다가 복구되면 같은 `idem_key` 가 다시 올 수 있다. MES 는 이미 처리한 키를 받으면 다시 적재하지 말고 `200` 을 돌려주면 된다(에러로 응답하면 AIVIS 가 계속 재시도한다).
+**중복 요청은 정상 동작이다.** 네트워크가 끊겼다가 복구되면 같은 `idem_key` 가 다시 올 수 있고, 재확인으로 값이 바뀌어 다시 올 수도 있다. MES 는 이미 받은 키면 새 행을 만들지 말고 **값을 갱신한 뒤** `200` 을 돌려주면 된다(에러로 응답하면 AIVIS 가 계속 재시도한다).
 
 ### 3.3 AIVIS 자체 수신 엔드포인트 (참고)
 
@@ -161,10 +186,10 @@ AIVIS 에도 같은 규격의 수신부가 있다 — `POST /mes/quality`. 통�
 멱등키는 네 값을 `|` 로 이은 문자열이다.
 
 ```
-{lot}|{item_code}|{inspected_at ISO}|{cam_id}
+{lot}|{item_code}|{inspected_at ISO}|{cam_id}|{tube_index}
 ```
 
-같은 스테이션(`cam_id`)에서 같은 순간(`inspected_at`)에 두 제품을 검사할 수 없으므로 이 조합은 제품 1개를 유일하게 가리킨다. 검사 id 를 쓰지 않는 이유는, AIVIS 를 재설치하면 id 가 다시 1부터 시작해 과거 데이터와 충돌할 수 있기 때문이다.
+다발 사진 한 장은 튜브 N개가 같은 스테이션·같은 순간을 공유하므로 튜브 순번(`tube_index`, 단일 제품은 0)까지 넣어야 제품 1개를 유일하게 가리킨다. 검사 id 를 쓰지 않는 이유는, AIVIS 를 재설치하면 id 가 다시 1부터 시작해 과거 데이터와 충돌할 수 있기 때문이다.
 
 - ① 테이블 방식: `idem_key` 에 **UNIQUE 제약**이 걸려 있어 중복 INSERT 자체가 불가능하다.
 - ② REST 방식: MES 가 키를 기억해 중복을 무시한다(§3.2).
@@ -177,6 +202,8 @@ AIVIS 에도 같은 규격의 수신부가 있다 — `POST /mes/quality`. 통�
 
 1. **미전송 표시** — 연계되지 않은 검사행은 `inspection.mes_synced = false` 로 남는다. 성공해야만 true 가 된다.
 2. **워치독** — 주기적으로 `mes_synced=false` 인 행을 모아 재전송한다. 기본 10초 주기, 100건 배치.
+   **API 프로세스 안에서 함께 뜬다**(2026-10-14 — 종전엔 구현만 있고 어디서도 기동되지 않았다.
+   별도 프로세스 `python -m mes.cli` 로 돌리려면 `MES_WATCHDOG_ENABLED=false`).
 3. **지수 백오프** — 실패할 때마다 대기가 0.5초 → 1 → 2 → 4 … 최대 30초로 늘어난다. MES 가 잠시 멈춰도 요청 폭주로 더 밀어붙이지 않는다.
 4. **재시도 상한** — 기본 8회를 넘기면 실패로 표시하고 `sys_log`(category=`mes`)에 남긴다. 무한 재시도로 큐가 막히는 것을 막는다.
 5. **모니터 노출** — 대시보드 모니터 화면이 연계 대기 건수를 표시한다. `GET /system/status` 의 `mes_pending` 이 계속 늘면 연계가 끊긴 것이다.
@@ -192,14 +219,14 @@ AIVIS 에도 같은 규격의 수신부가 있다 — `POST /mes/quality`. 통�
 
 | 방식(`mes_mode`) | `mes_synced=true` 의 뜻 | MES 가 실제로 받았는지 |
 |---|---|---|
-| `table` | `mes_quality_if` 에 **적재됨** | MES 가 `consumed=true` 로 표시해야 '수신 확인'(`mes_consumed_count`) |
+| `table` | `mes_quality_if` 에 **적재됨**(검사 저장과 같은 트랜잭션에서 true, 2026-10-14) | MES 가 `consumed=true` 로 표시해야 '수신 확인'(`mes_consumed_count`) — 자체 MES 가 표시한다 |
 | `rest` | 실제 MES 가 2xx 로 **응답함** | 응답 = 수신(`consumed=true` 도 함께 기록) |
 | `rest_fake` | 가짜 전송(시험) | **아니다** — 연계율 판정 보류 |
 | `rest_unconfigured` | (찍히지 않음) | 주소 미설정 — 연계 보류 |
 
-KPI·월간 리포트에 `mes_mode` 와 `mes_consumed_count` 가 함께 나간다. **테이블 방식으로
-인수받으려면 "스테이징 적재 = 연계 완료" 를 도입기업과 서면으로 합의**하거나, MES 쪽이
-`consumed` 를 갱신하도록 요청해 수신 확인 건수로 연계율을 보인다.
+KPI·월간 리포트에 `mes_mode` 와 `mes_consumed_count` 가 함께 나간다. 자체 MES(2026-10-14)가
+`consumed` 를 갱신하므로 **수신 확인 건수 = 적재 건수**로 연계율을 보인다(재확인 직후 다음 폴링
+전까지는 잠깐 미수신 1건으로 보일 수 있다).
 
 ## 7. 설정 항목
 
@@ -211,6 +238,8 @@ AIVIS 측 환경변수. MES 담당자는 굵게 표시된 두 개만 정해 주�
 | **`MES_REST_URL`** | (없음) | rest 모드의 MES 수신 URL. **없으면 연계 보류**(행은 미연계로 남고, 주소가 생기면 워치독이 밀린 것을 전부 보낸다) |
 | `MES_REST_FAKE` | `false` | 시험·시연 전용 가짜 전송. 켜면 KPI·리포트에 '가짜 전송 — 증빙 아님' 으로 표시되고 연계율 판정에서 빠진다 |
 | `MES_IDEM_HEADER` | `X-Idempotency-Key` | 멱등키 헤더명(MES 규약에 맞춰 변경) |
+| `MES_REST_TOKEN` | (없음) | REST 수신 토큰 → `Authorization: Bearer`(자체 MES 의 `MES_INTAKE_TOKEN`) |
+| `MES_WATCHDOG_ENABLED` | `true` | API 프로세스 안 워치독(재전송·보충). 별도 프로세스로 돌릴 때만 false |
 | `MES_REST_TIMEOUT_S` | `5.0` | 요청 타임아웃(초) |
 | `MES_WATCHDOG_INTERVAL_S` | `10.0` | 재전송 워치독 주기(초) |
 | `MES_WATCHDOG_BATCH` | `100` | 1회 재시도 배치 크기 |
@@ -242,7 +271,9 @@ MES 담당자와 함께 아래를 순서대로 확인하면 연계 시험이 끝
 
 ## 9. 아직 정해지지 않은 것
 
-- **연계 상대 MES 가 확정되지 않았다.** 위 규격은 양쪽 모드 모두 구현·시험을 마쳤지만, 실제 MES 와의 통합 시험은 상대가 정해진 뒤에 가능하다.
+- ~~연계 상대 MES 가 확정되지 않았다.~~ → 2026-10-14 **자체 품질·생산실적 MES**(`docs/MES.md`)로
+  결정. ① 테이블 방식 종단 시험(`tests/e2e/test_mes_e2e.py`)과 실제 프로세스 두 개(AIVIS·MES) 연동을
+  확인했다. 상용 MES 를 들이면 그쪽과 §8 시험을 다시 한다.
 - MES 가 요구하는 **인증 방식**(API 키/토큰/mTLS)은 미정이다. 현재 REST 모드는 멱등키 헤더만 보낸다. 인증이 필요하면 헤더 추가로 대응한다.
 - MES 측 **품질이력 테이블 컬럼 매핑**은 상대 스키마를 받아 확정한다. 위 §4 데이터 사전이 AIVIS 가 제공할 수 있는 전부다.
 

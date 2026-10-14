@@ -115,6 +115,10 @@ class Inspection(Base):
     tube_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # 다발 사진 속 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 라벨링 강조·튜브 단위 학습셋.
     tube_bbox: Mapped[list | None] = mapped_column(JsonB)
+    # 개수 확인(CRATE_COUNT) 결과 — 크레이트에 실제로 담긴 수 / 기준 수(2026-10-14).
+    # MES 생산실적의 양품(포장) 수량이 된다. 다른 모드에서는 NULL.
+    count_detected: Mapped[int | None] = mapped_column(Integer)
+    count_expected: Mapped[int | None] = mapped_column(Integer)
     shift: Mapped[str | None] = mapped_column(Text)
     operator: Mapped[str | None] = mapped_column(Text)
 
@@ -269,12 +273,21 @@ class MesQualityIf(Base):
     defect_codes: Mapped[list[str] | None] = mapped_column(StringArray)
     meas_length_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
     deviation_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    # MES 생산실적용(2026-10-14): 어느 모드의 결과인지, 다발 몇 번째인지, 재확인 결과,
+    # 크레이트 개수. 재확인이 바뀌면 이 행을 고치고 consumed=false 로 되돌린다.
+    inspection_stage: Mapped[str | None] = mapped_column(Text)
+    tube_index: Mapped[int | None] = mapped_column(Integer)
+    manual_verdict: Mapped[str | None] = mapped_column(Text)
+    count_detected: Mapped[int | None] = mapped_column(Integer)
+    count_expected: Mapped[int | None] = mapped_column(Integer)
     # 연계 상태
     consumed: Mapped[bool] = mapped_column(Boolean, default=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     retry_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         Index("ix_mesif_consumed", "consumed"),

@@ -59,3 +59,35 @@ export function resolveHmiBase(
 export function hmiUrlFor(camId: string, base: string | null = resolveHmiBase()): string | null {
   return base ? `${base}/?cam=${encodeURIComponent(camId)}` : null;
 }
+
+/** 독립형 MES 포트(services/mes 기본 — `uvicorn mes_app.main:app --port 8100`). */
+const DEFAULT_MES_PORT = 8100;
+
+/**
+ * MES API base URL 결정 — resolveApiBase 와 같은 규칙, 다른 서비스.
+ *
+ * MES 는 AIVIS API 와 **별도 프로세스**(services/mes)라 같은 출처("")로 둘 수 없다.
+ * 1) VITE_MES_API_BASE 가 **명시**되면 그대로(후행 / 제거, 빈 문자열도 허용 —
+ *    MES 를 같은 출처 루트에 물린 특수 배포).
+ * 2) 미지정 + 포트 80/443/없음(역프록시 배포) → "/mes-api". 프록시가 이 경로를
+ *    MES(:8100)로 넘긴다는 배포 관례다. 프록시에 이 경로가 없으면 SPA 의
+ *    index.html 이 돌아오는데, 그 경우는 requestMes 가 "MES 서버에 연결할 수
+ *    없습니다" 로 바꿔 보여 준다(화면이 깨지지 않게).
+ * 3) 그 외(독립형 :5174, dev :5173) → 같은 호스트의 :8100.
+ */
+export function resolveMesBase(
+  raw: string | undefined = import.meta.env?.VITE_MES_API_BASE as string | undefined,
+  loc: { protocol: string; hostname: string; port: string } | undefined =
+    typeof window !== "undefined" ? window.location : undefined,
+): string {
+  if (raw !== undefined) return raw.replace(/\/$/, "");
+  if (loc?.hostname) {
+    if (loc.port === "" || loc.port === "80" || loc.port === "443") {
+      return "/mes-api"; // 프록시 배포(80/443) = 역프록시 경로.
+    }
+    return `${loc.protocol}//${loc.hostname}:${DEFAULT_MES_PORT}`;
+  }
+  return "/mes-api"; // 비브라우저 폴백 = 역프록시 경로.
+}
+
+export const MES_BASE: string = resolveMesBase();

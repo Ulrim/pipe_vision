@@ -22,6 +22,19 @@ def _post(client, **over):
     return r.json()
 
 
+def _unsync(lots):
+    from db.base import SessionLocal
+    from db.models import Inspection
+
+    db = SessionLocal()
+    try:
+        db.query(Inspection).filter(Inspection.lot.in_(lots)).update(
+            {"mes_synced": False}, synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
 def _ensure_kpi_item(client, auth):
     client.post("/master/items", headers=auth("qa1"), json={
         "item_code": "KPI", "item_name": "kpi", "ref_length_mm": 100.0,
@@ -42,10 +55,13 @@ def test_kpi_formulas(client, auth):
     _ensure_kpi_item(client, auth)
     # 8 OK, 그중 7 synced
     for i in range(8):
-        _post(client, lot=f"OK{i}", mes_synced=(i < 7))
+        _post(client, lot=f"OK{i}")
     # 2 NG
-    _post(client, lot="NG0", final_verdict="NG", defect_codes=["LEN"], mes_synced=False)
-    _post(client, lot="NG1", final_verdict="NG", defect_codes=["OIL"], mes_synced=False)
+    _post(client, lot="NG0", final_verdict="NG", defect_codes=["LEN"])
+    _post(client, lot="NG1", final_verdict="NG", defect_codes=["OIL"])
+    # table 모드는 스테이징 적재 = 연계됨이라 10건 모두 synced 로 들어간다(2026-10-14).
+    # 산출식을 보려고 3건을 '아직 연계 안 됨'(rest 재전송 대기 등)으로 되돌린다.
+    _unsync(["OK7", "NG0", "NG1"])
 
     # 미검 1건: OK0 을 재확인해 AI=OK, 사람=NG 로 만든다(총건수 10 유지).
     # (2026-10-10 정의 수정 전에는 이것을 '오검' 으로 셌다 — 틀렸다. AI 가 통과시킨

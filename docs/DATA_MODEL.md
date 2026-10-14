@@ -36,7 +36,7 @@
 
 ### inspection — 검사결과 (제품 1개 = 1행) (§5 M7,M8)
 식별/메타: `id`(BIGSERIAL PK), `lot`(NOT NULL), `work_order`, `item_code`(FK→item_master),
-`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `tube_bbox`(JSONB, 2026-10-11 마이그레이션 0011 — 그 튜브의 원본 프레임 픽셀 박스 `[x0,y0,x1,y1]`. 라벨링 화면이 어느 튜브인지 강조하고 `labeling.cli dataset` 이 그 튜브만 잘라 학습셋에 넣는다. 단일 사진·이전 적재분은 NULL), `shift`, `operator`.
+`cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `tube_bbox`(JSONB, 2026-10-11 마이그레이션 0011 — 그 튜브의 원본 프레임 픽셀 박스 `[x0,y0,x1,y1]`. 라벨링 화면이 어느 튜브인지 강조하고 `labeling.cli dataset` 이 그 튜브만 잘라 학습셋에 넣는다. 단일 사진·이전 적재분은 NULL), `count_detected`/`count_expected`(INT, 2026-10-14 마이그레이션 0012 — 개수 확인(CRATE_COUNT) 실제/기준 개수. MES 포장 실적의 근거. 다른 모드는 NULL), `shift`, `operator`.
 길이: `ref_length_mm`, `meas_length_mm`, `deviation_mm`, `length_verdict`(OK/NG).
 표면(0~1): `oil_score`, `discolor_score`, `scratch_score` (NUMERIC(5,4)).
 종합: `final_verdict`(NOT NULL OK/NG), `defect_codes`(TEXT[] {LEN,OIL,DIS,SCR,MULTI}),
@@ -75,7 +75,7 @@ CHECK in operator/quality/admin), `active`(BOOL d.true).
 ### mes_quality_if — MES 연계 스테이징 (§7.3)
 DB 인터페이스 테이블 방식. 검사결과의 식별자+판정 핵심값을 적재하면 MES 가 폴링/트리거로 소비.
 `id`(BIGSERIAL PK), `inspection_id`(FK→inspection), `lot`, `item_code`, `inspected_at`,
-`cam_id`, `idem_key`(TEXT UNIQUE = `lot|item_code|inspected_at|cam_id|tube_index`), `work_order`,
+`cam_id`, `idem_key`(TEXT UNIQUE = `lot|item_code|inspected_at|cam_id|tube_index`), `work_order`, (2026-10-14 0012: `inspection_stage`, `tube_index`, `manual_verdict`, `count_detected`, `count_expected`, `consumed_at`, `updated_at` 추가 — 재확인이 바뀌면 `manual_verdict`·`updated_at` 을 고치고 `consumed=false` 로 되돌린다. MES 테이블(`mes_sales_order` 등)은 별도 서비스 DB — `docs/MES.md` §3)
 `final_verdict`, `defect_codes`(TEXT[]), `meas_length_mm`, `deviation_mm`,
 `consumed`(BOOL d.false), `retry_count`(INT d.0), `created_at`(TIMESTAMPTZ).
 인덱스 `ix_mesif_consumed`(consumed).

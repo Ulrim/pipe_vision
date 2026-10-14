@@ -70,6 +70,7 @@
 | GET | `/master/items/{code}` | operator+ | 단건 |
 | POST | `/master/items` | quality+ | 등록(version=1) |
 | PUT | `/master/items/{code}` | quality+ | 부분 갱신(version +1, updated_by/at 기록) |
+| PUT | `/master/active` | quality+ | 현재 오더(품목·LOT·작업지시). `inspection_stage` 는 **보낼 때만 바꾼다**(2026-10-14 — MES "검사기에 오더 내리기" 가 전역 모드를 지우지 않게, null 이면 지움) |
 | GET | `/master/active?cam_id=` | operator+ | 현재 오더. `cam_id` 를 주면 **그 스테이션의 모드**(station_config)가 전역보다 우선 적용된 값을 돌려주고 `stage_source`(`station`\|`order`\|null)로 출처를 말한다. 워커는 자기 `AIVIS_CAM_ID` 로 폴링한다 |
 | PUT | `/master/active/stage` | **operator+** | **검사 모드만** 바꾼다(`{item_code, inspection_stage, cam_id?}`; CUT_LENGTH\|POST_WASH_SURFACE\|CRATE_COUNT). `cam_id` 를 주면 **그 스테이션만**(station_config), 비우면 전역(active_order). 오더가 없으면 품목으로 만든다. 감사 로그 `[station=X]`/`[global]` before→after. 워커 15s 폴링으로 재시작 없이 전환. `PUT /master/active` 도 `inspection_stage` 를 받는다(NULL=스테이션 env 기본) |
 | GET | `/master/stations` | operator+ | 스테이션별 설정 목록(`{cam_id, inspection_stage, updated_by, updated_at}`) — 2대 구성 모니터/HMI 용 |
@@ -84,7 +85,7 @@
 |---|---|---|---|
 | GET | `/kpi/summary?period=YYYY-MM` | operator+ | 월별 자동 산출 → `KpiSummary`. 2026-10-10 추가 필드: `pending_review_count`(재확인 대기), `audited_count`(사람이 재확인한 표본), `misjudge_rate_pct`/`miss_rate_pct`, `mes_mode`(table\|rest\|rest_fake\|rest_unconfigured), `mes_consumed_count`(MES 수신 확인), `claim_count_ytd`(Claim 연 누계). 2026-10-11 `excluded_training_count`(수집용 LOT 으로 빠진 행 수 — 아래 '수집용 LOT') |
 | GET | `/kpi/targets` | operator+ | 목표표(리포트·화면 단일 출처). 행마다 `baseline_value`(구축 전), `profile`(plan\|contract). 수기 KPI 목표(`claim_count_ytd`·`lead_time_days`·`workload_index`) 포함 |
-| POST | `/kpi/manual` | quality+ | 작업공수/리드타임/Claim upsert |
+| POST | `/kpi/manual` | quality+ | 작업공수/리드타임/Claim/출하수량/유출 upsert. **보낸 항목만 바꾼다**(2026-10-14 — 키를 빼면 그대로, null 이면 지움). MES "AIVIS KPI 에 반영" 이 네 값만 보낸다 |
 | GET | `/kpi/report?period=&fmt=pdf\|xlsx` | quality+ | 월간 리포트 **파일** 생성(PDF=reportlab / XLSX=openpyxl). `attachment` 다운로드. `period` 미지정 시 당월 |
 
 ### 월간 품질 리포트 내용 (M12, GET /kpi/report)
@@ -146,6 +147,13 @@ LOT 이 `AIVIS_TRAINING_LOT_PREFIXES`(API 서버 env, 콤마, 기본 `TRAIN-`, �
 | GET | `/system/status` | operator+ | 현장 상태 스냅샷(API 가 도는 호스트 자원·워커·검사 집계·오류). "오늘" 은 **KST 0시** 기준(2026-10-09, 종전 UTC 0시 = 한국 09시) |
 | GET | `/system/stations` | operator+ | **실시간 현황**(파이 여러 대, 2026-10-09). `{ts, stations[]}`, 스테이션 = 하트비트 ∪ station_config ∪ 최근 24h 결과의 cam_id(재기동 직후에도 죽은 파이가 `down` 으로 남는다). 각 항목: `cam_id, state(up\|stale\|down), last_seen_s, stage`(하트비트 > 스테이션 설정 > 마지막 결과), 마지막 사이클 `item_code/expected/detected/mismatch/error/proc_time_ms`, 그 파이 자신의 `host{cpu_temp_c, cpu_percent, load_1m, mem_percent, disk_percent, disk_free_gb, throttled}`(구 워커는 null), `last_hour`/`today{total, ng, ng_rate_pct}`, `latest{id, inspected_at, lot, item_code, inspection_stage, final_verdict, defect_codes, meas_length_mm, deviation_mm, length_verdict, oil/discolor/scratch_score, review_flag, has_result_image, has_raw_image, frame_total, frame_ng, limits{ref_length_mm, tol_plus/minus_mm, oil/discolor/scratch_threshold, expected_count}}`(다발이면 NG 튜브가 대표). DB 가 죽어도 200(하트비트만으로 채움) |
 | PUT | `/inspection/images/{key}` | 내부 | **워커 → 허브 사진 업로드**(2026-10-09, `AIVIS_STORAGE_BACKEND=api` 워커). 본문 = JPEG 바이트(FF D8 시작), 키 = `raw\|result\|review/<파일명>.jpg`(하위 폴더·`..`·다른 확장자 400), 25MB 상한(413). 허브 `AIVIS_IMAGES_DIR` 의 같은 경로에 임시파일→rename 으로 저장(같은 키 재전송은 덮어씀 = 멱등). 디스크 오류 507(워커가 스풀에 보존 후 재전송). 서버가 `supabase` 백엔드면 409. 응답 201 `{key, bytes}` |
+
+## 품질·생산실적 MES (별도 서비스, 2026-10-14)
+MES API 는 `docs/MES.md` §6(:8100, 같은 로그인 토큰). AIVIS 쪽 변경:
+- `InspectionResult.count_detected/count_expected` — 개수 확인(CRATE_COUNT) 실제/기준 개수(워커가 기록).
+- 연계 테이블 `mes_quality_if` 에 단계·튜브 번호·재확인·개수·`consumed_at`·`updated_at`(규격 `docs/MES_INTERFACE.md` §2.1).
+- `PATCH /inspection/{id}/review` → 연계 행을 되돌린다(table: `consumed=false`, rest: 재전송).
+- table 모드는 저장과 같은 트랜잭션에서 `mes_synced=true`. MES 재전송 워치독이 API 안에서 뜬다(`MES_WATCHDOG_ENABLED`).
 
 ## 배포 환경변수 (클라우드 데모)
 - `ALLOWED_ORIGINS`: CORS 허용 출처 콤마 목록(예 `https://aivis-hmi.vercel.app,https://aivis-dashboard.vercel.app`). 미설정 시 `*`(모든 출처, credentials 불가). 명시 목록이면 `allow_credentials=True`.

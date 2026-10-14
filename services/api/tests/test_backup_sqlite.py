@@ -54,3 +54,21 @@ def test_keeps_only_latest_n(tmp_path):
 
 def test_missing_db_fails_loudly(tmp_path):
     assert bk.main(["--db", str(tmp_path / "nope.db"), "--out", str(tmp_path / "bk")]) == 1
+
+
+def test_mes_db_keeps_its_own_prefix_and_retention(tmp_path):
+    """MES DB(mes_)와 검사 DB(aivis_)는 같은 폴더에 두어도 이름·보관 개수를 따로 센다."""
+    backup, list_backups = bk.backup, bk.list_backups
+    for name in ("aivis.db", "mes.db"):
+        c = sqlite3.connect(tmp_path / name)
+        c.execute("create table t(x)")
+        c.commit()
+        c.close()
+    out = tmp_path / "bk"
+    t0 = datetime(2036, 1, 1, tzinfo=timezone.utc)
+    for i in range(3):
+        backup(tmp_path / "aivis.db", out, keep=2, now=t0 + timedelta(seconds=i))
+    m = backup(tmp_path / "mes.db", out, keep=2, now=t0, prefix="mes_")
+    assert m.name.startswith("mes_")
+    assert len(list_backups(out)) == 2, "검사 DB 보관 개수는 MES 백업과 섞이지 않는다"
+    assert len(list_backups(out, "mes_")) == 1

@@ -164,6 +164,12 @@ class InspectionResult(BaseModel):
         description="다발 사진에서 이 튜브의 위치 [x0,y0,x1,y1](원본 화소). 단일 튜브면 없음. "
         "라벨링 화면 강조·데이터셋 튜브 단위 자르기에 쓴다(2026-10-11)",
     )
+    count_detected: Optional[int] = Field(
+        None, ge=0, description="개수 확인(CRATE_COUNT) 실제 개수 — MES 포장 실적(2026-10-14)"
+    )
+    count_expected: Optional[int] = Field(
+        None, ge=0, description="개수 확인(CRATE_COUNT) 기준 개수"
+    )
     shift: Optional[str] = Field(None, description="작업 교대")
     operator: Optional[str] = Field(None, description="작업자")
 

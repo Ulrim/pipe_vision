@@ -28,7 +28,7 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     expect(screen.getByTestId("nav-menu-button")).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("메뉴 버튼 클릭 시 7개 항목이 나타난다", async () => {
+  it("메뉴 버튼 클릭 시 NAV 의 모든 항목이 나타난다", async () => {
     const user = userEvent.setup();
     renderNavMenu();
     await user.click(screen.getByTestId("nav-menu-button"));
@@ -42,6 +42,23 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     expect(screen.getByRole("menuitem", { name: "기준정보" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "시스템 모니터링" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "프로그램 업데이트" })).toBeInTheDocument();
+  });
+
+  it("MES 화면 4개가 /mes/* 경로로 들어 있다(별도 서버 화면임을 라벨로 구분)", async () => {
+    const user = userEvent.setup();
+    renderNavMenu();
+    await user.click(screen.getByTestId("nav-menu-button"));
+    const mes = [
+      ["MES 작업지시", "/mes/orders"],
+      ["MES 생산실적", "/mes/production"],
+      ["MES 출하·클레임", "/mes/shipping"],
+      ["MES 연계현황", "/mes/link"],
+    ];
+    for (const [label, to] of mes) {
+      expect(screen.getByRole("menuitem", { name: label })).toHaveAttribute("href", to);
+    }
+    // 경로 중복이 없어야 App.tsx 라우트와 1:1 이 성립한다.
+    expect(new Set(NAV.map((n) => n.to)).size).toBe(NAV.length);
   });
 
   it("시스템 모니터링 항목 클릭 시 /monitor 로 이동한다", async () => {

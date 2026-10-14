@@ -55,10 +55,12 @@ class HttpxMesTransport(MesTransport):
         timeout_s: float = 5.0,
         idem_header: str = "X-Idempotency-Key",
         client: Any | None = None,
+        token: str | None = None,
     ) -> None:
         self.url = url
         self.timeout_s = timeout_s
         self.idem_header = idem_header
+        self.token = token
         self._client = client  # 주입 가능(테스트). 미주입이면 지연 생성.
 
     def _get_client(self):
@@ -72,6 +74,8 @@ class HttpxMesTransport(MesTransport):
         body = dict(payload)
         body["idem_key"] = idem_key
         headers = {self.idem_header: idem_key}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         try:
             client = self._get_client()
             resp = client.post(self.url, json=body, headers=headers)

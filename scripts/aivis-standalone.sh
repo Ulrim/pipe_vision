@@ -17,6 +17,7 @@
 #   AIVIS_SERVE_HMI=true          HMI 정적 서빙(apps/hmi/dist) on/off
 #   AIVIS_SERVE_DASHBOARD=true    대시보드 정적 서빙(apps/dashboard/dist) on/off
 #   HMI_PORT=5173 / DASHBOARD_PORT=5174   화면 포트
+#   AIVIS_RUN_MES=true / MES_PORT=8100     품질·생산실적 MES(docs/MES.md)
 #   AIVIS_API_VENV / AIVIS_WORKER_VENV   각 python 실행경로 오버라이드(고급)
 # =============================================================================
 set -euo pipefail
@@ -37,6 +38,9 @@ AIVIS_SERVE_HMI="${AIVIS_SERVE_HMI:-true}"
 AIVIS_SERVE_DASHBOARD="${AIVIS_SERVE_DASHBOARD:-true}"
 HMI_PORT="${HMI_PORT:-5173}"
 DASHBOARD_PORT="${DASHBOARD_PORT:-5174}"
+# 품질·생산실적 MES(2026-10-14). 끄려면 AIVIS_RUN_MES=false.
+AIVIS_RUN_MES="${AIVIS_RUN_MES:-true}"
+MES_PORT="${MES_PORT:-8100}"
 
 IMAGES_DIR="$AIVIS_HOME/images"
 SPOOL_DIR="$AIVIS_HOME/spool"
@@ -178,6 +182,22 @@ PY
   [ "$i" = 40 ] && { log "ERROR: api 기동 실패"; exit 1; }
 done
 
+# --- 1-b) MES (별도 프로세스·별도 sqlite, AIVIS DB 의 연계 테이블을 폴링) ---
+# 같은 api venv 를 쓴다(fastapi·sqlalchemy·jose 가 이미 있다). 로그인은 AIVIS 와 하나
+# — 같은 JWT_SECRET 으로 대시보드 토큰을 그대로 검증한다. docs/MES.md
+MES_URL=""
+if [ "$AIVIS_RUN_MES" = "true" ]; then
+  log "MES 기동 :$MES_PORT (sqlite=$AIVIS_HOME/db/mes.db, 연계=$DB_PATH)"
+  (
+    cd "$REPO/services/mes"
+    MES_DATABASE_URL="sqlite:///$AIVIS_HOME/db/mes.db" \
+    MES_AIVIS_DB_URL="sqlite:///$DB_PATH" \
+    exec "$API_VENV" -m uvicorn mes_app.main:app --host 0.0.0.0 --port "$MES_PORT" --log-level info
+  ) &
+  PIDS+=("$!")
+  MES_URL="http://localhost:$MES_PORT"
+fi
+
 # --- 2) 화면 서빙(HMI/대시보드) — serve-spa.py 백그라운드 ---
 HMI_URL=""
 DASHBOARD_URL=""
@@ -224,6 +244,7 @@ log "AIVIS 독립형 기동 완료 (Ctrl+C 로 전체 종료)"
 log "  API      → http://localhost:$API_PORT"
 [ -n "$HMI_URL" ]       && log "  HMI      → $HMI_URL"
 [ -n "$DASHBOARD_URL" ] && log "  대시보드  → $DASHBOARD_URL"
+[ -n "$MES_URL" ]       && log "  MES      → $MES_URL  (대시보드 메뉴 'MES …')"
 log "  로그인    admin/$AIVIS_ADMIN_PASSWORD"
 log "─────────────────────────────────────────────────────"
 

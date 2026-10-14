@@ -13,6 +13,8 @@ os.environ["AIVIS_LOCAL_QUEUE_DIR"] = os.path.join(_TMPDIR, "queue")
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ["AIVIS_SEED_ON_STARTUP"] = "false"
 os.environ["MES_MODE"] = "table"
+# 워치독 스레드는 테스트가 직접 run_watchdog_once 로 돌린다(결정성).
+os.environ["MES_WATCHDOG_ENABLED"] = "false"
 
 from fastapi.testclient import TestClient  # noqa: E402
 

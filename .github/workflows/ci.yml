@@ -42,7 +42,7 @@ jobs:
         run: |
           set -e
           targets=""
-          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+          for d in services/api services/vision services/data-ops services/mes packages/shared-types/python; do
             if [ -d "$d" ] && find "$d" -name '*.py' -print -quit | grep -q .; then
               targets="$targets $d"
             fi
@@ -58,7 +58,7 @@ jobs:
       - name: Install component dependencies
         run: |
           set -e
-          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+          for d in services/api services/vision services/data-ops services/mes packages/shared-types/python; do
             if [ -f "$d/requirements.txt" ]; then
               echo "Installing $d/requirements.txt"
               pip install -r "$d/requirements.txt" || true
@@ -74,7 +74,7 @@ jobs:
         run: |
           set -e
           ran=0
-          for d in services/api services/vision services/data-ops packages/shared-types/python; do
+          for d in services/api services/vision services/data-ops services/mes packages/shared-types/python; do
             if [ -d "$d" ] && find "$d" \( -name 'test_*.py' -o -name '*_test.py' -o -name 'tests' -type d \) -print -quit | grep -q .; then
               echo "::group::pytest $d"
               pytest "$d" -q

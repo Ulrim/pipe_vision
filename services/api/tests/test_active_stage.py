@@ -89,7 +89,7 @@ def test_unknown_item_is_404(client, auth):
     assert r.status_code == 404
 
 
-def test_full_order_put_accepts_stage_and_null_means_station_default(client, auth):
+def test_full_order_put_keeps_stage_when_omitted_and_null_means_station_default(client, auth):
     _make_item(client, auth)
     r = client.put(
         "/master/active",
@@ -97,9 +97,16 @@ def test_full_order_put_accepts_stage_and_null_means_station_default(client, aut
         json={"item_code": "HP12", "lot": "L1", "inspection_stage": "CUT_LENGTH"},
     )
     assert r.status_code == 200 and r.json()["inspection_stage"] == "CUT_LENGTH"
-    # 비우면 NULL → 워커는 env(AIVIS_INSPECTION_STAGE) 기본값으로 돌아간다.
+    # 키를 빼면 그대로(2026-10-14) — 기준정보 오더 폼·MES '오더 내리기' 는 품목·LOT 만
+    # 보내는데, 종전엔 그때마다 전역 모드가 조용히 지워졌다.
     r = client.put(
-        "/master/active", headers=auth("qa1"), json={"item_code": "HP12", "lot": "L1"}
+        "/master/active", headers=auth("qa1"), json={"item_code": "HP12", "lot": "L2"}
+    )
+    assert r.status_code == 200 and r.json()["inspection_stage"] == "CUT_LENGTH"
+    # null 이면 NULL → 워커는 env(AIVIS_INSPECTION_STAGE) 기본값으로 돌아간다.
+    r = client.put(
+        "/master/active", headers=auth("qa1"),
+        json={"item_code": "HP12", "lot": "L2", "inspection_stage": None},
     )
     assert r.status_code == 200 and r.json()["inspection_stage"] is None
 
