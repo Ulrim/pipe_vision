@@ -172,6 +172,11 @@ aivis/
         · 관리자 대시보드(이력/통계/KPI/이미지 조회)            apps/dashboard
 ```
 
+**클라우드 운영(2026-10-15 도입기업 결정 — Vercel 사용)**: 화면 = Vercel(hmi·dashboard), API·MES = Render,
+DB·사진 = Supabase, 검사 = 현장 파이 워커(`AIVIS_STORAGE_BACKEND=api`, 서비스 토큰 하나 — 파이에 Supabase 키·
+관리자 비밀번호를 두지 않는다). 원본 사진은 NG·재확인·수집용 LOT 만 올리고(`AIVIS_REMOTE_RAW=ng`), 사진 보관기한
+`AIVIS_REMOTE_RETENTION_DAYS`. 절차 `deploy/DEPLOYMENT.md`. 현장 단독(오프라인)은 `docs/OPERATIONS_PI.md`.
+
 **런타임 토폴로지**: 단일 산업용 PC에 Docker Compose로 `vision`(검사 워커, GPU 가능), `api`(FastAPI), `postgres`, `minio`, `hmi`(정적 서빙), `dashboard`(정적 서빙) 컨테이너를 띄운다. 트리거 이벤트 → `vision` 워커가 동기 처리(<300ms) → 결과를 `api`에 POST → DB/MinIO 저장 → WebSocket으로 HMI 푸시 → 백그라운드 큐로 MES 연계.
 
 ---

@@ -26,7 +26,7 @@ from aivis_types import (
 )
 
 from core.logging import write_log
-from core.security import CurrentUser, require_min_role
+from core.security import CurrentUser, require_min_role, require_operator_or_service
 from db.base import get_db
 from db.models import ActiveOrder, ItemMaster, StationConfig
 from core.training import is_training_lot
@@ -129,7 +129,7 @@ def _station_out(row: StationConfig) -> StationOut:
 def get_active_order(
     db: Session = Depends(get_db),
     cam_id: Optional[str] = None,
-    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+    _user: CurrentUser = Depends(require_operator_or_service),
 ):
     """현재 검사 오더 조회. 미설정이면 200 + JSON null (404 아님 — 분기 단순화).
 
@@ -325,9 +325,9 @@ def list_items(
 def get_item(
     item_code: str,
     db: Session = Depends(get_db),
-    _user: CurrentUser = Depends(require_min_role(Role.OPERATOR)),
+    _user: CurrentUser = Depends(require_operator_or_service),
 ):
-    """기준정보 단건 조회. 로그인 필요(operator+)."""
+    """기준정보 단건 조회. 로그인(operator+) 또는 검사워커 서비스 토큰."""
     row = db.get(ItemMaster, item_code)
     if not row:
         raise HTTPException(status_code=404, detail="품목 없음")

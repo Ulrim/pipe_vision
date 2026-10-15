@@ -1,41 +1,31 @@
-# ===== AIVIS cloud demo — Render Blueprint (Infrastructure as Code) =====
-# Owned by devops. Deploys the backend half of the cloud demo:
-#   - api        : FastAPI (REST + WebSocket), Docker, /health, port 8000
-#   - vision     : inspection worker (sim camera), Docker background worker
-#   - mes-watchdog (optional): re-sends mes_synced=false rows so the demo
-#                  shows a 100% MES linkage rate on the dashboard.
+# ===== AIVIS 클라우드 운영 — Render Blueprint (2026-10-15 재작성) =====
+# 구성: Render(이 파일: api·mes) + Supabase(Postgres·사진) + Vercel(hmi·dashboard 화면)
+#       + 현장 라즈베리파이 워커(카메라 → 이 api 로 결과·사진 전송).
+# 절차 전체: deploy/DEPLOYMENT.md
 #
-# The frontend (apps/hmi, apps/dashboard) is deployed to Vercel — see
-# deploy/DEPLOYMENT.md. PostgreSQL is Supabase (external, free tier) — its
-# DATABASE_URL is entered by hand (sync:false) because Render does not
-# provision Supabase. IMPORTANT: use the Supabase "Session pooler" connection
-# (port 5432, host *.pooler.supabase.com, IPv4) — Render is IPv4-only and the
-# Supabase Direct connection is IPv6-only. Do NOT use the Transaction pooler
-# (6543). See deploy/DEPLOYMENT.md step 1.
+# 종전 블루프린트에서 바꾼 것(배포가 실제로 되게):
+#   * preDeployCommand(alembic) 삭제 — Render 무료 인스턴스는 pre-deploy 를 지원하지 않는다.
+#     대신 AIVIS_MIGRATE_ON_START=true 로 컨테이너가 기동 전에 마이그레이션한다
+#     (services/api/docker-entrypoint.sh, 실패하면 기동하지 않는다).
+#   * 클라우드 sim 검사 워커 삭제 — 백그라운드 워커는 무료 요금제가 없고, 운영 DB 에 가짜
+#     검사결과를 쓴다. 실제 검사는 현장 파이가 한다.
+#   * mes-watchdog 워커 삭제 — 재전송 워치독이 api 프로세스 안에서 돈다.
+#   * mes(품질·생산실적 MES) 웹서비스 추가.
+#   * 관리자 초기 비밀번호를 env 그룹에서 api 로 옮김 — 그룹 안의 sync:false 는 Render 가
+#     무시해서, 공개 서버의 admin 비밀번호가 기본값으로 떨어졌다.
 #
-# Deploy: Render Dashboard -> New -> Blueprint -> point at this repo's render.yaml.
+# Supabase 주소: "Session pooler"(5432, *.pooler.supabase.com, IPv4)를 쓴다. Render 는 IPv4
+# 전용이고 Supabase Direct 연결은 IPv6 전용이다. Transaction pooler(6543)는 쓰지 않는다.
+# 대시보드에서 복사한 postgresql://… 그대로 붙여도 된다(앱이 psycopg 주소로 바꾼다).
 #
-# NOTES / CAVEATS:
-#   * Render supports WebSocket on web services, so /ws/live works for the HMI.
-#   * Render FREE web services SLEEP after ~15 min idle and cold-start on the
-#     next request (first /health or first page load can take ~30-60s). For a
-#     reliable demo upgrade the api to a paid "starter" instance, or accept the
-#     cold start. The vision worker (background) keeps the DB populated and will
-#     also be subject to free-tier limits.
-#   * Image storage: the cloud demo uses SUPABASE STORAGE (object storage),
-#     NOT the local "images" volume. On the single-host compose, api+vision share
-#     a local disk volume; on Render they are SEPARATE containers that cannot share
-#     a local disk -> Supabase Storage is REQUIRED so the worker can upload and the
-#     api can proxy-serve inspection images. Set AIVIS_STORAGE_BACKEND=supabase on
-#     BOTH api and vision (same SUPABASE_URL / SERVICE_ROLE_KEY / BUCKET).
-#
-# After first deploy run the DB migration: the api `preDeployCommand` runs
-# `alembic upgrade head` (postgres lifespan does NOT auto-create tables).
+# 요금: plan: free 는 15분 무요청이면 잠들고(첫 요청 30~60초), 워크스페이스당 월 750시간
+# 상한이다 — 웹서비스 2개를 24시간 돌리면 한 달을 못 버틴다. 생산 라인에 붙이면 api 는
+# starter 이상을 권한다(잠들면 파이는 스풀에 보관했다가 깨어나면 보낸다 — 유실은 없다).
 
 databases: []
 
 services:
-  # ---------------- API (FastAPI) ----------------
+  # ---------------- AIVIS API (검사결과·기준정보·KPI·권한·MES 연계) ----------------
   - type: web
     name: aivis-api
     runtime: docker
@@ -43,73 +33,34 @@ services:
     dockerfilePath: services/api/Dockerfile
     dockerContext: .
     healthCheckPath: /health
-    # Run Alembic migrations before each deploy goes live (services/api is the
-    # image WORKDIR /app, so alembic.ini + alembic/ are present there).
-    preDeployCommand: alembic upgrade head
     autoDeploy: true
     envVars:
-      # --- Supabase Postgres (entered by hand; psycopg URL, see DEPLOYMENT.md) ---
-      # Use the SESSION POOLER (5432, IPv4):
-      # postgresql+psycopg://postgres.<ref>:<pw>@aws-0-<region>.pooler.supabase.com:5432/postgres?sslmode=require
+      # Supabase Postgres (Session pooler 주소, 직접 입력)
       - key: DATABASE_URL
         sync: false
-      # --- CORS: comma-separated Vercel domains (set AFTER the Vercel deploy) ---
+      # Vercel 두 도메인(hmi, dashboard) 콤마 목록 — Vercel 배포 후 입력, 끝 슬래시 없음
       - key: ALLOWED_ORIGINS
         sync: false
-      # --- Image storage (Supabase Storage) ---
-      # Cloud is split containers: api + vision cannot share a local disk volume
-      # (unlike the single-host compose), so Supabase Storage is REQUIRED. The
-      # worker uploads inspection images; the api proxy-serves them. Both services
-      # MUST use the SAME backend / URL / key / bucket.
-      - key: AIVIS_STORAGE_BACKEND
-        value: supabase
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
-      - key: SUPABASE_STORAGE_BUCKET
-        value: inspection-images
-      # --- shared secrets / demo seed (group below) ---
-      - fromGroup: aivis-shared
-      # --- demo seed flags so the worker's FK target (HP12) exists ---
+      # 기동 전 alembic upgrade head (무료 인스턴스에는 pre-deploy 가 없다)
+      - key: AIVIS_MIGRATE_ON_START
+        value: "true"
+      # 서비스 토큰 없이는 기동하지 않는다(공개 서버에서 누구나 검사결과를 쓰지 못하게)
+      - key: AIVIS_REQUIRE_SERVICE_TOKEN
+        value: "true"
+      # 관리자 초기 계정(최초 기동 때 한 번 만든다). 비밀번호는 직접 입력.
       - key: AIVIS_SEED_ON_STARTUP
         value: "true"
+      - key: AIVIS_SEED_ADMIN_USER
+        value: admin
+      - key: AIVIS_SEED_ADMIN_PASSWORD
+        sync: false
+      # 첫 연결 시험용 데모 품목 HP12(기준정보에 실제 품목을 등록하면 쓰지 않는다)
       - key: AIVIS_SEED_DEMO_ITEM
         value: "true"
       - key: AIVIS_DEMO_ITEM_CODE
         value: HP12
-      - key: MES_MODE
-        value: table
-      - key: LOG_LEVEL
-        value: INFO
-
-  # ---------------- Vision inspection worker (sim camera) ----------------
-  - type: worker
-    name: aivis-vision
-    runtime: docker
-    plan: free
-    dockerfilePath: services/vision/Dockerfile
-    dockerContext: .
-    autoDeploy: true
-    envVars:
-      - key: AIVIS_CAMERA
-        value: sim
-      # Internal URL of the api service. The worker uses AIVIS_API_URL DIRECTLY as
-      # an HTTP base (services/vision/worker/config.py only rstrip("/") — it does
-      # NOT prepend a scheme), so the value MUST include http:// . Render's
-      # fromService `property: hostport` returns a scheme-LESS "host:port", which
-      # httpx cannot use as a base URL, so we build scheme + internal host literally.
-      # On Render's private network a web service is reachable at http://<name>:<port>.
-      - key: AIVIS_API_URL
-        value: http://aivis-api:8000
-      - key: AIVIS_ITEM_CODE
-        value: HP12
-      # Inspection cadence (ms between sim triggers).
-      - key: AIVIS_WORKER_INTERVAL_MS
-        value: "1500"
-      # --- Image storage (Supabase Storage) ---
-      # Worker UPLOADS inspection images here (split containers cannot share a
-      # local disk volume in the cloud). MUST match the api's backend/URL/key/bucket.
+      # 사진: Supabase Storage. 파이는 이 api 로 올리고(api 가 Supabase 로 전달),
+      # 화면은 이 api 가 JWT 뒤에서 보여준다 — Supabase 키는 서버에만 둔다.
       - key: AIVIS_STORAGE_BACKEND
         value: supabase
       - key: SUPABASE_URL
@@ -118,43 +69,48 @@ services:
         sync: false
       - key: SUPABASE_STORAGE_BUCKET
         value: inspection-images
-      # Leave AIVIS_DATASET_DIR unset -> worker auto-synthesizes frames.
-      # service token + seed admin (login fallback for GET /master) from group.
-      - fromGroup: aivis-shared
-
-  # ---------------- MES watchdog (optional, demo linkage-rate) ----------------
-  # Re-sends mes_synced=false rows so the dashboard shows 100% MES linkage.
-  # Remove this service if you do not want the extra free-tier worker.
-  - type: worker
-    name: aivis-mes-watchdog
-    runtime: docker
-    plan: free
-    dockerfilePath: services/api/Dockerfile
-    dockerContext: .
-    dockerCommand: python -m mes.cli watchdog
-    autoDeploy: true
-    envVars:
-      - key: DATABASE_URL
-        sync: false
+      # 클라우드 사진 보관기한(일). 지난 사진은 Supabase 에서 지운다(검사 기록은 남는다).
+      - key: AIVIS_REMOTE_RETENTION_DAYS
+        value: "90"
       - key: MES_MODE
         value: table
-      - key: MES_WATCHDOG_INTERVAL_S
-        value: "10"
+      - key: LOG_LEVEL
+        value: INFO
       - fromGroup: aivis-shared
 
-# ---------------- Shared environment group (secrets) ----------------
-# JWT_SECRET / AIVIS_SERVICE_TOKEN must be the SAME across api + worker.
-# Generate long random values in the Render dashboard (or `generateValue`).
+  # ---------------- 품질·생산실적 MES (docs/MES.md) ----------------
+  - type: web
+    name: aivis-mes
+    runtime: docker
+    plan: free
+    dockerfilePath: services/mes/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # api 와 **같은** Supabase 주소. MES 표(mes_*)를 같은 DB 에 두고, 연계 표
+      # (mes_quality_if)도 이 주소로 읽는다.
+      - key: DATABASE_URL
+        sync: false
+      # Vercel 대시보드 도메인(MES 화면은 대시보드 메뉴)
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: MES_POLL_INTERVAL_S
+        value: "10"
+      # REST 수신은 클라우드에서 쓰지 않는다(테이블 폴링) — 아무나 못 넣게 잠근다.
+      - key: MES_INTAKE_TOKEN
+        generateValue: true
+      - fromGroup: aivis-shared
+
+# ---------------- 공유 비밀(그룹) ----------------
+# JWT_SECRET: api·mes 가 같아야 로그인 하나로 MES 화면이 열린다.
+# AIVIS_SERVICE_TOKEN: 현장 파이 워커가 X-Service-Token 으로 보낸다 — 이 값을 파이의
+#   /etc/aivis/worker.env 에 그대로 넣는다(Render 대시보드 → Env Groups 에서 확인).
+# (그룹 안에서는 sync:false 가 무시되므로 직접 입력값은 서비스 쪽에 둔다.)
 envVarGroups:
   - name: aivis-shared
     envVars:
       - key: JWT_SECRET
         generateValue: true
-      # vision worker sends X-Service-Token on POST /inspection; api must match.
       - key: AIVIS_SERVICE_TOKEN
         generateValue: true
-      # Seed admin (api creates it; worker uses it as GET /master login fallback).
-      - key: AIVIS_SEED_ADMIN_USER
-        value: admin
-      - key: AIVIS_SEED_ADMIN_PASSWORD
-        sync: false

@@ -54,9 +54,10 @@ _HTTP_TIMEOUT_S = 10.0
 _JPEG_PARAMS = [cv2.IMWRITE_JPEG_QUALITY, 95]
 
 
-def encode_jpeg(image: np.ndarray) -> bytes:
+def encode_jpeg(image: np.ndarray, quality: int = 95) -> bytes:
     """BGR 이미지를 JPEG 바이트로 인코딩(결정적). 실패 시 OSError."""
-    ok, buf = cv2.imencode(".jpg", image, _JPEG_PARAMS)
+    params = _JPEG_PARAMS if quality == 95 else [cv2.IMWRITE_JPEG_QUALITY, int(quality)]
+    ok, buf = cv2.imencode(".jpg", image, params)
     if not ok:
         raise OSError("cv2.imencode 실패(.jpg)")
     return buf.tobytes()

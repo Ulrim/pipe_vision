@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from aivis_types import Role
 from core.config import get_settings
+from core import remote_storage
 from core.retention import cleanup_images, storage_usage
 from core.security import hash_password
 from db.base import SessionLocal, engine, init_db
@@ -112,6 +113,9 @@ async def _retention_loop() -> None:
                     await asyncio.to_thread(storage_usage, settings.images_dir),
                 )
             await asyncio.to_thread(cleanup_images, settings.images_dir)
+            if settings.storage_backend == "supabase":
+                # 클라우드 사진 보관기한(AIVIS_REMOTE_RETENTION_DAYS, 0 = 끔).
+                await asyncio.to_thread(remote_storage.cleanup, settings)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -145,6 +149,10 @@ def _start_mes_watchdog():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 개발/테스트(sqlite)는 테이블 자동 생성. 운영은 Alembic upgrade 로 관리.
+    if (os.getenv("AIVIS_REQUIRE_SERVICE_TOKEN", "false").strip().lower() in ("1", "true", "yes")
+            and not get_settings().service_token):
+        # 공개 클라우드에서 토큰 없이 뜨면 누구나 검사결과를 써 넣을 수 있다 — 기동을 막는다.
+        raise RuntimeError("AIVIS_REQUIRE_SERVICE_TOKEN=true 인데 AIVIS_SERVICE_TOKEN 이 비어 있다")
     if get_settings().is_sqlite:
         init_db()
     _seed_admin()

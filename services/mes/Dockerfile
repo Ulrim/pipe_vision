@@ -22,6 +22,7 @@ COPY services/mes/mes_app ./mes_app
 EXPOSE 8100
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-    CMD curl -fsS http://localhost:8100/health || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8100}/health || exit 1
 
-CMD ["uvicorn", "mes_app.main:app", "--host", "0.0.0.0", "--port", "8100"]
+# PORT: Render 등 플랫폼이 주는 포트(없으면 8100).
+CMD ["sh", "-c", "exec uvicorn mes_app.main:app --host 0.0.0.0 --port ${PORT:-8100}"]

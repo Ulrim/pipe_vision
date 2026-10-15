@@ -138,3 +138,16 @@ def test_count_overlay_marks_every_detection_and_states_the_numbers():
     # 불일치면 빨강 채널이 더 많이 쓰인다(색+문자 이중 표기).
     assert int((bad[..., 2].astype(int) - bad[..., 0].astype(int) > 100).sum()) > \
         int((out[..., 2].astype(int) - out[..., 0].astype(int) > 100).sum())
+
+
+def test_training_flag_from_active_order_forces_original_upload(tmp_path):
+    """서버가 수집용 LOT(training)이라고 하면 원격 저장에서도 원본을 올린다(라벨링용)."""
+    backend = FakeBackend(master_requires_auth=True)
+    worker = Worker(_cfg(tmp_path, max_iterations=1), client=_client(backend))
+    assert worker.startup() is True
+    assert worker._training is False
+    worker._apply_active_meta({"lot": "TRAIN-OIL-01", "training": True})
+    assert worker._training is True
+    worker._apply_active_meta({"lot": "L-PROD"})
+    assert worker._training is False
+    worker.shutdown()

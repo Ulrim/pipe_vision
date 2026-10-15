@@ -146,6 +146,8 @@ class Worker:
         # 활성 오더의 검사 단계(=모드). None 이면 env(AIVIS_INSPECTION_STAGE).
         # 테스트 벤치처럼 한 대로 길이→표면→개수를 번갈아 볼 때 HMI 에서 바꾼다.
         self._active_stage: Optional[str] = None
+        # 활성 오더가 수집용 LOT 인가(서버의 training 플래그). 원격 원본 업로드 정책에 쓴다.
+        self._training: bool = False
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -309,6 +311,8 @@ class Worker:
     def _apply_active_meta(self, active: dict) -> None:
         """활성 오더의 LOT/작업지시/검사 단계를 반영(변경 시에만 로그)."""
         self._apply_active_stage(active.get("inspection_stage"))
+        # 수집용 LOT(서버가 판정, TRAIN-…) — 원격 저장에서도 원본을 올린다(라벨링용).
+        self._training = bool(active.get("training"))
         new_lot = active.get("lot") or None
         new_wo = active.get("work_order") or None
         if new_lot != self._active_lot or new_wo != self._active_work_order:
@@ -586,6 +590,7 @@ class Worker:
                 item=self.item,
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
+                force_raw=self._training,
                 length_span=length_span,
             )
             clock.mark("save")
@@ -736,6 +741,7 @@ class Worker:
                 inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
+                force_raw=self._training,
             )
             clock.mark("save")
             if saved.error:
@@ -854,6 +860,7 @@ class Worker:
                 item_code=self._cur_item_code(), inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
+                force_raw=self._training,
             )
             clock.mark("save")
             if saved.error:

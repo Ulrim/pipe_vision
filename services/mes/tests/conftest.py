@@ -8,8 +8,16 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 _TMP = tempfile.mkdtemp(prefix="aivis_mes_test_")
-os.environ["MES_DATABASE_URL"] = f"sqlite:///{os.path.join(_TMP, 'mes.db')}"
-os.environ["MES_AIVIS_DB_URL"] = f"sqlite:///{os.path.join(_TMP, 'aivis.db')}"
+# MES_TEST_DATABASE_URL / MES_TEST_AIVIS_DB_URL 을 주면 그 DB(예: Postgres)로 돌린다(2026-10-15).
+# 연계 DB 를 주면 conftest 가 표를 만들지 않고 **AIVIS 마이그레이션이 만든 실제 표**를 읽는다
+# (Postgres 에서 defect_codes 는 TEXT[] — sqlite 의 JSON 과 다르다).
+os.environ["MES_DATABASE_URL"] = os.environ.get("MES_TEST_DATABASE_URL") or (
+    f"sqlite:///{os.path.join(_TMP, 'mes.db')}"
+)
+_REAL_IFACE = bool(os.environ.get("MES_TEST_AIVIS_DB_URL"))
+os.environ["MES_AIVIS_DB_URL"] = os.environ.get("MES_TEST_AIVIS_DB_URL") or (
+    f"sqlite:///{os.path.join(_TMP, 'aivis.db')}"
+)
 os.environ["MES_POLLER_ENABLED"] = "false"
 os.environ["JWT_SECRET"] = "mes-test-secret"
 os.environ.pop("MES_INTAKE_TOKEN", None)
@@ -62,8 +70,11 @@ def iface_table(md: MetaData, *, new_columns: bool = True) -> Table:
 init_db()
 
 IFACE_ENGINE = create_engine(os.environ["MES_AIVIS_DB_URL"], future=True)
-IFACE = iface_table(MetaData())
-IFACE.metadata.create_all(IFACE_ENGINE)
+if _REAL_IFACE:
+    IFACE = Table("mes_quality_if", MetaData(), autoload_with=IFACE_ENGINE)
+else:
+    IFACE = iface_table(MetaData())
+    IFACE.metadata.create_all(IFACE_ENGINE)
 
 T0 = datetime(2026, 10, 14, 0, 0, tzinfo=timezone.utc)
 
@@ -81,6 +92,8 @@ def iface_row(i: int, **over) -> dict:
         "inspection_stage": "CUT_LENGTH", "tube_index": i,
     }
     row.update(over)
+    if _REAL_IFACE:
+        row["inspection_id"] = None  # 실제 표는 inspection.id 외래키 — 시험 행은 검사행이 없다
     return row
 
 

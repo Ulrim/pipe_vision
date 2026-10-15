@@ -221,9 +221,11 @@ def test_upload_too_large_is_413(client, images_dir, monkeypatch):
     assert r.status_code == 413
 
 
-def test_upload_refused_when_server_uses_supabase(client, tmp_path, monkeypatch):
+def test_upload_is_forwarded_when_server_uses_supabase(client, tmp_path, monkeypatch):
+    """클라우드: 파이가 api 로 올린 사진을 api 가 Supabase 로 넘긴다(파이에 Supabase 키 없음)."""
     import routers.inspection as insp_mod
     real = insp_mod.get_settings()
+    sent = {}
 
     class _S:
         images_dir = str(tmp_path)
@@ -232,9 +234,25 @@ def test_upload_refused_when_server_uses_supabase(client, tmp_path, monkeypatch)
         def __getattr__(self, name):
             return getattr(real, name)
 
+    def fake_put(settings, key, body, client=None):
+        sent[key] = body
+
     monkeypatch.setattr(insp_mod, "get_settings", lambda: _S())
+    monkeypatch.setattr(insp_mod.remote_storage, "put_object", fake_put)
     r = client.put("/inspection/images/raw/a_OK.jpg", content=_JPEG)
-    assert r.status_code == 409
+    assert r.status_code == 201, r.text
+    assert r.json()["backend"] == "supabase" and sent["raw/a_OK.jpg"] == _JPEG
+    assert not (tmp_path / "raw").exists(), "로컬 디스크에는 쓰지 않는다"
+    # 키·형식 검증은 전달 전에 한다.
+    assert client.put("/inspection/images/raw/../x.jpg", content=_JPEG).status_code in (400, 404)
+    assert client.put("/inspection/images/raw/b.jpg", content=b"notjpeg").status_code == 400
+
+    def boom(settings, key, body, client=None):
+        raise insp_mod.remote_storage.RemoteStorageError("down")
+
+    monkeypatch.setattr(insp_mod.remote_storage, "put_object", boom)
+    r = client.put("/inspection/images/raw/c_OK.jpg", content=_JPEG)
+    assert r.status_code == 502, "실패하면 워커가 스풀에 보존하고 다시 보낸다"
 
 
 def test_heartbeat_timings_reach_station_card(client, auth):

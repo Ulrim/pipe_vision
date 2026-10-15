@@ -335,6 +335,10 @@ EOF
 데스크톱 로그인 시 자동으로 전체화면 HMI 가 뜬다(종료: `Alt+F4`).
 화면이 꺼지지 않게 하려면 `Preferences > Screen Blanking` 을 끈다.
 
+> **클라우드 구성(2026-10-15, `deploy/DEPLOYMENT.md`)** 이면 파이에 화면 서버가 없다. 주소를
+> 클라우드 작업자 화면으로 바꾸고 `?cam=` 로 그 라인을 고정한다:
+> `… --incognito https://aivis-hmi.vercel.app/?cam=PI-CAM1`
+
 ---
 
 ## 3. 일상 조작 — 메뉴 하나로

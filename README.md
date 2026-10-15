@@ -100,28 +100,24 @@ npm run ci             # typecheck → lint → test → build
 > `packages/shared-types/python`(aivis_types) 설치 때문). 자세한 사유는
 > [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) §빌드 컨텍스트 정책.
 
-## 클라우드 데모 배포
+## 클라우드 운영 배포 (Vercel + Render + Supabase)
 
-인터넷에서 접근 가능한 데모는 프론트=Vercel, 백엔드(api)+검사워커(vision)=Render(Docker),
-DB=Supabase(PostgreSQL, Supavisor **Session 풀러**) 조합으로 띄운다. 이미지 스토리지는
-**클라우드에서 Supabase Storage 를 사용한다**: 로컬 compose 와 달리 클라우드는 api·vision 이
-**분리된 컨테이너**라 로컬 디스크 볼륨을 공유할 수 없으므로 객체 스토리지가 필수다(워커가
-업로드, api 가 프록시 서빙). `AIVIS_STORAGE_BACKEND=supabase` 와 `SUPABASE_*` 키를 api·vision
-양쪽에 동일하게 설정한다(`render.yaml`/`deploy/DEPLOYMENT.md` 참조). 로컬 compose 는 기본
-`AIVIS_STORAGE_BACKEND=local`(공유 `images` 볼륨)로 동작한다.
-
-- 배포 메타: 루트 [`render.yaml`](./render.yaml)(Render Blueprint),
-  [`apps/hmi/vercel.json`](./apps/hmi/vercel.json) · [`apps/dashboard/vercel.json`](./apps/dashboard/vercel.json).
-- 단계별 따라하기 가이드: [`deploy/DEPLOYMENT.md`](./deploy/DEPLOYMENT.md)
-  (Supabase → Render(api/worker[+watchdog], `alembic upgrade head`) → Vercel(hmi/dashboard) →
-  CORS 연결 → 스모크/트러블슈팅).
+화면 = **Vercel**(작업자 화면 `apps/hmi`, 관리자·MES 화면 `apps/dashboard` — React + Vite 정적 SPA),
+API·MES = **Render**(Docker 웹서비스 `aivis-api`, `aivis-mes`), DB·사진 = **Supabase**(Postgres
+Session pooler, Storage), 검사 = **현장 라즈베리파이 워커**(결과·사진을 서비스 토큰으로 api 에 전송).
 
 ```
-Vercel(hmi/dashboard)  ↔  Render(aivis-api + aivis-vision [+ aivis-mes-watchdog])  ↔  Supabase(PostgreSQL)
+Vercel(hmi · dashboard)  →  Render(aivis-api · aivis-mes)  →  Supabase(Postgres · Storage)
+                                   ▲
+                    현장 파이 워커(카메라·판정, 끊기면 스풀)
 ```
 
-> 주의: Render free 서비스는 유휴 시 슬립(콜드스타트), 운영 postgres는 lifespan이 테이블을
-> 자동 생성하지 않으므로 `alembic upgrade head` 가 필요하다(api `preDeployCommand` 처리).
+- 배포 메타: [`render.yaml`](./render.yaml), [`apps/hmi/vercel.json`](./apps/hmi/vercel.json),
+  [`apps/dashboard/vercel.json`](./apps/dashboard/vercel.json), [`deploy/aivis-worker.env.example`](./deploy/aivis-worker.env.example).
+- 따라하기: [`deploy/DEPLOYMENT.md`](./deploy/DEPLOYMENT.md) — Supabase → Render → Vercel(환경변수
+  `VITE_API_BASE`·`VITE_WS_URL`·`VITE_MES_API_BASE`·`VITE_HMI_URL`) → CORS → 파이 연결 → 확인.
+- api 는 기동 때 마이그레이션한다(`AIVIS_MIGRATE_ON_START`, Render 무료는 pre-deploy 미지원).
+  Supabase service role key 는 서버에만 — 파이는 사진을 api 로 올리고 api 가 Supabase 로 넘긴다.
 
 ## 라즈베리파이 엣지 모듈
 

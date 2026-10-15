@@ -104,6 +104,26 @@ def require_min_role(minimum: Role):
     return _guard
 
 
+def require_operator_or_service(
+    x_service_token: Optional[str] = Header(None, alias="X-Service-Token"),
+    token: Optional[str] = Depends(oauth2_scheme),
+) -> CurrentUser:
+    """작업자 로그인(JWT) 또는 검사워커 서비스 토큰(2026-10-15).
+
+    워커는 기준정보·현재 오더를 읽으려고 **관리자 계정으로 로그인**했다. 클라우드에서는
+    파이마다 SD 카드에 관리자 비밀번호가 남는다는 뜻이다. 이미 가진 서비스 토큰
+    (`X-Service-Token`, POST /inspection 과 같은 값)으로 읽기만 허용한다 — 쓰기 권한은 없다.
+    토큰이 설정되지 않은 구성(사내 단일 호스트)에서는 종전대로 로그인을 요구한다.
+    """
+    expected = get_settings().service_token
+    if expected and x_service_token and x_service_token == expected:
+        return CurrentUser(username="service:worker", role=Role.OPERATOR.value)
+    user = get_current_user(token)
+    if _ROLE_RANK.get(user.role, 0) < _ROLE_RANK[Role.OPERATOR.value]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="권한 부족")
+    return user
+
+
 def require_internal(
     x_service_token: Optional[str] = Header(None, alias="X-Service-Token"),
     token: Optional[str] = Depends(oauth2_scheme),

@@ -12,13 +12,26 @@ def _f(name: str, default: float) -> float:
         return default
 
 
+def normalize_db_url(url: str) -> str:
+    """`postgres://`·`postgresql://`(Supabase 대시보드 형식) → psycopg(v3) 드라이버 주소."""
+    u = (url or "").strip()
+    for head in ("postgres://", "postgresql://"):
+        if u.startswith(head):
+            return "postgresql+psycopg://" + u[len(head):]
+    return u
+
+
 class Settings:
     def __init__(self) -> None:
         # MES 자체 DB. 독립형 파이는 sqlite 파일, 서버는 Postgres(별도 데이터베이스).
-        self.database_url: str = os.getenv("MES_DATABASE_URL", "sqlite:///./mes.db")
+        # 클라우드(2026-10-15): AIVIS 와 같은 Supabase DB 하나를 쓴다(MES 표는 mes_ 접두어).
+        # 그래서 MES_* 가 없으면 DATABASE_URL 을 둘 다로 쓴다 — Render 에 주소를 한 번만 넣게.
+        shared = os.getenv("DATABASE_URL", "")
+        self.database_url: str = normalize_db_url(
+            os.getenv("MES_DATABASE_URL") or shared or "sqlite:///./mes.db")
         # AIVIS 연계 인터페이스 DB(mes_quality_if 가 있는 곳). 비우면 폴링을 끈다
         # — 그때는 REST 수신(POST /intake/quality)만 받는다.
-        self.aivis_db_url: str = os.getenv("MES_AIVIS_DB_URL", "").strip()
+        self.aivis_db_url: str = normalize_db_url(os.getenv("MES_AIVIS_DB_URL") or shared)
         self.poll_interval_s: float = _f("MES_POLL_INTERVAL_S", 10.0)
         self.poll_batch: int = int(_f("MES_POLL_BATCH", 500))
         # REST 수신 토큰. 설정하면 AIVIS 가 `Authorization: Bearer <토큰>` 을 실어야 한다

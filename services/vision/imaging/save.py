@@ -527,6 +527,35 @@ def _put_or_spool(
         return key
 
 
+def remote_raw_policy() -> str:
+    """원격 저장 때 원본(raw)을 언제 올리나 — AIVIS_REMOTE_RAW = all | ng | none (2026-10-15).
+
+    클라우드에서는 파이가 사진을 인터넷으로 올린다. 원본은 장당 1MB 안팎이라 매 프레임
+    올리면 공장 회선과 클라우드 저장 용량이 감당하지 못한다. 사람이 보는 것은 결과
+    (오버레이) 사진이고, 원본이 필요한 것은 불량·재확인(재학습)과 수집용 LOT(라벨링)이다.
+      all  — 전부(기본, 사내 허브 구성의 종전 동작)
+      ng   — NG·재확인 대상만 + 수집용 LOT 은 전부(클라우드 권장)
+      none — 수집용 LOT 만
+    """
+    v = os.environ.get("AIVIS_REMOTE_RAW", "all").strip().lower()
+    return v if v in ("all", "ng", "none") else "all"
+
+
+def remote_jpeg_quality() -> int:
+    """원격 저장 결과(오버레이) 사진 JPEG 품질 — AIVIS_REMOTE_JPEG_QUALITY(기본 95, 50~100)."""
+    try:
+        return min(100, max(50, int(os.environ.get("AIVIS_REMOTE_JPEG_QUALITY", "95"))))
+    except ValueError:
+        return 95
+
+
+def keep_remote_raw(verdict: str, review: bool, force_raw: bool = False) -> bool:
+    policy = remote_raw_policy()
+    if policy == "all" or force_raw:
+        return True
+    return policy == "ng" and (str(verdict).upper() == "NG" or bool(review))
+
+
 def _save_pair_via_backend(
     backend: StorageBackend,
     frame: np.ndarray,
@@ -539,6 +568,7 @@ def _save_pair_via_backend(
     review: bool,
     pending_sink=None,
     cam_id: Optional[str] = None,
+    force_raw: bool = False,
 ) -> ImageSaveResult:
     """이미 렌더된 (frame, overlay) 쌍을 스토리지 백엔드에 업로드.
 
@@ -553,10 +583,12 @@ def _save_pair_via_backend(
     result_key = f"{_RESULT}/{fname}"
 
     pending: list = []
-    raw_path = _put_or_spool(
-        backend, raw_key, encode_jpeg(frame), pending_sink, pending
-    )
-    overlay_jpeg = encode_jpeg(overlay)
+    raw_path: Optional[str] = None
+    if keep_remote_raw(verdict, review, force_raw):
+        raw_path = _put_or_spool(
+            backend, raw_key, encode_jpeg(frame), pending_sink, pending
+        )
+    overlay_jpeg = encode_jpeg(overlay, remote_jpeg_quality())
     result_path = _put_or_spool(
         backend, result_key, overlay_jpeg, pending_sink, pending
     )
@@ -608,6 +640,7 @@ def _save_via_backend(
     pending_sink=None,
     length_span: Optional[LengthSpan] = None,
     cam_id: Optional[str] = None,
+    force_raw: bool = False,
 ) -> ImageSaveResult:
     """단일 검사 결과를 렌더(render_overlay) 후 백엔드에 업로드(호환 래퍼)."""
     overlay = render_overlay(frame, result, item=item, length_span=length_span)
@@ -622,6 +655,7 @@ def _save_via_backend(
         review=review,
         pending_sink=pending_sink,
         cam_id=cam_id,
+        force_raw=force_raw,
     )
 
 
@@ -638,8 +672,12 @@ def save_inspection_images(
     pending_sink=None,
     length_span: Optional[LengthSpan] = None,
     cam_id: Optional[str] = None,
+    force_raw: bool = False,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
+
+    force_raw: 원격 저장에서 원본 정책(AIVIS_REMOTE_RAW)과 무관하게 원본을 올린다
+    — 수집용 LOT(라벨링에 원본이 필요하다).
 
     파일명 타임스탬프는 inspected_at(검사 시각)과 동일해 raw/result 가 짝을 이룬다.
     저장 백엔드는 AIVIS_STORAGE_BACKEND(local|supabase)로 전환한다:
@@ -680,6 +718,7 @@ def save_inspection_images(
                 pending_sink=pending_sink,
                 length_span=length_span,
                 cam_id=cam_id,
+                force_raw=force_raw,
             )
         # local 디스크 경로(기존 동작 그대로).
         raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
@@ -714,6 +753,7 @@ def save_batch_images(
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
     cam_id: Optional[str] = None,
+    force_raw: bool = False,
 ) -> ImageSaveResult:
     """배치(다중 튜브) 1프레임의 raw + 배치 오버레이 result 를 **1회** 저장.
 
@@ -752,6 +792,7 @@ def save_batch_images(
                 review=review,
                 pending_sink=pending_sink,
                 cam_id=cam_id,
+                force_raw=force_raw,
             )
         return _save_pair_local(
             frame,
@@ -814,6 +855,7 @@ def save_count_images(
     storage: Optional[StorageBackend] = None,
     pending_sink=None,
     cam_id: Optional[str] = None,
+    force_raw: bool = False,
 ) -> ImageSaveResult:
     """개수 확인 1프레임의 raw + 개수 오버레이 result 를 1회 저장.
 
@@ -836,7 +878,7 @@ def save_count_images(
             return _save_pair_via_backend(
                 backend, frame, overlay, lot=lot, item_code=item_code, ts=ts,
                 verdict=str(verdict), review=review, pending_sink=pending_sink,
-                cam_id=cam_id,
+                cam_id=cam_id, force_raw=force_raw,
             )
         return _save_pair_local(
             frame, overlay, target_dir, lot=lot, item_code=item_code, ts=ts,

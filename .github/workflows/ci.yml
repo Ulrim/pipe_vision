@@ -93,6 +93,51 @@ jobs:
             echo "No Python tests yet; skipping pytest."
           fi
 
+  # ---------------- Python on PostgreSQL 16 (클라우드 운영 DB와 같은 엔진) ----------------
+  # 기본 시험은 sqlite 다. 클라우드(Supabase Postgres)에서만 나는 문제 — 마이그레이션,
+  # TEXT[]/JSONB, 시간대 — 를 미리 잡으려고 같은 시험을 Postgres 로 한 번 더 돌린다(2026-10-15).
+  python-postgres:
+    name: python on postgres (migrations + api + mes)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: aivis
+          POSTGRES_PASSWORD: aivis
+          POSTGRES_DB: aivis
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aivis" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PG: postgresql+psycopg://aivis:aivis@localhost:5432
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip pytest
+          pip install ./packages/shared-types/python
+          pip install -r services/api/requirements.txt -r services/mes/requirements.txt
+      - name: Create databases
+        run: |
+          for db in aivis_api aivis_mes; do
+            PGPASSWORD=aivis psql -h localhost -U aivis -d aivis -c "create database $db"
+          done
+      - name: Alembic upgrade head (운영과 같은 경로)
+        working-directory: services/api
+        run: DATABASE_URL=$PG/aivis_api alembic upgrade head
+      - name: API tests on postgres
+        working-directory: services/api
+        run: AIVIS_TEST_DATABASE_URL=$PG/aivis_api pytest tests mes/tests -q
+      - name: MES tests on postgres (AIVIS 가 만든 실제 연계 표를 읽는다)
+        working-directory: services/mes
+        run: |
+          MES_TEST_DATABASE_URL=$PG/aivis_mes MES_TEST_AIVIS_DB_URL=$PG/aivis_api pytest -q
+
   # ---------------- Node: build + lint for frontends and shared TS types ----------------
   node:
     name: node (build + lint)

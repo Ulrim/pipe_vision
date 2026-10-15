@@ -12,13 +12,26 @@ def _bool(env: str, default: bool) -> bool:
     return val.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def normalize_db_url(url: str) -> str:
+    """Supabase·Render 가 주는 `postgres://`·`postgresql://` 를 psycopg(v3) 드라이버로.
+
+    드라이버를 안 적으면 SQLAlchemy 는 psycopg2 를 찾는데 설치돼 있지 않다 — 대시보드에서
+    복사한 주소를 그대로 붙이면 API 가 기동하지 못했다(2026-10-15).
+    """
+    u = (url or "").strip()
+    for head in ("postgres://", "postgresql://"):
+        if u.startswith(head):
+            return "postgresql+psycopg://" + u[len(head):]
+    return u
+
+
 class Settings:
     """앱 전역 설정. 환경변수 미설정 시 개발/테스트용 기본값(sqlite)."""
 
     def __init__(self) -> None:
         # DB: postgres 우선, 미설정 시 로컬 sqlite (개발/테스트).
-        self.database_url: str = os.getenv(
-            "DATABASE_URL", "sqlite:///./aivis_dev.db"
+        self.database_url: str = normalize_db_url(
+            os.getenv("DATABASE_URL", "sqlite:///./aivis_dev.db")
         )
 
         # JWT / RBAC

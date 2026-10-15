@@ -388,3 +388,62 @@ def test_worker_config_warns_when_supabase_misconfigured(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         cfg.warn_if_misconfigured(log)
     assert any("supabase" in r.message.lower() for r in caplog.records)
+
+
+# --- 클라우드 원본 정책(AIVIS_REMOTE_RAW, 2026-10-15) ---
+def _ok_verdict() -> VerdictResult:
+    v = _verdict(review=False)
+    return v.model_copy(update={"final_verdict": Verdict.OK, "defect_codes": []})
+
+
+def test_remote_raw_policy_ng_skips_ok_originals(monkeypatch):
+    """ng: OK 원본은 올리지 않는다(회선·용량) — 결과 사진만. 경로는 None 으로 보고."""
+    monkeypatch.setenv("AIVIS_REMOTE_RAW", "ng")
+    rec = _Recorder()
+    out = save_inspection_images(_frame(), _ok_verdict(), lot="LOT1", item_code="HP12",
+                                 inspected_at=_ts(), item=_item(), storage=_supabase_backend(rec))
+    assert out.error is None and out.raw_image_path is None
+    assert out.result_image_path.startswith("result/")
+    assert [r.url.path.split("/")[-2] for r in rec.requests] == ["result"]
+
+
+def test_remote_raw_policy_ng_keeps_ng_and_training(monkeypatch):
+    monkeypatch.setenv("AIVIS_REMOTE_RAW", "ng")
+    rec = _Recorder()
+    out = save_inspection_images(_frame(), _verdict(), lot="LOT1", item_code="HP12",
+                                 inspected_at=_ts(), item=_item(), storage=_supabase_backend(rec))
+    assert out.raw_image_path is not None, "NG 원본은 재학습에 필요하다"
+
+    rec2 = _Recorder()
+    out = save_inspection_images(_frame(), _ok_verdict(), lot="TRAIN-1", item_code="HP12",
+                                 inspected_at=_ts(), item=_item(),
+                                 storage=_supabase_backend(rec2), force_raw=True)
+    assert out.raw_image_path is not None, "수집용 LOT 은 OK 도 원본을 올린다(라벨링)"
+
+
+def test_remote_jpeg_quality_shrinks_result(monkeypatch):
+    rng = np.random.default_rng(3)
+    img = rng.integers(0, 255, size=(240, 320, 3), dtype=np.uint8)
+    big, small = encode_jpeg(img), encode_jpeg(img, 60)
+    assert len(small) < len(big) and small[:3] == b"\xff\xd8\xff"
+
+    monkeypatch.setenv("AIVIS_REMOTE_JPEG_QUALITY", "60")
+    rec = _Recorder()
+    save_inspection_images(_frame(), _ok_verdict(), lot="LOT1", item_code="HP12",
+                           inspected_at=_ts(), item=_item(), storage=_supabase_backend(rec))
+    rec95 = _Recorder()
+    monkeypatch.setenv("AIVIS_REMOTE_JPEG_QUALITY", "95")
+    save_inspection_images(_frame(), _ok_verdict(), lot="LOT1", item_code="HP12",
+                           inspected_at=_ts(), item=_item(), storage=_supabase_backend(rec95))
+    res60 = [b for r, b in zip(rec.requests, rec.bodies) if "/result/" in r.url.path][0]
+    res95 = [b for r, b in zip(rec95.requests, rec95.bodies) if "/result/" in r.url.path][0]
+    assert len(res60) < len(res95)
+
+
+def test_remote_raw_default_is_all(monkeypatch):
+    """기본(all)은 종전 동작 — 사내 허브 구성은 바뀌지 않는다."""
+    monkeypatch.delenv("AIVIS_REMOTE_RAW", raising=False)
+    rec = _Recorder()
+    out = save_inspection_images(_frame(), _ok_verdict(), lot="LOT1", item_code="HP12",
+                                 inspected_at=_ts(), item=_item(), storage=_supabase_backend(rec))
+    assert out.raw_image_path is not None

@@ -14,15 +14,21 @@ from aivis_types import InspectionResult, LogCategory
 
 from core.inspection_service import make_idem_key
 from core.logging import write_log
+from core.security import require_internal
 from db.base import get_db
 from db.models import MesQualityIf
 
 router = APIRouter(prefix="/mes", tags=["mes"])
 
 
-@router.post("/quality")
+@router.post("/quality", dependencies=[Depends(require_internal)])
 def mes_quality(body: InspectionResult, db: Session = Depends(get_db)):
-    """REST 모드 MES 연계 수신. 멱등키로 중복 적재 방지."""
+    """REST 모드 MES 연계 수신. 멱등키로 중복 적재 방지.
+
+    내부 가드(2026-10-15): 종전엔 인증이 전혀 없어, 공개된 클라우드 API 에서는 누구나 연계
+    표에 행을 넣고 MES 가 그것을 품질이력으로 가져갈 수 있었다. POST /inspection 과 같은
+    서비스 토큰을 요구한다(토큰 미설정 사내 구성은 종전대로).
+    """
     idem = make_idem_key(body)
     exists = db.execute(
         select(MesQualityIf).where(MesQualityIf.idem_key == idem)

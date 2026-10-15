@@ -33,6 +33,8 @@ EXPOSE 8000
 
 # /health endpoint is the contract the compose healthcheck relies on.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=5 \
-    CMD curl -fsS http://localhost:8000/health || exit 1
+    CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 시작점: AIVIS_MIGRATE_ON_START=true 면 alembic upgrade head 후 uvicorn(PORT, 기본 8000).
+RUN chmod +x /app/docker-entrypoint.sh
+CMD ["/app/docker-entrypoint.sh"]

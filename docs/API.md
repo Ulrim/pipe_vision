@@ -67,11 +67,11 @@
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
 | GET | `/master/items` | operator+ | 목록 |
-| GET | `/master/items/{code}` | operator+ | 단건 |
+| GET | `/master/items/{code}` | operator+ 또는 서비스 토큰 | 단건. 검사워커는 `X-Service-Token`(POST /inspection 과 같은 값)으로 읽는다 — 파이에 관리자 비밀번호를 두지 않게(2026-10-15, 읽기 전용) |
 | POST | `/master/items` | quality+ | 등록(version=1) |
 | PUT | `/master/items/{code}` | quality+ | 부분 갱신(version +1, updated_by/at 기록) |
 | PUT | `/master/active` | quality+ | 현재 오더(품목·LOT·작업지시). `inspection_stage` 는 **보낼 때만 바꾼다**(2026-10-14 — MES "검사기에 오더 내리기" 가 전역 모드를 지우지 않게, null 이면 지움) |
-| GET | `/master/active?cam_id=` | operator+ | 현재 오더. `cam_id` 를 주면 **그 스테이션의 모드**(station_config)가 전역보다 우선 적용된 값을 돌려주고 `stage_source`(`station`\|`order`\|null)로 출처를 말한다. 워커는 자기 `AIVIS_CAM_ID` 로 폴링한다 |
+| GET | `/master/active?cam_id=` | operator+ 또는 서비스 토큰 | 현재 오더. `cam_id` 를 주면 **그 스테이션의 모드**(station_config)가 전역보다 우선 적용된 값을 돌려주고 `stage_source`(`station`\|`order`\|null)로 출처를 말한다. 워커는 자기 `AIVIS_CAM_ID` 로 폴링한다 |
 | PUT | `/master/active/stage` | **operator+** | **검사 모드만** 바꾼다(`{item_code, inspection_stage, cam_id?}`; CUT_LENGTH\|POST_WASH_SURFACE\|CRATE_COUNT). `cam_id` 를 주면 **그 스테이션만**(station_config), 비우면 전역(active_order). 오더가 없으면 품목으로 만든다. 감사 로그 `[station=X]`/`[global]` before→after. 워커 15s 폴링으로 재시작 없이 전환. `PUT /master/active` 도 `inspection_stage` 를 받는다(NULL=스테이션 env 기본) |
 | GET | `/master/stations` | operator+ | 스테이션별 설정 목록(`{cam_id, inspection_stage, updated_by, updated_at}`) — 2대 구성 모니터/HMI 용 |
 | GET | `/master/stations/{cam_id}` | operator+ | 한 스테이션의 설정. 미설정이면 200 + null |
@@ -137,7 +137,7 @@ LOT 이 `AIVIS_TRAINING_LOT_PREFIXES`(API 서버 env, 콤마, 기본 `TRAIN-`, �
 | 메서드 | 경로 | 권한 | 설명 |
 |---|---|---|---|
 | GET | `/logs?category=&limit=&offset=` | quality+ | 로그 조회(inspect/db/mes/error/user) |
-| POST | `/mes/quality` | 내부 | REST 모드 MES 연계 수신(멱등키 중복 방지) |
+| POST | `/mes/quality` | 내부(서비스 토큰) | REST 모드 MES 연계 수신(멱등키 중복 방지). 2026-10-15 내부 가드 추가 — 종전엔 인증이 없어 공개 서버에서 누구나 연계 표에 행을 넣을 수 있었다 |
 | POST | `/inspection/status` | 내부 | 워커 하트비트. `stage`(현재 검사 모드), 선택 `timings{grab_ms, infer_ms, save_ms, total_ms, per_ea_ms, n, post_ms}`(단계별 처리시간), `waiting`(센서 트리거 대기 — 제품 없음, 촬영 안 함), `lot`(지금 찍는 LOT — 수집용 판단), 선택 `host{…}`(그 파이의 온도·CPU·메모리·디스크·전원 — `/system/stations` 로 나간다) 포함 — HMI 헤더가 첫 결과 전에도 모드를 표시. **카메라별로** 기록되어 `/system/status` 의 `services.workers[]`(`{cam_id, state, last_seen_s, stage}`)에 스테이션마다 한 줄씩 나온다(단일 `services.worker` 는 가장 최근 1대 기준 — 2대 이상이면 `workers` 를 볼 것) |
 | GET | `/inspection/stats?item=&from=&to=&cam_id=&stage=&include_training=` | operator+ | 통계 **서버 집계**(2026-10-10, 수집용 LOT 기본 제외): `{total, ng, by_code[{code,count}], monthly[{month(KST), total, ng, defect_rate_pct}]}`. 대시보드 통계 화면용 — 종전 행 5,000건 요청이 목록 상한 2,000건을 넘어 실패하던 버그 수정 |
 | GET | `/inspection/lot-summary?lot=&require=` | operator+ | **LOT 종합 판정**(2026-10-10): 모드(스테이션)별 결과를 LOT 단위로 합친다. `final_verdict` = NG(어느 모드든 NG 1건↑) \| INCOMPLETE(NG 없음 + 거쳐야 할 모드 결과 없음) \| OK \| NONE. `require` 미지정 시 스테이션 설정의 모드 전부. `reasons` 에 모드별 수치("길이 검사 NG 1개 / 20개 (LEN 1)") |
@@ -146,7 +146,7 @@ LOT 이 `AIVIS_TRAINING_LOT_PREFIXES`(API 서버 env, 콤마, 기본 `TRAIN-`, �
 | GET | `/health` | 공개 | 헬스체크(DB 연결 확인) |
 | GET | `/system/status` | operator+ | 현장 상태 스냅샷(API 가 도는 호스트 자원·워커·검사 집계·오류). "오늘" 은 **KST 0시** 기준(2026-10-09, 종전 UTC 0시 = 한국 09시) |
 | GET | `/system/stations` | operator+ | **실시간 현황**(파이 여러 대, 2026-10-09). `{ts, stations[]}`, 스테이션 = 하트비트 ∪ station_config ∪ 최근 24h 결과의 cam_id(재기동 직후에도 죽은 파이가 `down` 으로 남는다). 각 항목: `cam_id, state(up\|stale\|down), last_seen_s, stage`(하트비트 > 스테이션 설정 > 마지막 결과), 마지막 사이클 `item_code/expected/detected/mismatch/error/proc_time_ms`, 그 파이 자신의 `host{cpu_temp_c, cpu_percent, load_1m, mem_percent, disk_percent, disk_free_gb, throttled}`(구 워커는 null), `last_hour`/`today{total, ng, ng_rate_pct}`, `latest{id, inspected_at, lot, item_code, inspection_stage, final_verdict, defect_codes, meas_length_mm, deviation_mm, length_verdict, oil/discolor/scratch_score, review_flag, has_result_image, has_raw_image, frame_total, frame_ng, limits{ref_length_mm, tol_plus/minus_mm, oil/discolor/scratch_threshold, expected_count}}`(다발이면 NG 튜브가 대표). DB 가 죽어도 200(하트비트만으로 채움) |
-| PUT | `/inspection/images/{key}` | 내부 | **워커 → 허브 사진 업로드**(2026-10-09, `AIVIS_STORAGE_BACKEND=api` 워커). 본문 = JPEG 바이트(FF D8 시작), 키 = `raw\|result\|review/<파일명>.jpg`(하위 폴더·`..`·다른 확장자 400), 25MB 상한(413). 허브 `AIVIS_IMAGES_DIR` 의 같은 경로에 임시파일→rename 으로 저장(같은 키 재전송은 덮어씀 = 멱등). 디스크 오류 507(워커가 스풀에 보존 후 재전송). 서버가 `supabase` 백엔드면 409. 응답 201 `{key, bytes}` |
+| PUT | `/inspection/images/{key}` | 내부 | (2026-10-15) 서버가 `AIVIS_STORAGE_BACKEND=supabase`(클라우드)면 409 대신 **받은 사진을 Supabase 로 전달**(실패 502 — 워커가 스풀). 파이에 Supabase 키가 필요 없다. 아래는 허브(local) 동작: **워커 → 허브 사진 업로드**(2026-10-09, `AIVIS_STORAGE_BACKEND=api` 워커). 본문 = JPEG 바이트(FF D8 시작), 키 = `raw\|result\|review/<파일명>.jpg`(하위 폴더·`..`·다른 확장자 400), 25MB 상한(413). 허브 `AIVIS_IMAGES_DIR` 의 같은 경로에 임시파일→rename 으로 저장(같은 키 재전송은 덮어씀 = 멱등). 디스크 오류 507(워커가 스풀에 보존 후 재전송). 서버가 `supabase` 백엔드면 409. 응답 201 `{key, bytes}` |
 
 ## 품질·생산실적 MES (별도 서비스, 2026-10-14)
 MES API 는 `docs/MES.md` §6(:8100, 같은 로그인 토큰). AIVIS 쪽 변경:
@@ -155,7 +155,14 @@ MES API 는 `docs/MES.md` §6(:8100, 같은 로그인 토큰). AIVIS 쪽 변경:
 - `PATCH /inspection/{id}/review` → 연계 행을 되돌린다(table: `consumed=false`, rest: 재전송).
 - table 모드는 저장과 같은 트랜잭션에서 `mes_synced=true`. MES 재전송 워치독이 API 안에서 뜬다(`MES_WATCHDOG_ENABLED`).
 
-## 배포 환경변수 (클라우드 데모)
+## 클라우드 운영 (2026-10-15, `deploy/DEPLOYMENT.md`)
+- `DATABASE_URL` 은 Supabase 형식(`postgresql://`·`postgres://`)을 그대로 받는다 — 앱·마이그레이션이 `postgresql+psycopg://` 로 바꾼다.
+- `AIVIS_MIGRATE_ON_START=true` — 컨테이너가 기동 전에 `alembic upgrade head`(Render 무료는 pre-deploy 미지원). 실패하면 기동하지 않는다.
+- `AIVIS_REQUIRE_SERVICE_TOKEN=true` — `AIVIS_SERVICE_TOKEN` 없이는 기동하지 않는다(공개 서버 보호).
+- `AIVIS_REMOTE_RETENTION_DAYS`(기본 90, 0=끔) — Supabase 사진 보관기한. 정리 루프가 `raw/ result/ review/` 의 오래된 객체를 지운다.
+- 워커(파이): `AIVIS_STORAGE_BACKEND=api`, `AIVIS_REMOTE_RAW=all|ng|none`(원본 업로드 정책, 기본 all · 클라우드 ng), `AIVIS_REMOTE_JPEG_QUALITY`(결과 사진, 기본 95 · 클라우드 80). 수집용 LOT 은 정책과 무관하게 원본을 올린다.
+
+## 배포 환경변수 (공통)
 - `ALLOWED_ORIGINS`: CORS 허용 출처 콤마 목록(예 `https://aivis-hmi.vercel.app,https://aivis-dashboard.vercel.app`). 미설정 시 `*`(모든 출처, credentials 불가). 명시 목록이면 `allow_credentials=True`.
 - `AIVIS_SEED_DEMO_ITEM`(기본 `false`): 데모 배포에서 `true`로 켜면 `item_master`에 데모 품목 1건을 멱등 시드(워커 검사결과 FK 충족).
 - `AIVIS_DEMO_ITEM_CODE`(기본 `HP12`): 데모 시드 품목코드.

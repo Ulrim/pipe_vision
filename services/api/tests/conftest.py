@@ -8,7 +8,11 @@ import pytest
 
 # 테스트 전용 환경: 임시 sqlite 파일 + 시드 비활성(테스트가 직접 사용자 생성).
 _TMPDIR = tempfile.mkdtemp(prefix="aivis_test_")
-os.environ["DATABASE_URL"] = f"sqlite:///{os.path.join(_TMPDIR, 'test.db')}"
+# AIVIS_TEST_DATABASE_URL 을 주면 그 DB(예: Postgres)로 같은 시험을 돌린다 — 클라우드 운영 DB
+# (Supabase Postgres)에서만 나는 문제를 미리 잡기 위해(2026-10-15). 기본은 임시 sqlite.
+os.environ["DATABASE_URL"] = os.environ.get("AIVIS_TEST_DATABASE_URL") or (
+    f"sqlite:///{os.path.join(_TMPDIR, 'test.db')}"
+)
 os.environ["AIVIS_LOCAL_QUEUE_DIR"] = os.path.join(_TMPDIR, "queue")
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ["AIVIS_SEED_ON_STARTUP"] = "false"

@@ -18,7 +18,10 @@ config = context.config
 
 db_url = os.getenv("DATABASE_URL")
 if db_url:
-    config.set_main_option("sqlalchemy.url", db_url)
+    from core.config import normalize_db_url  # noqa: E402 - 경로 추가 뒤
+
+    # Supabase 형식(postgresql://)도 앱과 똑같이 psycopg(v3) 로.
+    config.set_main_option("sqlalchemy.url", normalize_db_url(db_url))
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

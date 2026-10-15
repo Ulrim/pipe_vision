@@ -1,6 +1,7 @@
 """검사결과 적재/조회/이미지/재확인 라우터 (CLAUDE.md §5 M7,M8,M10, §7.4)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -24,7 +25,7 @@ from aivis_types import (
     Verdict,
 )
 
-from core import heartbeat, local_queue
+from core import heartbeat, local_queue, remote_storage
 from core.config import get_settings
 from core.inspection_service import save_inspection
 from core.training import is_training_lot, not_training
@@ -640,14 +641,11 @@ async def upload_inspection_image(
     - 본문은 JPEG(FF D8 로 시작)만. 크기 상한 25MB(413).
     - 같은 키를 다시 올리면 덮어쓴다(스풀 재전송이 같은 사진을 또 보낼 수 있다 — 멱등).
     - 임시파일에 쓴 뒤 rename — 반쯤 쓴 파일을 대시보드가 여는 일이 없다.
-    - API 가 supabase 백엔드면 409: 그 구성에선 워커가 Supabase 에 직접 올린다.
+    - API 가 supabase 백엔드(클라우드)면 받은 사진을 Supabase 로 **전달**한다(2026-10-15).
+      종전엔 409 로 거절하고 워커가 직접 올리게 했는데, 그러면 파이마다 Supabase 관리자
+      키를 두어야 했다(core/remote_storage). 전달 실패는 502 — 워커가 스풀에 보존한다.
     """
     settings = get_settings()
-    if settings.storage_backend == "supabase":
-        raise HTTPException(
-            status_code=409,
-            detail="이 서버는 Supabase 저장 구성입니다 — 워커를 AIVIS_STORAGE_BACKEND=supabase 로",
-        )
     if not _IMAGE_KEY_RE.match(key) or ".." in key:
         raise HTTPException(status_code=400, detail="허용되지 않는 이미지 키")
     body = await request.body()
@@ -655,6 +653,13 @@ async def upload_inspection_image(
         raise HTTPException(status_code=413, detail="이미지가 너무 큽니다")
     if len(body) < 4 or body[:2] != b"\xff\xd8":
         raise HTTPException(status_code=400, detail="JPEG 가 아닙니다")
+    if settings.storage_backend == "supabase":
+        try:
+            await asyncio.to_thread(remote_storage.put_object, settings, key, body)
+        except remote_storage.RemoteStorageError as exc:
+            log.error("이미지 Supabase 전달 실패 %s: %s", key, exc)
+            raise HTTPException(status_code=502, detail="클라우드 저장소에 올리지 못했습니다")
+        return {"key": key, "bytes": len(body), "backend": "supabase"}
     abs_path = _safe_image_path(key)
     if not abs_path:
         raise HTTPException(status_code=400, detail="허용되지 않는 이미지 키")
