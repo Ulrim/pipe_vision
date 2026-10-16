@@ -301,19 +301,6 @@ class GpioTrigger(TriggerSource):
                 pass
 
 
-def _parse_roi(raw: Optional[str]) -> tuple:
-    """검사 영역 "x0,y0,x1,y1"(화면 비율 0~1). 잘못되면 화면 전체."""
-    try:
-        x0, y0, x1, y1 = (float(v) for v in str(raw).split(","))
-    except (TypeError, ValueError):
-        return (0.0, 0.0, 1.0, 1.0)
-    x0, x1 = sorted((min(max(x0, 0.0), 1.0), min(max(x1, 0.0), 1.0)))
-    y0, y1 = sorted((min(max(y0, 0.0), 1.0), min(max(y1, 0.0), 1.0)))
-    if x1 - x0 < 0.02 or y1 - y0 < 0.02:
-        return (0.0, 0.0, 1.0, 1.0)
-    return (x0, y0, x1, y1)
-
-
 def _envf(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -345,7 +332,8 @@ class VisionTrigger(TriggerSource):
     바뀌어 빈 장면이 달라 보여도 한 번 더 쏘고 다시 배운다(최근 5개 기억).
 
     환경변수(기본값):
-      AIVIS_VISION_ROI           "0,0,1,1"  검사 영역(화면 비율 x0,y0,x1,y1)
+      AIVIS_ROI                  "0,0,1,1"  검사 영역(화면 비율 x0,y0,x1,y1) — 검사·결과 사진
+                                            표시와 같은 값(preprocess/area.py)
       AIVIS_VISION_FPS           8          미리보기 확인 빈도
       AIVIS_VISION_SETTLE_MS     400        도착: 멈춘 뒤 이만큼 조용하면 촬영
       AIVIS_VISION_DEPART_SETTLE_MS 1500    반출: 손이 빠지고 이만큼 조용하면 보관
@@ -390,7 +378,11 @@ class VisionTrigger(TriggerSource):
         self.mode_provider = mode_provider
         forced = (mode or os.environ.get("AIVIS_VISION_MODE", "auto")).strip().lower()
         self.forced_mode = forced if forced in (self.ARRIVAL, self.DEPARTURE) else None
-        self.roi = roi or _parse_roi(os.environ.get("AIVIS_VISION_ROI", "0,0,1,1"))
+        if roi is None:
+            from ..preprocess.area import InspectArea
+
+            roi = InspectArea.from_env().fractions
+        self.roi = tuple(roi)
         self.fps = float(fps if fps is not None else _envf("AIVIS_VISION_FPS", 8))
         self.settle_s = (settle_ms if settle_ms is not None
                          else _envf("AIVIS_VISION_SETTLE_MS", 400)) / 1000.0

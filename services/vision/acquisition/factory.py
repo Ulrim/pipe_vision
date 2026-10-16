@@ -60,7 +60,7 @@ def create_camera(
 
 
 def create_trigger(interval_s: float = 0.0, *, camera: Optional[CameraAdapter] = None,
-                   mode_provider=None) -> TriggerSource:
+                   mode_provider=None, roi: Optional[tuple] = None) -> TriggerSource:
     """트리거 소스 생성.
 
     - AIVIS_TRIGGER=vision(모든 카메라 모드): VisionTrigger — 카메라 미리보기로 도착·정지·
@@ -76,7 +76,8 @@ def create_trigger(interval_s: float = 0.0, *, camera: Optional[CameraAdapter] =
     if tmode == "vision":
         if camera is None:
             raise ValueError("AIVIS_TRIGGER=vision 에는 camera 가 필요하다(create_trigger(camera=...))")
-        return VisionTrigger(camera, mode_provider=mode_provider)
+        # roi: 검사 영역(화면 비율). 워커가 검사·사진 표시와 같은 값을 넘긴다.
+        return VisionTrigger(camera, mode_provider=mode_provider, roi=roi)
     if mode == "sim":
         return TimerTrigger(interval_s=interval_s)
     if mode == "picam":

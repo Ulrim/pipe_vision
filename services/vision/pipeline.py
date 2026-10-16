@@ -34,7 +34,7 @@ from .calib.fiducial import (
 )
 from .calib.fiducial import resolve_config as resolve_fiducial_config
 from .calib.lens import LensCalibration, resolve_calibration
-from .preprocess import preprocess
+from .preprocess import InspectArea, preprocess
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
 from .verdict import combine_verdict
@@ -223,6 +223,7 @@ class InspectionPipeline:
         item: Union[ItemMaster, Dict[str, Any]],
         *,
         stage: Optional[str] = None,
+        area: Optional[InspectArea] = None,
     ) -> tuple[VerdictResult, Optional[LengthSpan]]:
         """run() + 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 결과 오버레이가
         측정 근거(끝단/측정선)를 그리도록 워커가 이 값을 save 로 넘긴다.
@@ -230,8 +231,11 @@ class InspectionPipeline:
         span 좌표는 입력 frame_bgr 좌표계다(단일=전체 프레임, 배치=튜브 crop).
         끝단 미검출/ROI 미검출 시 None. shared-types(VerdictResult)는 바꾸지 않고
         별도 채널로 반환한다(오케스트레이터 승인 정책 준수).
+
+        area: 검사 영역(preprocess/area.py) — 그 안에서 가장 큰 제품을 잰다. 렌즈 보정·
+        기준자는 전체 프레임 기준 그대로다(그래서 자르지 않고 제품 찾기만 영역으로 한정).
         """
-        result, _, _, span = self._run_core(frame_bgr, item, stage=stage)
+        result, _, _, span = self._run_core(frame_bgr, item, stage=stage, area=area)
         return result, span
 
     def run_safe(
@@ -257,6 +261,7 @@ class InspectionPipeline:
         item: Union[ItemMaster, Dict[str, Any]],
         *,
         stage: Optional[str] = None,
+        area: Optional[InspectArea] = None,
     ) -> tuple[VerdictResult, StageTimings, Optional[str], Optional[LengthSpan]]:
         t0 = time.perf_counter()
         # ItemMaster 변환 실패는 호출자 오류이므로 그대로 raise(검사 불가).
@@ -284,7 +289,7 @@ class InspectionPipeline:
 
         # ② 전처리 — 실패해도 검사 자체는 NG 로 종료(미판정 0).
         try:
-            pre = preprocess(frame_bgr, self.surface_inset_ratio)
+            pre = preprocess(frame_bgr, self.surface_inset_ratio, area=area)
         except Exception as exc:  # noqa: BLE001
             total = int(round((time.perf_counter() - t0) * 1000))
             reason = f"preprocess 실패: {type(exc).__name__}: {exc}"

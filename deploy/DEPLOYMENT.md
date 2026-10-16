@@ -146,7 +146,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aivis-vision.service
 | `AIVIS_REMOTE_JPEG_QUALITY` | `80` |
 | `AIVIS_CAM_ID` | `PI-CAM1`, 2호기는 `PI-CAM2` — **대마다 다르게** |
 | `AIVIS_TRIGGER` | **`vision`**(영상 트리거 — 센서 없이 제품이 들어와 멈출 때만 찍는다. 설치 때 검사 영역을 맞춘다: `docs/OPERATIONS_PI.md` §11-1). 타이머는 빈 컨베이어도 올리므로 쓰지 않는다 |
-| `AIVIS_VISION_ROI` | 검사 영역(조정 도구로 정한 값) |
+| `AIVIS_ROI` | 검사 영역(조정 도구로 정한 값) — 영역 밖 제품은 검사하지 않고, 결과 사진에 노란 점선 사각형으로 보인다 |
 | `AIVIS_SEED_ADMIN_*` | **비워 둔다**(관리자 비밀번호를 파이에 두지 않는다) |
 
 - 영상 트리거의 감시 영상은 파이 안에서만 쓰고 인터넷으로 나가지 않는다(찍은 사진만 올라간다).

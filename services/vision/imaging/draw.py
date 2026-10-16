@@ -10,6 +10,9 @@
 OpenCV 만 사용하고 한글 텍스트는 쓰지 않는다(HERSHEY 폰트 한글 미지원 → 깨짐).
 드로잉은 판정(proc_time_ms) 계측 이후에만 호출되므로 처리속도 KPI(<300ms)에
 영향을 주지 않는다.
+
+검사 영역(ROI, 2026-10-16): draw_inspect_area 가 결과 사진에 노란 점선 사각형을
+그린다 — 작업자 HMI·실시간 현황은 이 사진을 그대로 보여 주므로 화면에도 나온다.
 """
 from __future__ import annotations
 
@@ -132,4 +135,67 @@ def draw_length_span(
     )
 
 
-__all__ = ["dashed_vline", "dashed_hline", "draw_length_span"]
+#: 검사 영역 색(BGR 노랑) — OK 초록·NG 빨강·개수 흰색과 겹치지 않는다.
+ROI_COLOR = (0, 215, 255)
+#: 영역 밖을 어둡게 하는 정도(0=그대로, 1=검정). '여기는 안 봤다' 가 한눈에 보이게.
+ROI_DIM = 0.45
+
+
+def draw_inspect_area(
+    canvas: np.ndarray,
+    rect,
+    *,
+    top_reserved: int = 0,
+    txt_scale: Optional[float] = None,
+) -> None:
+    """검사 영역(ROI)을 그린다 — 영역 밖은 어둡게, 경계는 노란 점선, 'ROI' 라벨.
+
+    rect: preprocess.Roi(원본 프레임 픽셀) 또는 None(화면 전체 → 아무것도 안 그림).
+    오버레이를 그리기 **전에** 먼저 부른다 — 판정 표시(튜브 박스·헤더)가 그 위에 온다.
+    top_reserved: 위쪽 헤더 높이. 라벨이 헤더에 가리지 않게 그 아래로 내린다.
+    """
+    if rect is None:
+        return
+    h, w = canvas.shape[:2]
+    x0 = int(min(max(0, rect.x0), w - 1))
+    y0 = int(min(max(0, rect.y0), h - 1))
+    x1 = int(min(max(x0 + 1, rect.x1 - 1), w - 1))
+    y1 = int(min(max(y0 + 1, rect.y1 - 1), h - 1))
+
+    # 1) 영역 밖 어둡게(영역 안 픽셀은 그대로 — 판독을 방해하지 않는다).
+    inside = canvas[y0:y1 + 1, x0:x1 + 1].copy()
+    canvas[:] = (canvas.astype(np.float32) * (1.0 - ROI_DIM)).astype(canvas.dtype)
+    canvas[y0:y1 + 1, x0:x1 + 1] = inside
+
+    # 2) 경계 점선(해상도에 비례한 두께·간격).
+    base = min(h, w)
+    thick = max(2, int(round(base / 400)))
+    dash = max(10, base // 40)
+    gap = max(6, dash // 2)
+    for y in (y0, y1):
+        dashed_hline(canvas, y, x0, x1, ROI_COLOR, dash=dash, gap=gap, thickness=thick)
+    for x in (x0, x1):
+        dashed_vline(canvas, x, y0, y1, ROI_COLOR, dash=dash, gap=gap, thickness=thick)
+
+    # 3) 라벨 — 영역 위 바깥에 자리가 있으면 거기(판정 표시와 안 겹친다), 없으면 안쪽.
+    scale = txt_scale if txt_scale is not None else max(0.6, base / 900.0)
+    label = "ROI"
+    (tw, th), _ = cv2.getTextSize(label, _FONT, scale, 2)
+    pad = 4
+    if y0 - th - 2 * pad >= top_reserved:
+        ty = y0 - pad - thick
+    else:
+        ty = max(y0, top_reserved) + th + pad + thick
+    tx = int(min(max(2, x0 + thick + pad), max(2, w - tw - 2 * pad)))
+    ty = int(min(max(th + pad, ty), h - pad))
+    cv2.rectangle(canvas, (tx - pad, ty - th - pad), (tx + tw + pad, ty + pad), _BLACK, -1)
+    cv2.putText(canvas, label, (tx, ty), _FONT, scale, ROI_COLOR, 2, cv2.LINE_AA)
+
+
+__all__ = [
+    "ROI_COLOR",
+    "dashed_vline",
+    "dashed_hline",
+    "draw_inspect_area",
+    "draw_length_span",
+]

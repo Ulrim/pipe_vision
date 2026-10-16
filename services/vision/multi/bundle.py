@@ -40,11 +40,13 @@ docs/PUBLIC_DATASET_REVIEW.md §11~14.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional
 
 import cv2
 import numpy as np
+
+from ..preprocess.area import InspectArea, area_rect
 
 
 @dataclass(frozen=True)
@@ -135,6 +137,7 @@ def count_bundle(
     min_radius_px: float = 4.0,
     min_radius_ratio: float = 0.55,
     nms_scale: float = 1.8,
+    area: Optional[InspectArea] = None,
 ) -> BundleResult:
     """단면 번들 프레임 → 개별 단면 검출.
 
@@ -148,10 +151,23 @@ def count_bundle(
       에이엠피 크레이트 영상 기준 벽 간격은 반지름의 약 0.5배라 0.3 으로 둔다.
     - `radius_percentile`: 억제 반경의 기준. 중앙값을 쓰면 남은 가짜 봉우리가
       값을 끌어내려 억제 반경이 실제 피치보다 작아지고 중복이 살아남는다.
+    - `area`: 검사 영역(preprocess/area.py). 주면 그 안의 단면만 센다 — 옆 크레이트·
+      바닥 무늬가 개수에 끼지 않는다. 중심 좌표는 원본 프레임 기준.
     """
     t0 = time.perf_counter()
     if bgr is None or bgr.size == 0:
         return BundleResult(0, [], 0.0, 0)
+    rect = area_rect(area, bgr)
+    if rect is not None:
+        inner = count_bundle(
+            rect.crop(bgr), block=block, c=c, open_ksize=open_ksize,
+            close_ratio=close_ratio, radius_percentile=radius_percentile,
+            min_radius_px=min_radius_px, min_radius_ratio=min_radius_ratio,
+            nms_scale=nms_scale,
+        )
+        dets = [replace(d, cx=d.cx + rect.x0, cy=d.cy + rect.y0) for d in inner.detections]
+        return replace(inner, detections=dets,
+                       proc_time_ms=int((time.perf_counter() - t0) * 1000))
     gray = bgr if bgr.ndim == 2 else cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = _clahe(gray)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)

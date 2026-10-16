@@ -25,6 +25,7 @@ from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
 from ..length.measure import LengthSpan
 from ..pipeline import InspectionPipeline
+from ..preprocess.area import InspectArea
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 #: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
@@ -138,6 +139,7 @@ def inspect_batch(
     max_tubes: Optional[int] = None,
     pipeline: Optional[InspectionPipeline] = None,
     stage: Optional[str] = None,
+    area: Optional[InspectArea] = None,
 ) -> BatchResult:
     """다중 튜브 프레임 → 튜브별 검사 + 배치 판정.
 
@@ -153,6 +155,9 @@ def inspect_batch(
     그러면 기대와 불일치해 20개짜리 결과로 떨어졌다 — 튜브 44개가 예외도 경고도
     없이 사라졌다. 다발 동시 절단이 상시 공정이므로(부록 A.1) 이 경로가 조용히
     잘리면 수량이 틀린 채로 검사 결과가 쌓인다.
+
+    `area`(검사 영역)를 주면 그 안에서만 튜브를 나눈다(segment_tubes). 튜브 bbox·측정선은
+    원본 프레임 좌표 그대로다.
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
@@ -174,6 +179,7 @@ def inspect_batch(
         expected_count=None,
         min_tubes=min_tubes,
         max_tubes=max_tubes,
+        area=area,
     )
     count_detected = len(auto_rois)
 
@@ -185,6 +191,7 @@ def inspect_batch(
             expected_count=expected_count,
             min_tubes=min_tubes,
             max_tubes=max_tubes,
+            area=area,
         )
     else:
         rois = auto_rois

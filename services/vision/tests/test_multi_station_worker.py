@@ -154,7 +154,7 @@ def test_batch_images_upload_to_hub_with_camera_name():
 
     import vision.imaging.save as save_mod
     orig = save_mod.render_batch_overlay
-    save_mod.render_batch_overlay = lambda frame, br: frame.copy()
+    save_mod.render_batch_overlay = lambda frame, br, **_k: frame.copy()
     try:
         out = save_batch_images(_frame(), _Batch(), lot="LOT1", item_code="HP12",
                                 inspected_at=_ts(), storage=_api(hub), cam_id="PI-CAM2")

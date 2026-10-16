@@ -47,6 +47,7 @@ from vision.multi import (  # noqa: E402
 from vision.imaging.save import save_count_images  # noqa: E402
 from vision.multi.bundle import count_bundle  # noqa: E402
 from vision.multi.segment import segment_tubes  # noqa: E402
+from vision.preprocess.area import InspectArea  # noqa: E402
 from vision.acquisition import GrabResult, VisionTrigger  # noqa: E402
 from aivis_types import DefectCode, InspectionResult, InspectionStage, Verdict  # noqa: E402
 
@@ -150,6 +151,9 @@ class Worker:
         self._active_stage: Optional[str] = None
         # 활성 오더가 수집용 LOT 인가(서버의 training 플래그). 원격 원본 업로드 정책에 쓴다.
         self._training: bool = False
+        # 검사 영역(AIVIS_ROI) — 영상 트리거가 보는 곳 = 검사하는 곳 = 결과 사진의 노란
+        # 점선 사각형. 셋이 어긋나면 화면에 보이는 영역과 실제 판정이 달라진다.
+        self.area = InspectArea.from_env()
         self.camera = None
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
@@ -206,8 +210,11 @@ class Worker:
             )
             self.trigger = create_trigger(
                 interval_s=self.cfg.interval_s, camera=self.camera,
-                mode_provider=self._vision_mode,
+                mode_provider=self._vision_mode, roi=self.area.fractions,
             )
+            if not self.area.full:
+                log.info("검사 영역(AIVIS_ROI) %s — 영역 밖 제품은 검사하지 않고, 결과 사진에 "
+                         "점선 사각형으로 표시한다", self.area.text())
             if isinstance(self.trigger, VisionTrigger):
                 log.info("영상 트리거: 검사 영역 %s, 모드 %s(크레이트 개수 = 반출 직전 1장)",
                          self.trigger.roi, self.trigger.mode())
@@ -616,7 +623,8 @@ class Worker:
             clock.mark("grab")
             inspected_at = held_at or datetime.now(timezone.utc)
             if self._vision() is not None and not segment_tubes(
-                    grab.frame, axis=self._orientation(), expected_count=None):
+                    grab.frame, axis=self._orientation(), expected_count=None,
+                    area=self.area):
                 # 영상 트리거가 빈 장면에 쏘았다 — '끝단 검출 실패' NG 를 만들지 않는다.
                 self._vision_empty(0)
                 return True
@@ -624,7 +632,7 @@ class Worker:
             # 저장 완료**를 잰다(2026-10-10 점검: 종전엔 판정 구간만 재 짧게 나왔다).
             # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를 그린다.
             verdict, length_span = self.pipeline.run_with_geometry(
-                grab.frame, self.item, stage=self._cur_stage()
+                grab.frame, self.item, stage=self._cur_stage(), area=self.area
             )
             clock.mark("infer")
             saved = save_inspection_images(
@@ -639,6 +647,7 @@ class Worker:
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
                 length_span=length_span,
+                area=self.area,
             )
             clock.mark("save")
             if saved.error:
@@ -776,7 +785,7 @@ class Worker:
             expected = int(getattr(self.item, "expected_count", 1) or 1)
             batch = inspect_batch(
                 grab.frame, self.item, expected_count=expected,
-                axis=self._orientation(), stage=self._cur_stage(),
+                axis=self._orientation(), stage=self._cur_stage(), area=self.area,
             )
             clock.mark("infer")
             if self._vision() is not None and self._looks_empty(len(batch.tubes), expected):
@@ -793,6 +802,7 @@ class Worker:
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
+                area=self.area,
             )
             clock.mark("save")
             if saved.error:
@@ -896,7 +906,7 @@ class Worker:
                 return False
             clock.mark("grab")
             inspected_at = held_at or datetime.now(timezone.utc)
-            bundle = count_bundle(grab.frame)
+            bundle = count_bundle(grab.frame, area=self.area)
             clock.mark("infer")
             detected = int(bundle.count)
             if self._vision() is not None and self._looks_empty(detected, expected):
@@ -916,6 +926,7 @@ class Worker:
                 pending_sink=self.spool.save_image,
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
+                area=self.area,
             )
             clock.mark("save")
             if saved.error:

@@ -85,12 +85,16 @@ def _denoise(gray: np.ndarray) -> np.ndarray:
 
 
 def segment_pipe_roi(
-    img_bgr: np.ndarray, surface_inset_ratio: float = 0.06
+    img_bgr: np.ndarray,
+    surface_inset_ratio: float = 0.06,
+    *,
+    within: Optional[Roi] = None,
 ) -> Tuple[np.ndarray, Optional[Roi], Optional[Roi]]:
     """파이프 ROI 분리. (mask, length_roi, surface_roi) 반환.
 
     surface_inset_ratio: 표면 ROI 를 길이 ROI 양 끝에서 안쪽으로 줄이는 비율
     (끝단 에지/그림자가 표면 판정 오탐을 일으키지 않도록).
+    within: 검사 영역(픽셀). 주면 그 밖의 전경은 버리고 영역 안에서 가장 큰 제품을 고른다.
     """
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -102,6 +106,10 @@ def segment_pipe_roi(
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
+    if within is not None:
+        keep = np.zeros_like(binary)
+        keep[within.y0:within.y1, within.x0:within.x1] = 255
+        binary = cv2.bitwise_and(binary, keep)
 
     cnts, _ = cv2.findContours(
         binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
@@ -127,14 +135,23 @@ def segment_pipe_roi(
 
 
 def preprocess(
-    img_bgr: np.ndarray, surface_inset_ratio: float = 0.06
+    img_bgr: np.ndarray,
+    surface_inset_ratio: float = 0.06,
+    *,
+    area=None,
 ) -> PreprocessResult:
-    """전체 전처리 파이프라인. 결정적이며 proc_time_ms 를 계측한다."""
+    """전체 전처리 파이프라인. 결정적이며 proc_time_ms 를 계측한다.
+
+    area: 검사 영역(preprocess/area.InspectArea). 제품 찾기만 그 안으로 한정한다.
+    """
     t0 = time.perf_counter()
     if img_bgr is None or img_bgr.ndim != 3:
         raise ValueError("preprocess: BGR 3채널 이미지가 필요하다")
 
-    mask, length_roi, surface_roi = segment_pipe_roi(img_bgr, surface_inset_ratio)
+    from .area import area_rect
+
+    mask, length_roi, surface_roi = segment_pipe_roi(
+        img_bgr, surface_inset_ratio, within=area_rect(area, img_bgr))
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     corrected = _correct_reflection(gray)
     corrected = _denoise(corrected)

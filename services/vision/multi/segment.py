@@ -30,6 +30,8 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from ..preprocess.area import InspectArea, area_rect
+
 # 한 프레임에서 분할할 수 있는 튜브 수의 안전 상한.
 #
 # 처음에 20 으로 잡았는데 **현장 사진을 보고 틀렸음을 확인했다.** 에이엠피는
@@ -333,6 +335,7 @@ def segment_tubes(
     expected_count: Optional[int] = None,
     min_tubes: int = 1,
     max_tubes: int = MAX_TUBES_HARD,
+    area: Optional[InspectArea] = None,
 ) -> List[TubeROI]:
     """다중 튜브 프레임 → 튜브별 TubeROI 리스트(축 순서 index 1..N).
 
@@ -340,10 +343,19 @@ def segment_tubes(
     expected_count: 알려진 튜브 개수. 주어지면 그 수에 맞춰 seam 보정.
     min_tubes/max_tubes: 자동/보정 개수의 하한·상한(하드 상한 MAX_TUBES_HARD,
         기본 64 · 환경변수 AIVIS_MAX_TUBES 로 조정).
+    area: 검사 영역(preprocess/area.py). 주면 **그 안에서만** 튜브를 나눈다 — 영역 밖
+        물체(옆 다발·공구·손)는 개수에도 경계에도 끼지 않는다. 좌표는 원본 프레임 기준.
     결정적. 빈/전경없음 → 빈 리스트.
     """
     if frame is None or frame.ndim != 3:
         raise ValueError("segment_tubes: BGR 3채널 이미지가 필요하다")
+    rect = area_rect(area, frame)
+    if rect is not None:
+        inner = segment_tubes(rect.crop(frame), axis=axis, expected_count=expected_count,
+                              min_tubes=min_tubes, max_tubes=max_tubes)
+        return [TubeROI(index=t.index, x0=t.x0 + rect.x0, y0=t.y0 + rect.y0,
+                        x1=t.x1 + rect.x0, y1=t.y1 + rect.y0, confidence=t.confidence)
+                for t in inner]
     if axis not in ("horizontal", "vertical"):
         raise ValueError("segment_tubes: axis 는 horizontal|vertical")
     max_tubes = int(max(1, min(MAX_TUBES_HARD, max_tubes)))

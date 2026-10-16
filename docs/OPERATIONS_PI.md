@@ -888,7 +888,7 @@ sudo mkdir -p /var/lib/aivis/spool && sudo chown pi:pi /var/lib/aivis/spool
 ```bash
 # /etc/aivis/worker.env (독립형이면 /etc/aivis/standalone.env)
 AIVIS_TRIGGER=vision
-AIVIS_VISION_ROI=0.05,0.20,0.95,0.80   # 검사 영역(화면 비율 x0,y0,x1,y1) — 아래 도구로 정한다
+AIVIS_ROI=0.05,0.20,0.95,0.80   # 검사 영역(화면 비율 x0,y0,x1,y1) — 아래 도구로 정한다
 ```
 
 | 스테이션(검사 모드) | 언제 찍나 |
@@ -911,25 +911,42 @@ AIVIS_VISION_ROI=0.05,0.20,0.95,0.80   # 검사 영역(화면 비율 x0,y0,x1,y1
 ```bash
 sudo systemctl stop aivis-vision                 # 독립형이면 aivis-standalone
 cd /opt/aivis/services/vision
-AIVIS_CAMERA=picam AIVIS_TRIGGER=vision AIVIS_VISION_ROI=0.05,0.20,0.95,0.80 \
+AIVIS_CAMERA=picam AIVIS_TRIGGER=vision AIVIS_ROI=0.05,0.20,0.95,0.80 \
   .venv/bin/python -m vision.tools.vision_trigger_preview --seconds 60 --expected 20
 sudo systemctl start aivis-vision
 ```
 
-1. `vision_trigger_check/roi.jpg` 를 연다 — 초록 사각형이 검사 영역, 회색 눈금이 10% 다.
-   사각형이 **제품이 멈추는 자리만** 덮도록 `AIVIS_VISION_ROI` 를 고친다(작업자가 오가는
-   통로·다른 컨베이어는 빼야 엉뚱하게 찍히지 않는다).
+1. `vision_trigger_check/roi.jpg` 를 연다 — 노란 점선이 검사 영역(밖은 어둡게), 회색 눈금이
+   10% 다. 사각형이 **제품 전체(양 끝단까지)를 덮고** 작업자가 오가는 통로·다른 컨베이어·옆
+   크레이트는 빠지도록 `AIVIS_ROI` 를 고친다. 이 사각형이 그대로 작업자 화면에 나온다.
 2. 60초 동안 제품을 몇 번 통과시킨다(크레이트면 채우고 뺀다). **다발마다 정확히 한 번**
    `▶ 촬영` 이 찍히고, 손만 지나갈 때는 안 찍히는지 본다. 찍힌 사진은 `fire_01.jpg …`.
 3. 끝에 나오는 `권장 AIVIS_VISION_MOTION=…` 을 env 에 적는다(카메라 잡음에 맞춘 움직임 기준).
 
 | 증상 | 조정 |
 |---|---|
-| 손만 지나가도 찍힌다 | `AIVIS_VISION_ROI` 를 좁히거나 `AIVIS_VISION_CHANGE` 를 올린다(기본 0.02) |
+| 손만 지나가도 찍힌다 | `AIVIS_ROI` 를 좁히거나(제품은 다 들어오게) `AIVIS_VISION_CHANGE` 를 올린다(기본 0.02) |
 | 같은 다발을 두 번 찍는다 | `AIVIS_VISION_SETTLE_MS` 를 늘린다(진동이 남아 있다) |
 | 다음 다발을 놓친다 | `AIVIS_VISION_BIG_CHANGE` 를 내린다(기본 0.35 — 컨베이어가 조금만 움직이는 경우) |
 | 크레이트를 빼도 안 센다 | `AIVIS_VISION_DEPART_DROP` 을 내리거나(기본 0.15) 영역에 크레이트만 들어오게 |
 | 가만히 있는데 계속 '움직임' | `AIVIS_VISION_MOTION` 을 도구 권장값으로, 조명 깜빡임(형광등)을 확인 |
+
+#### 검사 영역(ROI) — 작업자 화면의 노란 점선 사각형 (2026-10-16)
+
+`AIVIS_ROI` 하나가 세 곳에 똑같이 쓰인다. 트리거 종류(영상·근접센서)와 상관없다.
+
+| 어디에 | 무엇을 |
+|---|---|
+| 영상 트리거 | 이 영역의 움직임만 본다 |
+| 검사 | **이 영역 안의 제품만** 나누고·세고·잰다. 영역 밖의 옆 다발·옆 크레이트·공구·손은 개수에도 판정에도 들어가지 않는다 |
+| 결과 사진(HMI·실시간 현황) | **노란 점선 사각형 + `ROI`**, 영역 밖은 어둡게. 어두운 곳은 보지 않았다는 뜻이다 |
+
+- 원본 사진에는 그리지 않는다(학습 데이터라 손대지 않는다). 사각형은 판정 사진에만.
+- **제품 전체가 사각형 안에 들어와야 한다.** 길이 스테이션에서 끝단이 사각형 밖으로 나가면
+  그 끝은 못 찾아 '끝단 미검출' NG 가 된다 — 화면에서 바로 보이므로 영역을 넓힌다.
+- 비우면(기본) 화면 전체 — 종전과 같고 사각형도 그리지 않는다.
+- 숫자는 아래 조정 도구의 `roi.jpg`(10% 눈금)로 정한다. 그 사진의 사각형이 결과 사진과
+  같은 그림이다.
 
 #### 근접센서 — 영상 트리거가 맞지 않는 현장의 대안
 

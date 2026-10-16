@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from .area import InspectArea, area_rect
 from .roi import (
     PreprocessResult,
     Roi,
@@ -15,6 +16,8 @@ from .roi import (
 )
 
 __all__ = [
+    "InspectArea",
+    "area_rect",
     "PreprocessResult",
     "Roi",
     "preprocess",
