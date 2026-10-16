@@ -188,6 +188,8 @@ def _cfg(tmp_path: Path, **overrides) -> WorkerConfig:
         api_wait_timeout_s=5,
         item_wait_timeout_s=5,
         ready_file=str(tmp_path / "vision_ready"),
+        # 기본 /data/images 는 CI 러너에서 쓰기 불가 — 사진 저장을 확인하는 시험이 거기서 깨진다.
+        images_dir=str(tmp_path / "images"),
         max_iterations=3,
     )
     base.update(overrides)
