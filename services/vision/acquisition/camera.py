@@ -69,6 +69,14 @@ class CameraAdapter(ABC):
     def close(self) -> None:
         """리소스 해제."""
 
+    def preview(self, width: int = 320) -> np.ndarray:
+        """감시용 저해상도 **흑백** 프레임(HxW uint8) — 영상 트리거가 초당 수 회 본다.
+
+        기본 구현은 grab() 을 줄이는 것이라 느리다. 파이 카메라는 하드웨어 저해상도
+        스트림(lores)을 따로 받아 고해상도 촬영과 무관하게 싸게 준다(PiCameraAdapter).
+        """
+        return _to_preview(self.grab(), width)
+
     # --- 공통 컨텍스트 매니저 지원 ---
     def __enter__(self) -> "CameraAdapter":
         return self
@@ -78,6 +86,16 @@ class CameraAdapter(ABC):
 
 
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp")
+
+
+def _to_preview(frame: np.ndarray, width: int) -> np.ndarray:
+    """BGR/흑백 프레임 → 폭 width 의 흑백 미리보기(비율 유지)."""
+    g = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    h, w = g.shape[:2]
+    if width <= 0 or w <= width:
+        return np.ascontiguousarray(g)
+    nh = max(2, int(round(h * width / w)))
+    return cv2.resize(g, (int(width), nh), interpolation=cv2.INTER_AREA)
 
 
 class SimulatorCamera(CameraAdapter):
@@ -102,6 +120,10 @@ class SimulatorCamera(CameraAdapter):
         self._recipe: dict = {}
         self._index = 0
         self._files: List[Path] = self._scan()
+        # 영상 트리거 시험용 '가상 컨베이어'(preview 호출 횟수로 진행 — 결정적).
+        self._sim_tick = 0
+        self._sim_cache: dict = {}
+        self._sim_phase: Optional[str] = None  # preview 를 쓰기 시작하면 장면 단계가 생긴다
 
     def _scan(self) -> List[Path]:
         if not self.dataset_dir.exists():
@@ -135,11 +157,60 @@ class SimulatorCamera(CameraAdapter):
                 raise CameraError("SimulatorCamera: end of dataset (loop=False)")
             self._index = 0
         path = self._files[self._index]
+        if self._sim_phase == "empty":
+            # 가상 컨베이어가 비어 있을 때 찍으면 빈 화면(제품 없음) — 순서는 넘기지 않는다.
+            peek = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if peek is None:
+                raise CameraError(f"SimulatorCamera: failed to decode {path}")
+            return np.full_like(peek, 12)
         self._index += 1
         img = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if img is None:
             raise CameraError(f"SimulatorCamera: failed to decode {path}")
         return img
+
+    #: 가상 컨베이어 한 주기(preview 호출 수): 빈 화면 → 들어옴(움직임) → 정지 → 나감.
+    SIM_EMPTY, SIM_ARRIVE, SIM_STILL, SIM_LEAVE = 6, 4, 8, 4
+
+    def preview(self, width: int = 320) -> np.ndarray:
+        """가상 컨베이어 장면(영상 트리거 시험·시연용). 리플레이 순서(_index)는 바꾸지 않는다.
+
+        빈 화면(어두운 배경) → 다음에 찍힐 사진이 옆에서 밀려 들어옴 → 멈춤 → 밀려 나감을
+        반복한다. 정지 구간에 grab() 하면 그 사진이 찍힌다.
+        """
+        if not self._files:
+            raise CameraError(f"SimulatorCamera: no images under {self.dataset_dir}")
+        path = self._files[self._index % len(self._files)]
+        key = (str(path), int(width))
+        img = self._sim_cache.get(key)
+        if img is None:
+            raw = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            if raw is None:
+                raise CameraError(f"SimulatorCamera: failed to decode {path}")
+            img = _to_preview(raw, width)
+            self._sim_cache = {key: img}
+        e, a, st, lv = self.SIM_EMPTY, self.SIM_ARRIVE, self.SIM_STILL, self.SIM_LEAVE
+        k = self._sim_tick % (e + a + st + lv)
+        self._sim_tick += 1
+        h, w = img.shape[:2]
+        if k < e:
+            self._sim_phase = "empty"
+            return np.full_like(img, 12)
+        if k < e + a:
+            self._sim_phase = "moving"
+            shift = int(round((e + a - k) / a * w))      # 오른쪽에서 들어온다
+        elif k < e + a + st:
+            self._sim_phase = "still"
+            return img.copy()
+        else:
+            self._sim_phase = "moving"
+            shift = -int(round((k - e - a - st + 1) / lv * w))  # 왼쪽으로 나간다
+        out = np.full_like(img, 12)
+        if 0 < shift < w:
+            out[:, shift:] = img[:, : w - shift]
+        elif -w < shift < 0:
+            out[:, : w + shift] = img[:, -shift:]
+        return out
 
     @property
     def last_index(self) -> int:
@@ -582,6 +653,10 @@ class PiCameraAdapter(CameraAdapter):
     - AIVIS_PICAM_SWAP_RB       : "true"/"1" 이면 취득 후 RGB↔BGR 스왑(기본 false).
     - AIVIS_PICAM_WARMUP_FRAMES : start 후 버릴 워밍업 프레임 수(기본 2). AE/AWB
       수렴 및 초기 흐린 프레임 제거용.
+    - AIVIS_PICAM_LORES         : 저해상도 감시 스트림(lores) 사용. 기본은
+      AIVIS_TRIGGER=vision 일 때 켜진다(2026-10-16 영상 트리거). 고해상도 촬영
+      설정(main)은 그대로이고, 같은 센서에서 작은 흑백 영상을 함께 받아 preview()
+      가 싸게 준다. 카메라가 거부하면 lores 없이 다시 열고 main 을 줄여 쓴다.
 
     설치(라즈베리파이 OS 64bit):
         sudo apt install -y python3-picamera2
@@ -597,6 +672,8 @@ class PiCameraAdapter(CameraAdapter):
         size: Optional[str] = None,
         swap_rb: Optional[bool] = None,
         warmup_frames: Optional[int] = None,
+        lores: Optional[bool] = None,
+        lores_width: int = 320,
     ) -> None:
         # 생성은 항상 성공한다(picamera2 미설치여도). 디바이스는 lazy open.
         size_str = size or os.environ.get("AIVIS_PICAM_SIZE", self._DEFAULT_SIZE)
@@ -610,6 +687,15 @@ class PiCameraAdapter(CameraAdapter):
             if warmup_frames is not None
             else os.environ.get("AIVIS_PICAM_WARMUP_FRAMES", self._DEFAULT_WARMUP)
         )
+        if lores is None:
+            raw = os.environ.get("AIVIS_PICAM_LORES", "").strip().lower()
+            if raw:
+                lores = raw in ("1", "true", "yes", "on")
+            else:
+                lores = os.environ.get("AIVIS_TRIGGER", "").strip().lower() == "vision"
+        self.lores = bool(lores)
+        self.lores_width = int(lores_width)
+        self._lores_size: Optional[tuple] = None  # 실제로 켜진 lores (w, h)
         self._recipe: dict = {}
         self._controls: dict = {}   # 마지막으로 산출한 picamera2 컨트롤(검증/디버깅).
         self._picam2 = None
@@ -684,10 +770,23 @@ class PiCameraAdapter(CameraAdapter):
             if rw and rh:
                 w, h = int(rw), int(rh)
             picam2 = Picamera2()
-            cfg = picam2.create_still_configuration(
-                main={"size": (w, h), "format": "RGB888"}
-            )
-            picam2.configure(cfg)
+            main = {"size": (w, h), "format": "RGB888"}
+            self._lores_size = None
+            cfg = None
+            if self.lores:
+                lw = max(64, (self.lores_width // 32) * 32)
+                lh = max(2, int(round(lw * h / w / 2)) * 2)
+                try:
+                    cfg = picam2.create_still_configuration(
+                        main=main, lores={"size": (lw, lh), "format": "YUV420"}
+                    )
+                    picam2.configure(cfg)
+                    self._lores_size = (lw, lh)
+                except Exception:  # noqa: BLE001 - lores 미지원 → main 만으로
+                    cfg = None
+            if cfg is None:
+                cfg = picam2.create_still_configuration(main=main)
+                picam2.configure(cfg)
             picam2.start()
             resolved = self._build_controls(ctrl_controls)
             if resolved:
@@ -741,6 +840,23 @@ class PiCameraAdapter(CameraAdapter):
                 f"PiCameraAdapter.grab: capture_array 실패 ({exc})"
             ) from exc
         return _finalize_pi_frame(arr, self.swap_rb)
+
+    def preview(self, width: int = 320) -> np.ndarray:
+        """감시용 흑백 미리보기. lores(YUV420)의 Y 평면을 그대로 쓴다 — 고해상도 촬영 없이.
+
+        lores 가 꺼져 있거나 읽기에 실패하면 main 을 줄여 쓴다(느리지만 동작).
+        """
+        if not self._started:
+            self._open()
+        if self._lores_size is not None:
+            try:
+                arr = self._picam2.capture_array("lores")
+                lw, lh = self._lores_size
+                y = np.asarray(arr)[:lh, :lw]
+                return _to_preview(np.ascontiguousarray(y, dtype=np.uint8), width)
+            except Exception:  # noqa: BLE001 - lores 실패 → 다음부터 main 축소로
+                self._lores_size = None
+        return _to_preview(self.grab(), width)
 
     def close(self) -> None:
         """리소스 해제. 미open 이면 무해."""

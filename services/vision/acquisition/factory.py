@@ -16,6 +16,7 @@ from .trigger import (
     MqttTrigger,
     TimerTrigger,
     TriggerSource,
+    VisionTrigger,
 )
 
 
@@ -26,8 +27,9 @@ def get_camera_mode() -> str:
 def get_trigger_mode() -> str:
     """실 트리거 소스 선택(genicam 모드 한정). 기본은 timer.
 
-    AIVIS_TRIGGER=timer|filewatch|dio|mqtt|gpio (gpio = 라즈베리파이 근접센서).
-    sim 모드에서는 항상 timer/filewatch(시뮬레이터)만 사용한다.
+    AIVIS_TRIGGER=timer|filewatch|dio|mqtt|gpio|vision
+    (gpio = 라즈베리파이 근접센서, vision = 카메라 영상으로 판단 — 2026-10-16).
+    sim 모드에서는 timer, 또는 vision(가상 컨베이어 장면)만 쓴다.
     """
     return os.environ.get("AIVIS_TRIGGER", "timer").strip().lower()
 
@@ -57,27 +59,33 @@ def create_camera(
     )
 
 
-def create_trigger(interval_s: float = 0.0) -> TriggerSource:
+def create_trigger(interval_s: float = 0.0, *, camera: Optional[CameraAdapter] = None,
+                   mode_provider=None) -> TriggerSource:
     """트리거 소스 생성.
 
-    - sim 모드: 항상 TimerTrigger(시뮬레이터). 결정적·외부의존 없음.
-    - picam 모드: 기본 TimerTrigger(소프트웨어 트리거). 라즈베리파이는 컨베이어
-      근접센서를 GPIO 로 받는 하드웨어 트리거가 자연스러우나, 그 결선은 향후
-      단계에서 GPIO 트리거 소스로 추가한다(현재는 SW 타이머로 동작 보장).
-    - genicam 모드: AIVIS_TRIGGER 로 실 트리거 선택(dio/mqtt). 생성은 항상
+    - AIVIS_TRIGGER=vision(모든 카메라 모드): VisionTrigger — 카메라 미리보기로 도착·정지·
+      반출을 보고 찍는다. camera 가 필요하다(워커가 넘긴다). mode_provider() 가
+      "arrival"|"departure" 를 돌려주면 검사 모드에 따라 자동 전환(크레이트 = 반출).
+    - sim 모드: 그 밖에는 TimerTrigger(시뮬레이터). 결정적·외부의존 없음.
+    - picam 모드: AIVIS_TRIGGER=gpio 면 근접센서, 아니면 SW 타이머.
+    - genicam 모드: AIVIS_TRIGGER 로 실 트리거 선택(dio/mqtt/gpio). 생성은 항상
       성공하고, wait_for_trigger 시점에 드라이버/SDK 를 요구한다(안내 예외).
     """
     mode = get_camera_mode()
+    tmode = get_trigger_mode()
+    if tmode == "vision":
+        if camera is None:
+            raise ValueError("AIVIS_TRIGGER=vision 에는 camera 가 필요하다(create_trigger(camera=...))")
+        return VisionTrigger(camera, mode_provider=mode_provider)
     if mode == "sim":
         return TimerTrigger(interval_s=interval_s)
     if mode == "picam":
         # 라즈베리파이: AIVIS_TRIGGER=gpio 면 컨베이어 근접센서(GPIO)로 찍는다.
         # 기본은 종전대로 SW 타이머(센서 결선 전에도 돌아가게).
-        if get_trigger_mode() == "gpio":
+        if tmode == "gpio":
             return GpioTrigger()
         return TimerTrigger(interval_s=interval_s)
     # genicam 모드: 실 트리거 결선(생성은 성공, 대기 시 SDK/드라이버 필요).
-    tmode = get_trigger_mode()
     if tmode == "dio":
         return DigitalIOTrigger()
     if tmode == "mqtt":

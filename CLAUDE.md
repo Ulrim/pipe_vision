@@ -443,7 +443,10 @@ CREATE TABLE sys_log (
 `AIVIS_STORAGE_BACKEND=api` 로 사진을 1호기에 올린다(`PUT /inspection/images/{key}`,
 실패 시 스풀 보존 후 재전송). 하루 경계("오늘")는 KST 0시. 모드 간 결합(길이+표면+개수)은
 **LOT 단위**로 한다(`GET /inspection/lot-summary`) — 다발 튜브는 스테이션 사이 낱개 추적이 안 된다.
-파이 GPIO: 근접센서 트리거(`AIVIS_TRIGGER=gpio`), 경광등·부저(`AIVIS_TOWER_*`) — `docs/OPERATIONS_PI.md` §11. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
+촬영 시점: **영상 트리거(`AIVIS_TRIGGER=vision`, 2026-10-16 권장)** — 센서 없이 저해상도 흑백 영상(파이 lores)으로
+검사 영역만 보다가 길이·표면은 '들어와 멈추면 1장', 크레이트는 '빠지기 직전 마지막 장면 1장'(판당 1건 — MES 가 판 개수를
+더한다). 빈 장면은 한 번 찍어 검출 0 이면 저장·전송 없이 학습. 대안 근접센서(`AIVIS_TRIGGER=gpio`). 경광등·부저(`AIVIS_TOWER_*`)
+— `docs/OPERATIONS_PI.md` §11. HMI 는 NG 사유를 **수치로** 적는다 — "길이 −0.18mm
 (허용 −0.10)", "유분기 0.62 > 기준 0.40", "개수 18 / 기준 20 (−2)".
 
 ### 7.3 MES 연계 인터페이스 (`docs/MES_INTERFACE.md`)

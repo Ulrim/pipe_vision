@@ -46,6 +46,8 @@ from vision.multi import (  # noqa: E402
 
 from vision.imaging.save import save_count_images  # noqa: E402
 from vision.multi.bundle import count_bundle  # noqa: E402
+from vision.multi.segment import segment_tubes  # noqa: E402
+from vision.acquisition import GrabResult, VisionTrigger  # noqa: E402
 from aivis_types import DefectCode, InspectionResult, InspectionStage, Verdict  # noqa: E402
 
 from .client import ApiClient
@@ -202,7 +204,13 @@ class Worker:
                 max_retries=3,
                 grab_timeout_s=self.cfg.grab_timeout_s,
             )
-            self.trigger = create_trigger(interval_s=self.cfg.interval_s)
+            self.trigger = create_trigger(
+                interval_s=self.cfg.interval_s, camera=self.camera,
+                mode_provider=self._vision_mode,
+            )
+            if isinstance(self.trigger, VisionTrigger):
+                log.info("영상 트리거: 검사 영역 %s, 모드 %s(크레이트 개수 = 반출 직전 1장)",
+                         self.trigger.roi, self.trigger.mode())
             return True
         except Exception as exc:  # noqa: BLE001
             log.error("카메라/트리거 초기화 실패: %s", exc)
@@ -483,6 +491,40 @@ class Worker:
         except Exception as exc:  # noqa: BLE001
             log.debug("status 하트비트 구성/전송 예외(무시): %s", exc)
 
+    # --- 영상 트리거(2026-10-16) ---
+    def _vision_mode(self) -> str:
+        """크레이트 개수는 '반출 직전 마지막 장면 1장'(판당 1건), 나머지는 '도착 후 정지'."""
+        return "departure" if self._cur_stage() == InspectionStage.CRATE_COUNT.value else "arrival"
+
+    def _vision(self) -> Optional[VisionTrigger]:
+        return self.trigger if isinstance(self.trigger, VisionTrigger) else None
+
+    def _grab_cycle(self):
+        """이번 사이클 사진. 반출 모드가 보관해 둔 사진이 있으면 그것(그 순간이 검사 시각)."""
+        take = getattr(self.trigger, "take_frame", None)
+        held = take() if callable(take) else None
+        if held is not None:
+            frame, at = held
+            return GrabResult(frame=frame, attempts=1), at
+        return self.acq.grab_with_retry(), None
+
+    @staticmethod
+    def _looks_empty(detected: int, expected: int) -> bool:
+        """영상 트리거가 낸 사진이 '빈 장면' 인가. 무늬 있는 배경에서 가짜 튜브 1~2개가
+        잡히는 경우까지 빈 것으로 본다(20개 기준이면 2개 이하)."""
+        if detected <= 0:
+            return True
+        return expected >= 5 and detected <= max(1, expected // 10)
+
+    def _vision_empty(self, detected: int) -> None:
+        """빈 장면이었다 — 저장·전송하지 않고, 트리거가 그 장면을 배우게 한 뒤 '제품 대기'."""
+        trig = self._vision()
+        if trig is not None:
+            trig.learn_empty()
+            log.info("영상 트리거: 제품 없음(검출 %d) — 빈 장면으로 학습(%d개 기억)",
+                     detected, trig.empty_scenes)
+        self._send_idle_status()
+
     def _send_idle_status(self) -> None:
         """센서 트리거 대기 중(제품 없음) 하트비트 — 촬영은 안 했다.
 
@@ -554,7 +596,7 @@ class Worker:
         pending_images: list[str] = []
         clock = CycleClock()  # 취득 시작 = 처리시간 기준점(§1.2 지표3)
         try:
-            grab = self.acq.grab_with_retry()
+            grab, held_at = self._grab_cycle()
             if not grab.ok:
                 log.warning("프레임 취득 실패: %s", grab.error)
                 self.failure += 1
@@ -572,7 +614,12 @@ class Worker:
                 )
                 return False
             clock.mark("grab")
-            inspected_at = datetime.now(timezone.utc)
+            inspected_at = held_at or datetime.now(timezone.utc)
+            if self._vision() is not None and not segment_tubes(
+                    grab.frame, axis=self._orientation(), expected_count=None):
+                # 영상 트리거가 빈 장면에 쏘았다 — '끝단 검출 실패' NG 를 만들지 않는다.
+                self._vision_empty(0)
+                return True
             # 판정 → 이미지 저장 순. 처리시간은 계획서 정의대로 **취득 시작 ~ 이미지
             # 저장 완료**를 잰다(2026-10-10 점검: 종전엔 판정 구간만 재 짧게 나왔다).
             # length_span(끝단 2점·측정선)을 함께 받아 결과 오버레이에 측정 근거를 그린다.
@@ -708,7 +755,7 @@ class Worker:
         assert self.item is not None and self.acq is not None
         clock = CycleClock()
         try:
-            grab = self.acq.grab_with_retry()
+            grab, held_at = self._grab_cycle()
             if not grab.ok:
                 log.warning("프레임 취득 실패(배치): %s", grab.error)
                 self.failure += 1
@@ -725,13 +772,17 @@ class Worker:
                 )
                 return False
             clock.mark("grab")
-            inspected_at = datetime.now(timezone.utc)
+            inspected_at = held_at or datetime.now(timezone.utc)
             expected = int(getattr(self.item, "expected_count", 1) or 1)
             batch = inspect_batch(
                 grab.frame, self.item, expected_count=expected,
                 axis=self._orientation(), stage=self._cur_stage(),
             )
             clock.mark("infer")
+            if self._vision() is not None and self._looks_empty(len(batch.tubes), expected):
+                # 빈 컨베이어 — 사진을 올리지도, '미검출' 경고를 띄우지도 않는다.
+                self._vision_empty(len(batch.tubes))
+                return True
             saved = save_batch_images(
                 grab.frame,
                 batch,
@@ -833,7 +884,7 @@ class Worker:
         expected = int(getattr(self.item, "expected_count", 1) or 1)
         clock = CycleClock()
         try:
-            grab = self.acq.grab_with_retry()
+            grab, held_at = self._grab_cycle()
             if not grab.ok:
                 log.warning("프레임 취득 실패(개수): %s", grab.error)
                 self.failure += 1
@@ -844,10 +895,14 @@ class Worker:
                                   error=grab.error)
                 return False
             clock.mark("grab")
-            inspected_at = datetime.now(timezone.utc)
+            inspected_at = held_at or datetime.now(timezone.utc)
             bundle = count_bundle(grab.frame)
             clock.mark("infer")
             detected = int(bundle.count)
+            if self._vision() is not None and self._looks_empty(detected, expected):
+                # 빈 자리(크레이트 없음) — '개수 0 NG' 를 만들지 않는다.
+                self._vision_empty(detected)
+                return True
             mismatch = detected != expected
             verdict = Verdict.NG.value if mismatch else Verdict.OK.value
             codes = [DefectCode.COUNT.value] if mismatch else []

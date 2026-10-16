@@ -62,7 +62,7 @@ proc_time 합산) → `InspectionResult` 로 변환 → api `POST /inspection` �
 
 - `CameraAdapter`: `SimulatorCamera`(데이터셋 폴더 리플레이) | `GenICamCamera`(실 산업 카메라).
   - 환경변수 `AIVIS_CAMERA=sim|genicam` 으로 스위치. **모든 테스트는 sim 으로 통과**한다.
-- `TriggerSource`: `AIVIS_TRIGGER=timer|filewatch|dio|mqtt`.
+- `TriggerSource`: `AIVIS_TRIGGER=timer|filewatch|dio|mqtt|gpio|vision`. `vision`(영상 트리거)은 `CameraAdapter.preview()`(저해상도 흑백 — 파이는 lores 스트림)로 도착·정지·반출을 보고 찍는다(`acquisition/trigger.py` `VisionTrigger`).
 - 실카메라/트리거 통합(P7)은 어댑터 결선만으로 끝나며 상위 파이프라인은 불변이다.
 
 ## 4. 모노레포 / 소유권 경계 (§3.1)

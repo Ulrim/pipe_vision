@@ -145,9 +145,11 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aivis-vision.service
 | `AIVIS_REMOTE_RAW` | `ng` (원본은 NG·재확인·수집용 LOT 만. 나머지는 결과 사진만) |
 | `AIVIS_REMOTE_JPEG_QUALITY` | `80` |
 | `AIVIS_CAM_ID` | `PI-CAM1`, 2호기는 `PI-CAM2` — **대마다 다르게** |
-| `AIVIS_TRIGGER` | `gpio` 권장(제품이 올 때만 찍는다 — 타이머는 빈 컨베이어도 올린다) |
+| `AIVIS_TRIGGER` | **`vision`**(영상 트리거 — 센서 없이 제품이 들어와 멈출 때만 찍는다. 설치 때 검사 영역을 맞춘다: `docs/OPERATIONS_PI.md` §11-1). 타이머는 빈 컨베이어도 올리므로 쓰지 않는다 |
+| `AIVIS_VISION_ROI` | 검사 영역(조정 도구로 정한 값) |
 | `AIVIS_SEED_ADMIN_*` | **비워 둔다**(관리자 비밀번호를 파이에 두지 않는다) |
 
+- 영상 트리거의 감시 영상은 파이 안에서만 쓰고 인터넷으로 나가지 않는다(찍은 사진만 올라간다).
 - 인터넷이 끊기면 결과·사진을 `AIVIS_SPOOL_DIR` 에 쌓았다가 복구되면 오래된 것부터 보낸다.
 - **파이 모니터(키오스크)** 는 클라우드 작업자 화면을 띄운다 — `docs/OPERATIONS_PI.md` 키오스크
   설정의 주소를 `https://aivis-hmi.vercel.app/?cam=PI-CAM1` 로 바꾼다(`?cam=` 로 그 라인만).
@@ -195,7 +197,7 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aivis-vision.service
 |---|---|---|
 | 타이머 1.5초 + 원본 전부(`all`) | 약 25GB | 클라우드에 부적합 |
 | 타이머 1.5초 + `ng` | 약 6GB | 결과 사진 위주 |
-| 근접센서(예: 20초에 한 다발) + `ng` | 약 0.5GB | **권장** |
+| 영상 트리거(예: 20초에 한 다발) + `ng` | 약 0.5GB | **권장** |
 
 - **보관기한**: api 가 `AIVIS_REMOTE_RETENTION_DAYS`(기본 90일)보다 오래된 사진을 Supabase 에서
   지운다(검사 기록은 DB 에 남고, 화면에는 "보관기간 경과"). 0 이면 끈다.

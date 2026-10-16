@@ -299,3 +299,318 @@ class GpioTrigger(TriggerSource):
                 self._backend.close()
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _parse_roi(raw: Optional[str]) -> tuple:
+    """검사 영역 "x0,y0,x1,y1"(화면 비율 0~1). 잘못되면 화면 전체."""
+    try:
+        x0, y0, x1, y1 = (float(v) for v in str(raw).split(","))
+    except (TypeError, ValueError):
+        return (0.0, 0.0, 1.0, 1.0)
+    x0, x1 = sorted((min(max(x0, 0.0), 1.0), min(max(x1, 0.0), 1.0)))
+    y0, y1 = sorted((min(max(y0, 0.0), 1.0), min(max(y1, 0.0), 1.0)))
+    if x1 - x0 < 0.02 or y1 - y0 < 0.02:
+        return (0.0, 0.0, 1.0, 1.0)
+    return (x0, y0, x1, y1)
+
+
+def _envf(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
+
+
+class VisionTrigger(TriggerSource):
+    """영상 트리거 — 센서 없이 카메라 영상으로 '찍을 때' 를 정한다(2026-10-16).
+
+    카메라의 저해상도 흑백 미리보기(preview)를 초당 몇 장씩 **검사 영역만** 보고,
+    고해상도 사진은 필요할 때 한 장만 찍는다. 영상은 파이 밖으로 나가지 않는다.
+
+    **도착(arrival) — 길이·표면 스테이션**: 영역에서 큰 움직임이 있었고(다발이 들어옴)
+    움직임이 멈춘 뒤 settle 동안 조용하면 한 번 쏜다. 같은 품목 다발은 서로 거의 똑같아
+    보이므로 "지난 장면과 다른가" 로는 새 다발을 구분할 수 없다 — 대신 **움직이는 동안
+    장면이 크게 바뀌었는가**(컨베이어가 움직였다)를 본다. 손이 잠깐 지나간 정도(작은
+    변화)면 끝난 장면이 직전과 같을 때 다시 찍지 않는다. 파이 카메라는 롤링 셔터라
+    멈춘 뒤 찍어야 길이가 안 틀어진다 — 근접센서는 '왔다' 만 알지만 이것은 멈춘 것을 본다.
+
+    **반출(departure) — 크레이트 개수 스테이션**: 크레이트 한 판 = 개수 1건이어야 한다
+    (MES 생산실적이 판 개수를 더한다). 작업자가 튜브를 넣을 때마다 세면 한 판이 여러 번
+    더해진다. 그래서 조용해질 때마다 고해상도 사진을 **보관만** 하고, 크레이트가 빠지면
+    (장면이 크게 바뀌거나 단면 무늬가 줄면) **빠지기 직전의 마지막 사진**을 한 번 낸다.
+    워커는 take_frame() 으로 그 사진을 받는다.
+
+    **빈 장면 학습**: 처음 조용해진 장면은 일단 쏜다. 워커가 그 사진에서 제품을 못 찾으면
+    learn_empty() 를 불러 '빈 장면' 으로 기억하고, 이후 그 장면에서는 쏘지 않는다. 조명이
+    바뀌어 빈 장면이 달라 보여도 한 번 더 쏘고 다시 배운다(최근 5개 기억).
+
+    환경변수(기본값):
+      AIVIS_VISION_ROI           "0,0,1,1"  검사 영역(화면 비율 x0,y0,x1,y1)
+      AIVIS_VISION_FPS           8          미리보기 확인 빈도
+      AIVIS_VISION_SETTLE_MS     400        도착: 멈춘 뒤 이만큼 조용하면 촬영
+      AIVIS_VISION_DEPART_SETTLE_MS 1500    반출: 손이 빠지고 이만큼 조용하면 보관
+      AIVIS_VISION_PIXEL_DELTA   20         밝기 차가 이보다 큰 화소를 '바뀐 화소'로
+      AIVIS_VISION_MOTION        0.004      움직임 판정(바뀐 화소 비율, 연속 두 장)
+      AIVIS_VISION_CHANGE        0.02       같은 장면 판정(바뀐 화소 비율)
+      AIVIS_VISION_BIG_CHANGE    0.35       큰 변화(새 다발·크레이트 반출)
+      AIVIS_VISION_DEPART_DROP   0.15       반출: 단면 무늬가 이 비율 이상 줄면 빠진 것
+      AIVIS_VISION_MODE          auto       auto(검사 모드로 자동)|arrival|departure
+      AIVIS_VISION_PREVIEW_WIDTH 320
+    현장 조정: python -m vision.tools.vision_trigger_preview (docs/OPERATIONS_PI.md §11-1)
+    """
+
+    event_driven = True
+    ARRIVAL = "arrival"
+    DEPARTURE = "departure"
+    _MAX_EMPTIES = 5
+
+    def __init__(
+        self,
+        camera,
+        *,
+        mode_provider=None,
+        roi: Optional[tuple] = None,
+        fps: Optional[float] = None,
+        settle_ms: Optional[float] = None,
+        depart_settle_ms: Optional[float] = None,
+        pixel_delta: Optional[int] = None,
+        motion: Optional[float] = None,
+        change: Optional[float] = None,
+        big_change: Optional[float] = None,
+        depart_drop: Optional[float] = None,
+        mode: Optional[str] = None,
+        preview_width: Optional[int] = None,
+        clock=time.monotonic,
+        sleep=time.sleep,
+    ) -> None:
+        import logging
+
+        self._log = logging.getLogger("aivis.vision_trigger")
+        self.camera = camera
+        self.mode_provider = mode_provider
+        forced = (mode or os.environ.get("AIVIS_VISION_MODE", "auto")).strip().lower()
+        self.forced_mode = forced if forced in (self.ARRIVAL, self.DEPARTURE) else None
+        self.roi = roi or _parse_roi(os.environ.get("AIVIS_VISION_ROI", "0,0,1,1"))
+        self.fps = float(fps if fps is not None else _envf("AIVIS_VISION_FPS", 8))
+        self.settle_s = (settle_ms if settle_ms is not None
+                         else _envf("AIVIS_VISION_SETTLE_MS", 400)) / 1000.0
+        self.depart_settle_s = (depart_settle_ms if depart_settle_ms is not None
+                                else _envf("AIVIS_VISION_DEPART_SETTLE_MS", 1500)) / 1000.0
+        self.pixel_delta = int(pixel_delta if pixel_delta is not None
+                               else _envf("AIVIS_VISION_PIXEL_DELTA", 20))
+        self.motion_thr = float(motion if motion is not None else _envf("AIVIS_VISION_MOTION", 0.004))
+        self.change_thr = float(change if change is not None else _envf("AIVIS_VISION_CHANGE", 0.02))
+        self.big_change = float(big_change if big_change is not None
+                                else _envf("AIVIS_VISION_BIG_CHANGE", 0.35))
+        self.depart_drop = float(depart_drop if depart_drop is not None
+                                 else _envf("AIVIS_VISION_DEPART_DROP", 0.15))
+        self.preview_width = int(preview_width if preview_width is not None
+                                 else _envf("AIVIS_VISION_PREVIEW_WIDTH", 320))
+        self._clock = clock
+        self._sleep = sleep
+        self.fired = 0
+        self.last_metrics: dict = {}
+        self._last_err_log = -1e9
+        self._mode_seen: Optional[str] = None
+        self._reset_state()
+
+    # --- 상태 ---------------------------------------------------------------
+    def _reset_state(self) -> None:
+        self._prev = None            # 직전 미리보기(정규화 int16)
+        self._still_since = None
+        self._moved = True           # 기동 직후 첫 정지 장면은 한 번 본다
+        self._episode_peak = 0.0     # 이번 움직임 동안 기준 장면 대비 최대 변화
+        self._baseline = None        # 도착: 마지막으로 처리한 장면
+        self._last_fired = None      # 마지막으로 낸 장면(빈 장면 학습용)
+        self._held = None            # 반출: 보관 중인 마지막 정지 장면
+        self._pending = None         # 반출: 워커에 넘길 사진
+        self._empties: list = []
+
+    def mode(self) -> str:
+        if self.forced_mode:
+            m = self.forced_mode
+        else:
+            m = None
+            if self.mode_provider is not None:
+                try:
+                    m = self.mode_provider()
+                except Exception:  # noqa: BLE001
+                    m = None
+            m = m if m in (self.ARRIVAL, self.DEPARTURE) else self.ARRIVAL
+        if m != self._mode_seen:
+            if self._mode_seen is not None:
+                self._log.info("영상 트리거 모드 전환: %s → %s", self._mode_seen, m)
+                empties = self._empties
+                self._reset_state()
+                self._empties = empties  # 같은 카메라의 빈 장면은 그대로 쓴다
+            self._mode_seen = m
+        return m
+
+    # --- 측정 ---------------------------------------------------------------
+    def _read(self):
+        import cv2
+        import numpy as np
+
+        g = self.camera.preview(self.preview_width)
+        g = np.asarray(g)
+        if g.ndim == 3:
+            g = cv2.cvtColor(g, cv2.COLOR_BGR2GRAY)
+        h, w = g.shape[:2]
+        x0, y0, x1, y1 = self.roi
+        xa, xb = int(x0 * w), max(int(x0 * w) + 2, int(round(x1 * w)))
+        ya, yb = int(y0 * h), max(int(y0 * h) + 2, int(round(y1 * h)))
+        crop = cv2.GaussianBlur(np.ascontiguousarray(g[ya:yb, xa:xb]), (5, 5), 0)
+        return crop, crop.astype(np.int16)
+
+    def _frac(self, a, b) -> float:
+        """두 장면에서 '바뀐 화소' 비율.
+
+        화면 전체 밝기 변화(조명·자동노출)는 장면 변화가 아니다 — 차이 영상의 중앙값을
+        빼고 센다. 각 장면의 중앙값을 따로 빼면 안 된다: 튜브가 영역의 절반쯤을 덮으면
+        손 하나만 들어와도 중앙값이 배경↔튜브 밝기 사이를 오가 화면 전체가 바뀐 것처럼
+        보인다(시험에서 확인). 차이의 중앙값은 국소 변화로는 움직이지 않는다.
+        """
+        import numpy as np
+
+        if a is None or b is None or a.shape != b.shape:
+            return 1.0
+        d = a - b
+        d = d - int(np.median(d))
+        return float(np.mean(np.abs(d) > self.pixel_delta))
+
+    @staticmethod
+    def _texture(gray) -> float:
+        """단면 무늬(튜브 끝 고리) 양 — 크레이트가 빠지면 준다."""
+        import cv2
+        import numpy as np
+
+        return float(np.mean(np.abs(cv2.Laplacian(gray, cv2.CV_16S, ksize=3))))
+
+    def _matches_empty(self, cur) -> bool:
+        return any(self._frac(cur, e) <= self.change_thr for e in self._empties)
+
+    # --- 한 장 처리 -----------------------------------------------------------
+    def _step(self, gray, cur, now: float) -> bool:
+        mode = self.mode()
+        prev, self._prev = self._prev, cur
+        if prev is None or prev.shape != cur.shape:
+            self._still_since = None
+            return False
+        motion = self._frac(cur, prev)
+        ref = self._baseline if mode == self.ARRIVAL else (
+            self._held["preview"] if self._held else None)
+        change = self._frac(cur, ref) if ref is not None else None
+        self.last_metrics = {"mode": mode, "motion": round(motion, 4),
+                             "change": None if change is None else round(change, 4)}
+        if motion > self.motion_thr:
+            self._still_since = None
+            self._moved = True
+            if change is not None:
+                self._episode_peak = max(self._episode_peak, change)
+            return False
+        if self._still_since is None:
+            self._still_since = now
+            return False
+        settle = self.settle_s if mode == self.ARRIVAL else self.depart_settle_s
+        if now - self._still_since < settle or not self._moved:
+            return False
+        self._moved = False
+        peak, self._episode_peak = self._episode_peak, 0.0
+        if mode == self.ARRIVAL:
+            return self._stable_arrival(cur, peak)
+        return self._stable_departure(gray, cur)
+
+    def _stable_arrival(self, cur, peak: float) -> bool:
+        if self._matches_empty(cur):
+            self._baseline = cur
+            return False
+        if (self._baseline is not None and peak < self.big_change
+                and self._frac(cur, self._baseline) <= self.change_thr):
+            return False  # 손이 잠깐 지나갔을 뿐 — 같은 다발이다
+        self._baseline = cur
+        self._last_fired = cur
+        self.fired += 1
+        return True
+
+    def _stable_departure(self, gray, cur) -> bool:
+        if self._matches_empty(cur):
+            if self._held is None:
+                return False
+            return self._emit(None)  # 크레이트가 빠지고 빈 자리가 됐다
+        tex = self._texture(gray)
+        if self._held is None:
+            self._hold(cur, tex)
+            return False
+        d = self._frac(cur, self._held["preview"])
+        if d <= self.change_thr:
+            return False  # 손이 지나갔을 뿐
+        if d >= self.big_change or tex < self._held["texture"] * (1.0 - self.depart_drop):
+            return self._emit((cur, tex))  # 크레이트가 빠졌다(또는 다른 판으로 바뀌었다)
+        self._hold(cur, tex)  # 튜브를 더 넣었다 — 더 최신 장면을 보관
+        return False
+
+    def _hold(self, cur, tex: float) -> None:
+        from datetime import datetime, timezone
+
+        try:
+            frame = self.camera.grab()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("영상 트리거: 보관 사진 촬영 실패(%s)", exc)
+            return
+        self._held = {"frame": frame, "preview": cur, "texture": tex,
+                      "at": datetime.now(timezone.utc)}
+
+    def _emit(self, next_scene) -> bool:
+        self._pending = self._held
+        self._last_fired = self._held["preview"]
+        self._held = None
+        if next_scene is not None:
+            self._hold(*next_scene)
+        self.fired += 1
+        return True
+
+    # --- 공개 ---------------------------------------------------------------
+    def poll_once(self) -> bool:
+        """미리보기 한 장을 보고 판단한다(현장 조정 도구·시험용). 쏘면 True."""
+        now = self._clock()
+        gray, cur = self._read()
+        return self._step(gray, cur, now)
+
+    def wait_for_trigger(self, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else self._clock() + timeout
+        period = 1.0 / self.fps if self.fps > 0 else 0.0
+        while True:
+            t0 = self._clock()
+            if deadline is not None and t0 >= deadline:
+                return False
+            try:
+                if self.poll_once():
+                    return True
+            except Exception as exc:  # noqa: BLE001 - 카메라 일시 오류는 기다렸다 다시
+                # 한두 장 빠지는 것은 흔하다 — 정지 판정을 처음부터 다시 하지 않는다.
+                if t0 - self._last_err_log > 60:
+                    self._log.warning("영상 트리거: 미리보기 실패(%s) — 계속 시도", exc)
+                    self._last_err_log = t0
+            wait = period - (self._clock() - t0)
+            if deadline is not None:
+                wait = min(wait, deadline - self._clock())
+            if wait > 0:
+                self._sleep(wait)
+
+    def take_frame(self):
+        """반출 모드가 보관해 둔 사진 (frame, 촬영 시각) — 없으면 None(워커가 새로 찍는다)."""
+        p, self._pending = self._pending, None
+        return None if p is None else (p["frame"], p["at"])
+
+    def learn_empty(self) -> None:
+        """워커: 방금 낸 사진에 제품이 없었다 — 그 장면을 빈 장면으로 기억한다."""
+        ref = self._last_fired
+        if ref is None:
+            return
+        self._empties = (self._empties + [ref])[-self._MAX_EMPTIES:]
+        if self.mode() == self.ARRIVAL:
+            self._baseline = ref
+
+    @property
+    def empty_scenes(self) -> int:
+        return len(self._empties)
