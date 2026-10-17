@@ -30,6 +30,7 @@ from .length import LengthSpan, measure_length_ex
 from .calib.fiducial import (
     FiducialConfig,
     FiducialError,
+    FiducialScale,
     measure_scale,
 )
 from .calib.fiducial import resolve_config as resolve_fiducial_config
@@ -126,6 +127,31 @@ class StageTimings:
     total_ms: int = 0
 
 
+@dataclass(frozen=True)
+class FrameCalibration:
+    """전체 프레임에서 **한 번** 한 렌즈 보정·기준자 읽기 결과 — 다발(배치) 검사용.
+
+    튜브 crop 은 센서 전체가 아니다. crop 에 렌즈 보정을 다시 걸면 광학 중심이 아니라
+    crop 중심으로 방사 보정해 끝단을 엉뚱하게 휘고, 기준자 ROI(프레임 픽셀)는 crop 에
+    없어 못 읽는다. 그래서 inspect_batch 가 prepare_frame 으로 프레임에서 한 번 하고,
+    튜브마다 이 값을 run_with_geometry(frame_calib=) 로 넘긴다 — 넘겨받으면 둘 다 다시
+    하지 않는다.
+    """
+
+    #: 이 프레임의 기준자. prepare_frame 이 준 값은 프레임 좌표, 튜브에 넘길 때는
+    #: 그 crop 의 측정(x) 좌표로 옮긴 값이다(FiducialScale.remapped).
+    gauge: Optional[FiducialScale] = None
+    #: 기준자를 못 읽은 사유 — 튜브마다 저장된 스케일로 재고 같은 기록을 남긴다.
+    gauge_error: Optional[str] = None
+    #: 렌즈 보정 실패 사유 — 튜브마다 결정적 NG(단일 경로와 같다).
+    lens_error: Optional[str] = None
+
+    @property
+    def note(self) -> Optional[str]:
+        """프레임 단위 기록(로그·BatchResult 용). 문제 없으면 None."""
+        return self.lens_error or self.gauge_error
+
+
 @dataclass
 class InspectionPipeline:
     """단일 프레임 검사 파이프라인.
@@ -191,6 +217,47 @@ class InspectionPipeline:
             self._model_cache[key] = model
         return model
 
+    def prepare_frame(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        stage: Optional[str] = None,
+        axis: str = "horizontal",
+    ) -> tuple[np.ndarray, FrameCalibration]:
+        """다발 검사: 렌즈 보정과 기준자 읽기를 **전체 프레임에서 한 번** 한다.
+
+        반환: (보정된 프레임, FrameCalibration). 튜브 분할·crop 은 보정된 프레임에서 한다.
+        기준자는 단일 경로처럼 길이를 보는 모드에서만 읽는다. axis="vertical"(세로 다발)이면
+        기준자도 세로로 놓이므로 y 축으로 읽는다(gauge 좌표 = 프레임 y). 결코 raise 하지
+        않는다 — 실패는 FrameCalibration 에 사유로 남는다.
+        """
+        try:
+            calib = self._lens_calibration()
+            if calib is not None:
+                frame_bgr = calib.undistort(frame_bgr)
+        except Exception as exc:  # noqa: BLE001
+            return frame_bgr, FrameCalibration(
+                lens_error=f"렌즈 보정 실패: {type(exc).__name__}: {exc}")
+
+        stage = stage if stage is not None else self.stage
+        if DefectCode.LEN not in codes_for_stage(stage):
+            return frame_bgr, FrameCalibration()
+        try:
+            fid = self._fiducial_config()
+            if fid is None:
+                return frame_bgr, FrameCalibration()
+            gauge = measure_scale(
+                frame_bgr,
+                pitch_mm=fid.pitch_mm,
+                roi=fid.roi,
+                dark_marks=fid.dark_marks,
+                along_y=axis == "vertical",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return frame_bgr, FrameCalibration(
+                gauge_error=f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+        return frame_bgr, FrameCalibration(gauge=gauge)
+
     def run(
         self,
         frame_bgr: np.ndarray,
@@ -224,6 +291,7 @@ class InspectionPipeline:
         *,
         stage: Optional[str] = None,
         area: Optional[InspectArea] = None,
+        frame_calib: Optional[FrameCalibration] = None,
     ) -> tuple[VerdictResult, Optional[LengthSpan]]:
         """run() + 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 결과 오버레이가
         측정 근거(끝단/측정선)를 그리도록 워커가 이 값을 save 로 넘긴다.
@@ -234,8 +302,12 @@ class InspectionPipeline:
 
         area: 검사 영역(preprocess/area.py) — 그 안에서 가장 큰 제품을 잰다. 렌즈 보정·
         기준자는 전체 프레임 기준 그대로다(그래서 자르지 않고 제품 찾기만 영역으로 한정).
+
+        frame_calib: frame_bgr 가 prepare_frame 을 거친 프레임의 **crop**(다발 튜브)일 때.
+        렌즈 보정·기준자 읽기를 crop 에 다시 하지 않고 이 값을 쓴다(gauge 는 crop 좌표).
         """
-        result, _, _, span = self._run_core(frame_bgr, item, stage=stage, area=area)
+        result, _, _, span = self._run_core(
+            frame_bgr, item, stage=stage, area=area, frame_calib=frame_calib)
         return result, span
 
     def run_safe(
@@ -262,6 +334,7 @@ class InspectionPipeline:
         *,
         stage: Optional[str] = None,
         area: Optional[InspectArea] = None,
+        frame_calib: Optional[FrameCalibration] = None,
     ) -> tuple[VerdictResult, StageTimings, Optional[str], Optional[LengthSpan]]:
         t0 = time.perf_counter()
         # ItemMaster 변환 실패는 호출자 오류이므로 그대로 raise(검사 불가).
@@ -276,16 +349,18 @@ class InspectionPipeline:
 
         # ①' 렌즈 왜곡 보정 — 전처리보다 먼저. 광각 렌즈는 가장자리가 눌려
         # 보이는데 길이는 하필 양 끝단을 쓴다. 보정 없이는 왜곡만으로 공차를
-        # 넘는다(calib/lens.py 의 측정값 참조).
+        # 넘는다(calib/lens.py 의 측정값 참조). 다발 crop(frame_calib)은 프레임에서 이미 했다.
+        lens_error = frame_calib.lens_error if frame_calib is not None else None
         try:
-            calib = self._lens_calibration()
+            calib = self._lens_calibration() if frame_calib is None else None
             if calib is not None:
                 frame_bgr = calib.undistort(frame_bgr)
         except Exception as exc:  # noqa: BLE001
+            lens_error = f"렌즈 보정 실패: {type(exc).__name__}: {exc}"
+        if lens_error:
             total = int(round((time.perf_counter() - t0) * 1000))
-            reason = f"렌즈 보정 실패: {type(exc).__name__}: {exc}"
             result = _error_verdict(master, proc_time_ms=total)
-            return result, StageTimings(total_ms=total), reason, None
+            return result, StageTimings(total_ms=total), lens_error, None
 
         # ② 전처리 — 실패해도 검사 자체는 NG 로 종료(미판정 0).
         try:
@@ -312,7 +387,7 @@ class InspectionPipeline:
             # 못 읽으면 저장된 스케일로 떨어지되 반드시 기록에 남긴다 —
             # 조용히 떨어지면 정확도가 왜 나빠졌는지 알 수 없다.
             gauge = None
-            fid = self._fiducial_config()
+            fid = self._fiducial_config() if frame_calib is None else None
             if fid is not None:
                 try:
                     gauge = measure_scale(
@@ -323,6 +398,11 @@ class InspectionPipeline:
                     )
                 except FiducialError as exc:
                     errors.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+            elif frame_calib is not None:
+                # 다발 crop 에는 기준자 띠가 없다 — 프레임에서 읽은 값(crop 좌표)을 쓴다.
+                gauge = frame_calib.gauge
+                if frame_calib.gauge_error:
+                    errors.append(frame_calib.gauge_error)
             roi_x0 = pre.length_roi.x0 if pre.length_roi is not None else 0
             length, endpoints = measure_length_ex(
                 gray_roi, master, gauge=gauge, roi_x_offset=float(roi_x0)

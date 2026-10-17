@@ -9,13 +9,18 @@ segment_tubes 로 분할한 각 스트립에 단일 튜브 검사 파이프라�
 바꾸지 않고 services/vision 내부 dataclass 로만 둔다. InspectionResult 매핑은
 후속 작업(승인 후)으로 남긴다.
 
+렌즈 보정·기준자: 스트립은 센서 전체가 아니므로 튜브마다 하지 않는다. 전체 프레임에서
+한 번(InspectionPipeline.prepare_frame) 하고, 보정된 프레임을 나누고, 기준자는 각 crop
+좌표로 옮겨 넘긴다(_tube_calibration). 그래서 다발 길이가 같은 자리의 단일 결과와 같다.
+
 결정성: segment_tubes + InspectionPipeline 모두 결정적 → 동일 입력 동일 출력.
 proc_time_ms: 전체 배치 + 튜브당 평균을 계측한다(KPI 회귀 추적용).
 """
 from __future__ import annotations
 
+import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
@@ -24,14 +29,19 @@ import numpy as np
 from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
 from ..length.measure import LengthSpan
-from ..pipeline import InspectionPipeline
-from ..preprocess.area import InspectArea
+from ..pipeline import FrameCalibration, InspectionPipeline
+from ..preprocess.area import InspectArea, area_rect
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
+
+log = logging.getLogger("aivis.vision.batch")
 
 #: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
 #: 하드 상한(MAX_TUBES_HARD)과 다르다 — 자동 추정은 상한이 크면 최소 피치가
 #: 작아져 없는 seam 까지 찾아 과분할한다. 기대개수를 주면 그만큼 올라간다.
 DEFAULT_AUTO_MAX_TUBES = 20
+
+#: 튜브 검사 crop 을 끝단 바깥으로 넓히는 최소 폭(px). 실제 폭은 튜브 굵기와 이 값 중 큰 쪽.
+MIN_END_PAD_PX = 16
 
 
 @dataclass
@@ -75,6 +85,9 @@ class BatchResult:
     axis: str
     proc_time_ms: int
     per_tube_avg_ms: float
+    #: 프레임 단위 보정 기록(렌즈 보정 실패·기준자 읽기 실패). 문제 없으면 None.
+    #: 튜브마다 같은 사유로 NG+재확인이 되므로 원인은 여기 한 번 남긴다.
+    calib_note: Optional[str] = None
 
 
 def _v(x) -> str:
@@ -129,6 +142,45 @@ def _tube_span_in_frame(
     )
 
 
+def _measure_box(
+    roi: TubeROI, axis: str, frame: np.ndarray, area: Optional[InspectArea]
+) -> TubeROI:
+    """튜브 검사 crop — 튜브 상자를 **길이 방향으로만** 넓힌다(배경을 끝단 양쪽에).
+
+    segment_tubes 상자는 끝단에 딱 붙어 있다. 그대로 자르면 crop 안에 배경이 없어 끝단
+    (배경→금속 경계)이 안 보이고, crop 단위 반사 보정이 끝단을 평탄하게 지운다 — 렌즈
+    보정으로 한 번 보간된 프레임에서는 아예 끝단을 못 찾았다. 단일 경로는 전체 프레임에서
+    재므로 끝단 양쪽에 배경이 있다. 넓히는 것은 검사 crop 뿐이고 튜브 bbox(라벨링
+    자르기·오버레이)는 그대로다. 검사 영역 밖으로는 넓히지 않는다.
+    """
+    h, w = frame.shape[:2]
+    rect = area_rect(area, frame)
+    bx0, by0, bx1, by1 = (rect.x0, rect.y0, rect.x1, rect.y1) if rect else (0, 0, w, h)
+    if axis == "vertical":
+        pad = max(MIN_END_PAD_PX, roi.x1 - roi.x0)
+        return replace(roi, y0=max(by0, roi.y0 - pad), y1=min(by1, roi.y1 + pad))
+    pad = max(MIN_END_PAD_PX, roi.y1 - roi.y0)
+    return replace(roi, x0=max(bx0, roi.x0 - pad), x1=min(bx1, roi.x1 + pad))
+
+
+def _tube_calibration(
+    calib: FrameCalibration, roi: TubeROI, axis: str
+) -> FrameCalibration:
+    """프레임 보정 결과 → 이 튜브 crop 에 넘길 값(기준자를 crop 측정 좌표로 옮긴다).
+
+    horizontal: crop x = 프레임 x − roi.x0.
+    vertical: crop 을 90° 시계방향으로 돌려 재므로 crop x = (roi.y1 − 1) − 프레임 y —
+      축이 뒤집힌다. 기준자도 세로로 놓여 프레임 y 로 읽었다(prepare_frame).
+    """
+    if calib.gauge is None:
+        return calib
+    if axis == "vertical":
+        gauge = calib.gauge.remapped(roi.y1 - 1, reverse=True)
+    else:
+        gauge = calib.gauge.remapped(roi.x0)
+    return replace(calib, gauge=gauge)
+
+
 def inspect_batch(
     frame: np.ndarray,
     item: Union[ItemMaster, Dict[str, Any]],
@@ -158,9 +210,19 @@ def inspect_batch(
 
     `area`(검사 영역)를 주면 그 안에서만 튜브를 나눈다(segment_tubes). 튜브 bbox·측정선은
     원본 프레임 좌표 그대로다.
+
+    렌즈 보정·기준자(AIVIS_LENS_CALIB·AIVIS_FIDUCIAL)는 **전체 프레임에서 한 번** 한다.
+    튜브 bbox·측정선은 렌즈 보정된 프레임 좌표다(단일 경로의 측정선과 같다).
+    axis="vertical" 이면 기준자도 세로로 놓여야 한다(y 축으로 읽는다).
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
+
+    # 스트립에 렌즈 보정을 걸면 스트립 중심을 광학 중심으로 보고, 기준자 ROI 는 스트립
+    # 밖이다 — 그래서 프레임에서 한 번 하고 결과만 튜브로 넘긴다.
+    frame, calib = pipe.prepare_frame(frame, stage=stage, axis=axis)
+    if calib.note:
+        log.warning("다발 프레임 보정: %s", calib.note)
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
     # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
@@ -198,14 +260,16 @@ def inspect_batch(
 
     tubes: List[TubeResult] = []
     for roi in rois:
-        crop = roi.crop(frame)
+        box = _measure_box(roi, axis, frame, area)
+        crop = box.crop(frame)
         if axis == "vertical":
             # 세로 튜브 → 가로로 회전(measure_length 는 가로 튜브 가정).
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
         # 끝단 좌표(span)까지 받아 배치 오버레이 측정선 표기에 쓴다.
         # 검사 단계(=모드)를 튜브마다 그대로 넘긴다 — 길이 모드면 길이만 판정.
-        vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage)
-        frame_span = _tube_span_in_frame(crop_span, roi, axis)
+        vr, crop_span = pipe.run_with_geometry(
+            crop, item, stage=stage, frame_calib=_tube_calibration(calib, box, axis))
+        frame_span = _tube_span_in_frame(crop_span, box, axis)
         tubes.append(_tube_from_verdict(roi.index, roi, vr, frame_span))
 
     count_mismatch = (
@@ -236,6 +300,7 @@ def inspect_batch(
         axis=axis,
         proc_time_ms=total_ms,
         per_tube_avg_ms=per_tube,
+        calib_note=calib.note,
     )
 
 

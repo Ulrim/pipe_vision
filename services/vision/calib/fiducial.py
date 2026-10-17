@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -138,6 +138,19 @@ class FiducialScale:
         """두 px 좌표 사이의 거리(mm). 측정은 이걸 쓴다."""
         return self.position_to_mm(x_right) - self.position_to_mm(x_left)
 
+    def remapped(self, origin: float, *, reverse: bool = False) -> "FiducialScale":
+        """같은 자를 다른 이미지(다발의 튜브 crop) 좌표로 옮긴다.
+
+        새 좌표는 `x − origin`, reverse 면 `origin − x`(90° 돌린 crop 처럼 축이 뒤집힌
+        경우). 마크는 mm 로 등간격이라 순서를 뒤집어도 같은 자다 — 끝단 옆 마크 두 개로
+        국소 배율을 읽는 보간도 **같은 마크 쌍**을 그대로 쓴다.
+        """
+        if reverse:
+            xs = sorted(origin - c for c in self.centers_px)
+        else:
+            xs = [c - origin for c in self.centers_px]
+        return replace(self, centers_px=xs)
+
     @property
     def relative_sigma(self) -> float:
         """스케일의 상대 불확도 근사. 잔차를 전체 스팬으로 나눈 값.
@@ -197,16 +210,22 @@ def measure_scale(
     min_marks: int = 3,
     min_area_px: int = 20,
     max_residual_px: float = 1.5,
+    along_y: bool = False,
 ) -> FiducialScale:
     """기준자 ROI 에서 마크를 읽어 이 프레임의 mm/px 을 구한다.
 
     roi: (x, y, w, h). 생략하면 전체 이미지 — 제품까지 마크로 집어올 수 있으니
       운영에서는 반드시 기준자 띠만 지정한다.
     pitch_mm: 이웃한 마크 사이의 **실제** 거리(mm).
+    along_y: 기준자가 세로로 놓였다(세로 다발). 마크를 y 축으로 읽는다.
+
+    centers_px 는 ROI 안 좌표가 아니라 **입력 이미지 좌표**(along_y 면 y)다. 길이는
+    제품 끝단의 프레임 좌표로 자를 읽으므로(span_mm), 같은 좌표계여야 끝단 옆 마크를 고른다.
     """
     if pitch_mm <= 0:
         raise FiducialError("pitch_mm 이 0 이하")
     img = image
+    origin = 0
     if roi is not None:
         x, y, w, h = roi
         if w <= 0 or h <= 0:
@@ -214,13 +233,17 @@ def measure_scale(
         img = image[y : y + h, x : x + w]
         if img.size == 0:
             raise FiducialError("기준자 ROI 가 이미지 밖")
+        origin = y if along_y else x
+    if along_y:
+        # 띠만 전치한다(프레임 전체를 복사하지 않는다) — 이제 x 가 원본의 y.
+        img = np.ascontiguousarray(img.swapaxes(0, 1))
 
     cents = _mark_centers(img, dark_marks=dark_marks, min_area_px=min_area_px)
     if len(cents) < min_marks:
         raise FiducialError(
             f"마크 {len(cents)}개 — 최소 {min_marks}개 필요. 조명/ROI 확인"
         )
-    xs = [c[0] for c in cents]
+    xs = [origin + c[0] for c in cents]
     pitch_px, rms = _fit_pitch(xs)
     if pitch_px <= 0:
         raise FiducialError("마크 간격이 0 이하")

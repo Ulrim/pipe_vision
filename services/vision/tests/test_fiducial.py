@@ -109,6 +109,49 @@ def test_roi_limits_where_marks_are_looked_for():
     assert s.mm_per_px == pytest.approx(PITCH_MM / 20.0, rel=2e-3)
 
 
+def test_centers_are_in_image_coordinates_not_roi_coordinates():
+    """끝단은 프레임 좌표로 자를 읽는다 — 마크도 같은 좌표여야 옆 마크를 고른다.
+
+    예전에는 ROI 안 좌표를 돌려줘, ROI 가 x=0 에서 시작하지 않으면 엉뚱한 구간의
+    국소 배율로 보간했다.
+    """
+    gauge = gauge_image(pitch_px=20.0)
+    h, w = gauge.shape
+    frame = np.full((h, w + 70), 230, np.uint8)
+    frame[:, 70:] = gauge
+    alone = measure_scale(gauge, pitch_mm=PITCH_MM)
+    s = measure_scale(frame, pitch_mm=PITCH_MM, roi=(60, 0, w + 10, h))
+    assert s.centers_px == pytest.approx([c + 70 for c in alone.centers_px], abs=1e-6)
+
+
+def test_reads_a_vertical_ruler_along_y():
+    """세로 다발이면 기준자도 세로로 놓인다. 좌표는 이미지 y."""
+    gauge = gauge_image(pitch_px=20.0)
+    h, w = gauge.shape
+    frame = np.full((w + 30, h + 50), 230, np.uint8)
+    frame[30:, 50:] = cv2.rotate(gauge, cv2.ROTATE_90_CLOCKWISE)
+    flat = measure_scale(gauge, pitch_mm=PITCH_MM)
+    s = measure_scale(frame, pitch_mm=PITCH_MM, roi=(50, 30, h, w), along_y=True)
+    assert s.mm_per_px == pytest.approx(flat.mm_per_px, rel=1e-6)
+    assert s.centers_px == pytest.approx([c + 30 for c in flat.centers_px], abs=1e-6)
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_remapped_gauge_reads_the_same_span(reverse):
+    """튜브 crop 좌표로 옮긴 자는 같은 두 점 사이를 같은 mm 로 읽는다(축이 뒤집혀도)."""
+    jitter = np.array([0, 0.4, -0.3, 0.8, 0, -0.6, 0.2, 0.5, -0.4, 0.1, 0])
+    s = measure_scale(gauge_image(pitch_px=20.0, jitter=jitter), pitch_mm=PITCH_MM)
+    origin = 250.0 if reverse else 37.0
+    local = s.remapped(origin, reverse=reverse)
+
+    def to_local(x):
+        return origin - x if reverse else x - origin
+
+    for a, b in [(45.0, 230.0), (s.centers_px[0] - 15, s.centers_px[-1] + 9), (61.3, 88.8)]:
+        la, lb = sorted((to_local(a), to_local(b)))
+        assert local.span_mm(la, lb) == pytest.approx(s.span_mm(a, b), abs=1e-9)
+
+
 def test_roi_outside_image_fails():
     with pytest.raises(FiducialError):
         measure_scale(gauge_image(pitch_px=20.0), pitch_mm=PITCH_MM,
