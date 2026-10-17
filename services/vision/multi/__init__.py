@@ -18,6 +18,7 @@ from .batch import (
     TubeResult,
     inspect_batch,
     tube_to_inspection,
+    tube_window,
 )
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
@@ -27,6 +28,7 @@ __all__ = [
     "MAX_TUBES_HARD",
     "inspect_batch",
     "tube_to_inspection",
+    "tube_window",
     "TubeResult",
     "BatchResult",
     "BatchMeta",

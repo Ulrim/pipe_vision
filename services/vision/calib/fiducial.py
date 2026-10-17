@@ -203,12 +203,18 @@ def measure_scale(
     roi: (x, y, w, h). 생략하면 전체 이미지 — 제품까지 마크로 집어올 수 있으니
       운영에서는 반드시 기준자 띠만 지정한다.
     pitch_mm: 이웃한 마크 사이의 **실제** 거리(mm).
+
+    돌려주는 마크 중심(centers_px)은 **image 좌표**다(ROI 안 좌표가 아니다). 길이 측정은
+    끝단의 프레임 x 로 자를 읽으므로(span_mm) 두 좌표계가 같아야 한다 — 종전엔 ROI 안
+    좌표라 기준자 띠가 x=0 에서 시작하지 않으면 엉뚱한 마크 사이를 읽었다(2026-10-17).
     """
     if pitch_mm <= 0:
         raise FiducialError("pitch_mm 이 0 이하")
     img = image
+    x_off = 0
     if roi is not None:
         x, y, w, h = roi
+        x_off = int(x)
         if w <= 0 or h <= 0:
             raise FiducialError("기준자 ROI 가 비었다")
         img = image[y : y + h, x : x + w]
@@ -220,7 +226,7 @@ def measure_scale(
         raise FiducialError(
             f"마크 {len(cents)}개 — 최소 {min_marks}개 필요. 조명/ROI 확인"
         )
-    xs = [c[0] for c in cents]
+    xs = [c[0] + x_off for c in cents]
     pitch_px, rms = _fit_pitch(xs)
     if pitch_px <= 0:
         raise FiducialError("마크 간격이 0 이하")
@@ -235,6 +241,24 @@ def measure_scale(
         pitch_px=pitch_px,
         residual_px=rms,
     )
+
+
+def measure_scale_along(
+    image: np.ndarray, config: "FiducialConfig", *, axis: str = "horizontal"
+) -> FiducialScale:
+    """설정(AIVIS_FIDUCIAL)대로 기준자를 읽는다 — 튜브 축 방향으로.
+
+    axis="horizontal": 튜브가 가로로 눕는다 → 기준자도 가로, 좌표 = 프레임 x.
+    axis="vertical": 튜브가 세로로 선다 → 기준자도 세로로 둔다, 좌표 = 프레임 **y**.
+      영상을 전치해 같은 판독기를 쓴다(ROI 는 프레임 좌표 그대로 적는다).
+    """
+    if axis == "vertical":
+        x, y, w, h = config.roi
+        swapped = np.ascontiguousarray(np.swapaxes(image, 0, 1))
+        return measure_scale(swapped, pitch_mm=config.pitch_mm, roi=(y, x, h, w),
+                             dark_marks=config.dark_marks)
+    return measure_scale(image, pitch_mm=config.pitch_mm, roi=config.roi,
+                         dark_marks=config.dark_marks)
 
 
 #: 치수 측정의 국제 기준 온도. 도면 공차는 이 온도에서의 값이다.

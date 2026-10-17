@@ -849,6 +849,9 @@ MSA 관례상 측정시스템은 공차폭의 1/3 이내를 써야 한다(±0.1m
 >
 > 구현: `vision/length/edges.py`(기울기·행평균), `vision/calib/fiducial.py`
 > (프레임별 기준자·자 보간·온도 환산), `vision/quality/budget.py`(예산 모델).
+> **측정 창은 끝단 바깥 배경을 포함해야 한다**(`length_window`, 2026-10-17 — 종전엔 창이
+> 끝단에서 끝나 길이가 '창 폭 −1px' 로 고정됐다). 다발은 렌즈 보정·기준자를 **전체 프레임에서
+> 한 번**(`InspectionPipeline.prepare_frame`) — 튜브 crop 마다 하면 틀린다.
 > 재현: `python -m vision.tools.length_budget --length 250 --tol 0.1 --sweep`.
 > 전체 근거: `docs/LENGTH_TOLERANCE.md`.
 

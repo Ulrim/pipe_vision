@@ -23,9 +23,9 @@ import cv2
 import numpy as np
 from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
-from ..length.measure import LengthSpan
-from ..pipeline import InspectionPipeline
-from ..preprocess.area import InspectArea
+from ..length.measure import END_MARGIN_PX, LengthSpan
+from ..pipeline import CropContext, InspectionPipeline
+from ..preprocess.area import InspectArea, area_rect
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 #: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
@@ -129,6 +129,28 @@ def _tube_span_in_frame(
     )
 
 
+def tube_window(roi: TubeROI, frame_shape, *, axis: str = "horizontal",
+                bounds=None) -> TubeROI:
+    """튜브를 잴 crop — 분할 상자를 **축 방향으로** 2×END_MARGIN_PX 넓힌다.
+
+    분할 상자는 다발 전체의 끝단에서 딱 끝나므로 그대로 자르면 가장 긴 튜브의 끝단 바깥
+    배경이 없다 — 밝기 변화가 crop 밖이라 서브픽셀로 잴 것이 없고, 창 경계를 끝단으로 잡아
+    '상자 폭 −1px' 로 고정됐다(2026-10-17). bounds(검사 영역 픽셀 상자) 밖으로는 넓히지
+    않는다. 축과 직각으로는 넓히지 않는다(이웃 튜브가 들어온다).
+    """
+    fh, fw = frame_shape[:2]
+    bx0, by0, bx1, by1 = ((bounds.x0, bounds.y0, bounds.x1, bounds.y1) if bounds is not None
+                          else (0, 0, fw, fh))
+    pad = 2 * END_MARGIN_PX
+    if axis == "vertical":
+        return TubeROI(index=roi.index, x0=roi.x0, x1=roi.x1,
+                       y0=max(by0, roi.y0 - pad), y1=min(by1, roi.y1 + pad),
+                       confidence=roi.confidence)
+    return TubeROI(index=roi.index, y0=roi.y0, y1=roi.y1,
+                   x0=max(bx0, roi.x0 - pad), x1=min(bx1, roi.x1 + pad),
+                   confidence=roi.confidence)
+
+
 def inspect_batch(
     frame: np.ndarray,
     item: Union[ItemMaster, Dict[str, Any]],
@@ -158,9 +180,18 @@ def inspect_batch(
 
     `area`(검사 영역)를 주면 그 안에서만 튜브를 나눈다(segment_tubes). 튜브 bbox·측정선은
     원본 프레임 좌표 그대로다.
+
+    **렌즈 왜곡 보정·기준자는 전체 프레임에서 한 번**(2026-10-17, pipe.prepare_frame).
+    종전엔 튜브 crop 마다 단일 파이프라인이 다시 했다 — 렌즈 보정은 crop 을 센서 전체로
+    보고 엉뚱하게 휘었고, 기준자는 프레임 좌표 ROI 를 crop 에서 찾다 '읽기 실패' 로 튜브가
+    전부 NG + 재확인이 됐다. 이제 보정된 프레임에서 나누고 자르며, 튜브마다 기준자 좌표
+    원점·방향(CropContext)을 넘겨 끝단 옆 마크로 자를 읽는다. 렌즈 보정을 켜면 튜브 bbox·
+    측정선은 보정된 좌표다(단일 경로와 같다 — 왜곡 이동량은 가장자리 몇 px).
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
+    prep = pipe.prepare_frame(frame, axis=axis, stage=stage)
+    frame = prep.frame
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
     # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
@@ -196,16 +227,26 @@ def inspect_batch(
     else:
         rois = auto_rois
 
+    # 튜브 crop 은 분할 상자보다 축 방향으로 넓게(tube_window) — 끝단 바깥 배경이 있어야
+    # 서브픽셀로 잰다. 화면·검사 영역 밖으로는 넓히지 않는다(밖은 검사하지 않는다).
+    bound = area_rect(area, frame)
     tubes: List[TubeResult] = []
     for roi in rois:
-        crop = roi.crop(frame)
+        win = tube_window(roi, frame.shape, axis=axis, bounds=bound)
+        crop = win.crop(frame)
         if axis == "vertical":
             # 세로 튜브 → 가로로 회전(measure_length 는 가로 튜브 가정).
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
         # 끝단 좌표(span)까지 받아 배치 오버레이 측정선 표기에 쓴다.
         # 검사 단계(=모드)를 튜브마다 그대로 넘긴다 — 길이 모드면 길이만 판정.
-        vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage)
-        frame_span = _tube_span_in_frame(crop_span, roi, axis)
+        if axis == "vertical":
+            # 시계방향 회전: crop x' = (높이-1) - y_local → 프레임 y = y0 + 높이-1 - x'.
+            ctx = CropContext(prep=prep, origin=float(win.y1 - 1), direction=-1)
+        else:
+            ctx = CropContext(prep=prep, origin=float(win.x0), direction=1)
+        vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage, crop=ctx)
+        # 측정선은 실제로 자른 창(win) 기준 좌표 → 프레임. bbox 는 분할 상자 그대로.
+        frame_span = _tube_span_in_frame(crop_span, win, axis)
         tubes.append(_tube_from_verdict(roi.index, roi, vr, frame_span))
 
     count_mismatch = (

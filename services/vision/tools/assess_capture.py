@@ -47,7 +47,7 @@ if str(_SERVICES_DIR) not in sys.path:
 
 from aivis_types import ItemMaster  # noqa: E402
 
-from vision.length.measure import measure_length_ex  # noqa: E402
+from vision.length.measure import length_window, measure_length_ex  # noqa: E402
 from vision.preprocess import preprocess  # noqa: E402
 
 _IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
@@ -168,7 +168,8 @@ def assess_image(path: str | Path) -> ImageAssessment:
                 or r.y1 >= h - EDGE_TOUCH_PX
             )
             # 운영 파이프라인과 같은 방식으로 자른다(pipeline.py 참조).
-            _res, ends = measure_length_ex(r.crop(pre.gray_corrected), _probe_item())
+            win, _x0 = length_window(pre.gray_corrected, r)
+            _res, ends = measure_length_ex(win, _probe_item())
             if ends is not None:
                 out.ends_found = True
                 out.pipe_len_px = float(abs(ends.right_x - ends.left_x))

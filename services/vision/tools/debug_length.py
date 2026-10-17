@@ -97,8 +97,11 @@ from vision.imaging.save import (  # noqa: E402
 from vision.length.measure import (  # noqa: E402  (private 재사용 — 재구현 금지)
     _find_edges,
     _parabolic_subpixel,
+    _smooth_gradient,
+    length_window,
     measure_length,
 )
+from vision.multi.batch import tube_window  # noqa: E402
 from vision.multi.segment import TubeROI, segment_tubes  # noqa: E402
 from vision.preprocess.roi import Roi, preprocess  # noqa: E402
 
@@ -177,9 +180,7 @@ def _profile_and_gradient(profile: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """
     if profile.size < 2:
         return profile.astype(np.float32), np.zeros_like(profile, dtype=np.float32)
-    smooth = np.convolve(profile, np.ones(3, dtype=np.float32) / 3.0, mode="same")
-    grad = np.gradient(smooth)
-    return smooth, grad
+    return _smooth_gradient(profile)
 
 
 def _mask_border_fg_ratio(mask: np.ndarray) -> float:
@@ -202,8 +203,9 @@ def compute_edge_debug(
     pre = preprocess(img_bgr)
     roi = pre.length_roi
     if roi is not None:
-        gray_roi = roi.crop(pre.gray_corrected)
-        roi_x0, roi_y0, roi_y1 = roi.x0, roi.y0, roi.y1
+        # 운영과 같이 끝단 바깥 배경까지 넓힌 창(length_window)으로 잰다.
+        gray_roi, roi_x0 = length_window(pre.gray_corrected, roi)
+        roi_y0, roi_y1 = roi.y0, roi.y1
     else:
         gray_roi = pre.gray_corrected
         roi_x0, roi_y0, roi_y1 = 0, 0, h
@@ -713,7 +715,8 @@ def _run_multi(
 
     out_paths = [str(overview_path)]
     for t in tubes:
-        crop = t.crop(img_bgr)
+        # 운영(inspect_batch)과 같이 축 방향으로 넓힌 창 — 끝단 바깥 배경이 있어야 잰다.
+        crop = tube_window(t, img_bgr.shape).crop(img_bgr)
         dbg = compute_edge_debug(crop, item, min_contrast)
         warnings, notes = build_diagnostics(dbg, item, capture_recipe=capture_recipe)
         tube_out = image_path.with_name(f"{image_path.stem}_tube{t.index}_debug.jpg")

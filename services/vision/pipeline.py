@@ -27,14 +27,17 @@ from aivis_types import (
 )
 
 from .length import LengthSpan, measure_length_ex
+from .length.measure import length_window
 from .calib.fiducial import (
     FiducialConfig,
     FiducialError,
+    FiducialScale,
     measure_scale,
+    measure_scale_along,
 )
 from .calib.fiducial import resolve_config as resolve_fiducial_config
 from .calib.lens import LensCalibration, resolve_calibration
-from .preprocess import InspectArea, preprocess
+from .preprocess import InspectArea, area_rect, preprocess
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
 from .verdict import combine_verdict
@@ -115,6 +118,38 @@ def _surface_not_evaluated() -> SurfaceResult:
     )
 
 
+@dataclass(frozen=True)
+class FramePrep:
+    """다발 프레임 전체에 **한 번** 한 보정 — 튜브 crop 마다 다시 하면 안 되는 것들.
+
+    렌즈 왜곡 보정은 광학 중심 기준이라 전체 프레임에만 맞다(crop 에 하면 crop 을 센서
+    전체로 보고 엉뚱하게 휜다). 기준자도 프레임 좌표로 놓여 있어 전체 프레임에서 읽어야
+    한다(crop 에서 읽으면 범위 밖 → '읽기 실패' → 튜브 전부 NG). 2026-10-17.
+    """
+
+    frame: np.ndarray
+    """보정된 프레임(렌즈 보정이 없으면 원본 그대로). 분할·crop 은 이걸로 한다."""
+    lens_applied: bool = False
+    gauge: Optional[FiducialScale] = None
+    gauge_read: bool = False
+    """기준자 설정이 있어 전체 프레임에서 읽기를 시도했는가(성공·실패 무관)."""
+    notes: tuple = ()
+    """튜브마다 오류로 남길 사유(렌즈 보정 실패·기준자 읽기 실패) — 단일 경로와 같은 규칙."""
+
+
+@dataclass(frozen=True)
+class CropContext:
+    """튜브 crop 1개를 잴 때 필요한 프레임 정보.
+
+    origin/direction: crop 의 x 가 기준자 좌표(프레임 x, 세로 다발이면 프레임 y)로
+    어디인가. 기준자 좌표 = origin + direction × crop_x.
+    """
+
+    prep: FramePrep
+    origin: float = 0.0
+    direction: int = 1
+
+
 @dataclass
 class StageTimings:
     """단계별 처리시간(ms) 분해 — 처리속도 KPI 회귀/병목 분석용."""
@@ -191,6 +226,49 @@ class InspectionPipeline:
             self._model_cache[key] = model
         return model
 
+    def prepare_frame(
+        self,
+        frame_bgr: np.ndarray,
+        *,
+        axis: str = "horizontal",
+        stage: Optional[str] = None,
+    ) -> FramePrep:
+        """다발 검사 전에 전체 프레임에서 렌즈 보정·기준자 판독을 한 번 한다.
+
+        실패해도 raise 하지 않는다 — 사유를 notes 에 담아 튜브마다 오류로 남긴다(단일
+        경로와 같이 NG + 재확인). 기준자는 이 모드가 길이를 볼 때만 읽는다.
+        """
+        stage = stage if stage is not None else self.stage
+        notes: List[str] = []
+        frame = frame_bgr
+        lens_applied = False
+        try:
+            calib = self._lens_calibration()
+            if calib is not None:
+                frame = calib.undistort(frame_bgr)
+                lens_applied = True
+        except Exception as exc:  # noqa: BLE001
+            lens_applied = True  # crop 에서 다시 시도하지 않는다(그게 더 틀린다)
+            notes.append(f"렌즈 보정 실패: {type(exc).__name__}: {exc}")
+
+        gauge: Optional[FiducialScale] = None
+        gauge_read = False
+        if DefectCode.LEN in codes_for_stage(stage):
+            try:
+                fid = self._fiducial_config()
+            except Exception as exc:  # noqa: BLE001 - 설정 오타(resolve_config 가 raise)
+                fid = None
+                gauge_read = True
+                notes.append(f"기준자 설정 오류: {exc}")
+            if fid is not None:
+                gauge_read = True
+                try:
+                    gauge = measure_scale_along(frame, fid, axis=axis)
+                except FiducialError as exc:
+                    notes.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+        return FramePrep(frame=frame, lens_applied=lens_applied, gauge=gauge,
+                         gauge_read=gauge_read, notes=tuple(notes))
+
     def run(
         self,
         frame_bgr: np.ndarray,
@@ -224,6 +302,7 @@ class InspectionPipeline:
         *,
         stage: Optional[str] = None,
         area: Optional[InspectArea] = None,
+        crop: Optional[CropContext] = None,
     ) -> tuple[VerdictResult, Optional[LengthSpan]]:
         """run() + 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 결과 오버레이가
         측정 근거(끝단/측정선)를 그리도록 워커가 이 값을 save 로 넘긴다.
@@ -234,8 +313,12 @@ class InspectionPipeline:
 
         area: 검사 영역(preprocess/area.py) — 그 안에서 가장 큰 제품을 잰다. 렌즈 보정·
         기준자는 전체 프레임 기준 그대로다(그래서 자르지 않고 제품 찾기만 영역으로 한정).
+
+        crop: 다발 튜브 crop 을 잴 때(multi/batch.py). 전체 프레임에서 이미 한 렌즈 보정·
+        기준자 판독(prepare_frame)을 쓰고, crop 에서 다시 하지 않는다.
         """
-        result, _, _, span = self._run_core(frame_bgr, item, stage=stage, area=area)
+        result, _, _, span = self._run_core(frame_bgr, item, stage=stage, area=area,
+                                            crop=crop)
         return result, span
 
     def run_safe(
@@ -262,6 +345,7 @@ class InspectionPipeline:
         *,
         stage: Optional[str] = None,
         area: Optional[InspectArea] = None,
+        crop: Optional[CropContext] = None,
     ) -> tuple[VerdictResult, StageTimings, Optional[str], Optional[LengthSpan]]:
         t0 = time.perf_counter()
         # ItemMaster 변환 실패는 호출자 오류이므로 그대로 raise(검사 불가).
@@ -278,7 +362,8 @@ class InspectionPipeline:
         # 보이는데 길이는 하필 양 끝단을 쓴다. 보정 없이는 왜곡만으로 공차를
         # 넘는다(calib/lens.py 의 측정값 참조).
         try:
-            calib = self._lens_calibration()
+            # 다발 crop 은 전체 프레임에서 이미 보정했다 — 다시 하면 crop 을 센서 전체로 본다.
+            calib = None if crop is not None and crop.prep.lens_applied else self._lens_calibration()
             if calib is not None:
                 frame_bgr = calib.undistort(frame_bgr)
         except Exception as exc:  # noqa: BLE001
@@ -296,7 +381,8 @@ class InspectionPipeline:
             result = _error_verdict(master, proc_time_ms=total)
             return result, StageTimings(total_ms=total), reason, None
 
-        errors: List[str] = []
+        # 다발: 전체 프레임 보정 단계의 실패 사유도 튜브마다 오류로 남긴다.
+        errors: List[str] = list(crop.prep.notes) if crop is not None else []
 
         # ③ 길이 측정 — 실패 시 끝단검출 실패(NG) 로 격리. 끝단 좌표(endpoints)는
         #    결과 오버레이 측정선 표기용으로 함께 받아 프레임 좌표 span 을 만든다.
@@ -305,34 +391,51 @@ class InspectionPipeline:
             if not see_length:
                 raise _Skipped()
             if pre.length_roi is not None:
-                gray_roi = pre.length_roi.crop(pre.gray_corrected)
+                r = pre.length_roi
+                # 측정 창을 끝단 바깥 배경까지 넓힌다(END_MARGIN_PX). 제품 마스크 상자에서 딱
+                # 끝나는 창은 밝기 변화가 창 밖이라 서브픽셀로 잴 것이 없다(창 폭 −1px 로
+                # 고정됐었다). 검사 영역이 있으면 그 밖으로는 넓히지 않는다.
+                rect = area_rect(area, frame_bgr)
+                gray_roi, win_x0 = length_window(
+                    pre.gray_corrected, r,
+                    lo=rect.x0 if rect is not None else 0,
+                    hi=rect.x1 if rect is not None else None,
+                )
             else:
+                win_x0 = 0
                 gray_roi = pre.gray_corrected  # ROI 미검출 → 끝단검출 실패 유도.
             # 기준자가 설정돼 있으면 **이 프레임에서** 배율을 읽어 쓴다.
             # 못 읽으면 저장된 스케일로 떨어지되 반드시 기록에 남긴다 —
             # 조용히 떨어지면 정확도가 왜 나빠졌는지 알 수 없다.
             gauge = None
-            fid = self._fiducial_config()
-            if fid is not None:
-                try:
-                    gauge = measure_scale(
-                        pre.gray_corrected,
-                        pitch_mm=fid.pitch_mm,
-                        roi=fid.roi,
-                        dark_marks=fid.dark_marks,
-                    )
-                except FiducialError as exc:
-                    errors.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
-            roi_x0 = pre.length_roi.x0 if pre.length_roi is not None else 0
+            origin, direction = 0.0, 1
+            if crop is not None and crop.prep.gauge_read:
+                # 다발: 전체 프레임에서 읽은 기준자(실패 사유는 이미 errors 에 있다).
+                gauge = crop.prep.gauge
+                origin, direction = crop.origin, crop.direction
+            else:
+                fid = self._fiducial_config()
+                if fid is not None:
+                    try:
+                        gauge = measure_scale(
+                            pre.gray_corrected,
+                            pitch_mm=fid.pitch_mm,
+                            roi=fid.roi,
+                            dark_marks=fid.dark_marks,
+                        )
+                    except FiducialError as exc:
+                        errors.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+            roi_x0 = win_x0
             length, endpoints = measure_length_ex(
-                gray_roi, master, gauge=gauge, roi_x_offset=float(roi_x0)
+                gray_roi, master, gauge=gauge,
+                roi_x_offset=origin + direction * float(roi_x0), gauge_dir=direction,
             )
             if endpoints is not None and pre.length_roi is not None:
                 r = pre.length_roi
-                # 로컬(gray_roi) x → 프레임 x(+roi.x0). 세로는 length_roi 범위.
+                # 로컬(측정 창) x → 프레임 x(+창 시작). 세로는 length_roi 범위.
                 length_span = LengthSpan(
-                    left_x=r.x0 + endpoints.left_x,
-                    right_x=r.x0 + endpoints.right_x,
+                    left_x=win_x0 + endpoints.left_x,
+                    right_x=win_x0 + endpoints.right_x,
                     y_top=r.y0,
                     y_bottom=r.y1,
                 )

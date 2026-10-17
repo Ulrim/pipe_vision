@@ -4,14 +4,14 @@ from __future__ import annotations
 import numpy as np
 from aivis_types import Verdict
 
-from vision.length import measure_length
+from vision.length import length_window, measure_length
 from vision.preprocess import preprocess
 from vision.tools.gen_synthetic import make_image
 
 
 def _measure(img, item):
     pre = preprocess(img)
-    roi = pre.length_roi.crop(pre.gray_corrected)
+    roi, _x0 = length_window(pre.gray_corrected, pre.length_roi)  # 끝단 바깥 배경 포함
     return measure_length(roi, item)
 
 
@@ -68,6 +68,6 @@ def test_msa_repeatability(item):
 def test_proc_time_within_budget(item):
     img, _ = make_image("OK")
     pre = preprocess(img)
-    roi = pre.length_roi.crop(pre.gray_corrected)
+    roi, _x0 = length_window(pre.gray_corrected, pre.length_roi)
     r = measure_length(roi, item)
     assert r.proc_time_ms <= 80  # M3 예산

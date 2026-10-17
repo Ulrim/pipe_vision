@@ -18,7 +18,7 @@ from vision.calib.lens import (
     load_calibration,
     resolve_calibration,
 )
-from vision.length.measure import measure_length
+from vision.length.measure import length_window, measure_length
 from vision.preprocess import preprocess
 from vision.tools.gen_synthetic import make_image
 
@@ -59,7 +59,8 @@ def _item() -> ItemMaster:
 def _measure(frame: np.ndarray, item: ItemMaster):
     pre = preprocess(frame)
     r = pre.length_roi
-    return measure_length(pre.gray_corrected[r.y0:r.y1, r.x0:r.x1], item)
+    win, _x0 = length_window(pre.gray_corrected, r)  # 운영과 같이 끝단 바깥 배경 포함
+    return measure_length(win, item)
 
 
 @pytest.mark.parametrize("k1,min_err_mm", [(-0.05, 0.3), (-0.20, 2.0)])
@@ -83,19 +84,30 @@ def test_distortion_pushes_length_outside_tolerance(k1, min_err_mm):
 
 @pytest.mark.parametrize("k1", [-0.05, -0.10, -0.20, -0.30])
 def test_undistort_restores_length(k1):
-    """보정하면 왜곡 없는 측정값으로 돌아온다."""
+    """보정하면 왜곡 없는 측정값으로 돌아온다.
+
+    남는 차이는 **합성 영상의 재매핑 보간**이다: 합성 튜브는 끝단 첫 화소가 밝은 테(210 → 185)
+    라 쌍선형 보간 두 번(왜곡 흉내 + 보정)으로 흐려지면 기울기 정점이 바깥으로 0.3px 쯤
+    옮겨진다 — 왜곡 없이 σ0.8 블러만 줘도 +0.15mm(2026-10-17 확인). 측정이 실제로 서브픽셀을
+    재게 되자(종전엔 '창 폭 −1px' 정수) 이 차이가 보이게 됐다. 보정 안 한 오차보다 훨씬 작아야 한다.
+    """
     img, _ = make_image("OK")
     h, w = img.shape[:2]
     K, D = _K(w, h), np.array([k1, 0, 0, 0, 0], np.float64)
     item = _item()
 
     base = _measure(img, item)
+    cam = _simulate_camera(img, K, D)
     calib = LensCalibration(camera_matrix=K, dist_coeffs=D, image_size=(w, h))
-    fixed = _measure(calib.undistort(_simulate_camera(img, K, D)), item)
+    fixed = _measure(calib.undistort(cam), item)
+    raw = _measure(cam, item)
 
-    assert fixed.meas_length_mm is not None
-    # 재매핑 보간 오차만 남는다 — 공차의 1/5 이내.
-    assert abs(fixed.meas_length_mm - base.meas_length_mm) <= item.tol_plus_mm / 5
+    assert fixed.meas_length_mm is not None and raw.meas_length_mm is not None
+    err_fixed = abs(fixed.meas_length_mm - base.meas_length_mm)
+    err_raw = abs(raw.meas_length_mm - base.meas_length_mm)
+    assert err_fixed <= 0.2, f"보정 후 {err_fixed:.3f}mm — 보간 몫(≤0.2)보다 크다"
+    if k1 <= -0.10:
+        assert err_raw >= 5 * err_fixed, "보정이 왜곡 오차를 크게 줄여야 한다"
 
 
 def test_undistort_is_noop_shaped_and_deterministic():

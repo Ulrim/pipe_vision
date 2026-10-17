@@ -99,18 +99,20 @@ def test_correction_removes_the_tilt_bias(item):
         assert abs(on.meas_length_mm - TRUE_MM) < 0.4, f"{tilt}°"
 
 
-def test_uncorrected_path_breaks_down_past_a_few_degrees(item):
-    """**기존 코드의 결함을 고정한다.**
+@pytest.mark.parametrize("tilt", [5.0, 8.0])
+def test_uncorrected_path_overmeasures_when_tilted(item, tilt):
+    """세로평균 프로파일은 기울면 끝단이 od_px·tanθ 만큼 완만한 경사로 퍼져 길게 잰다.
 
-    세로평균 프로파일은 기울기가 커지면 에지가 od_px·tanθ 만큼 희석돼,
-    경계 아티팩트보다 약해지는 순간 끝단을 통째로 놓치고 ROI 폭을 길이로
-    반환한다. 조용히 틀리는 것이 아니라 **크게** 틀린다.
+    (종전엔 창 경계의 가짜 에지가 이겨 ROI 폭을 길이로 냈다 — 5° 에서 50mm 이상. 평활화를
+    끝값으로 채우게 고친 뒤(2026-10-17)로는 그 결함이 없다. 남은 것은 기하 자체의 과대측정이고
+    ±0.1mm 공차에서는 여전히 치명적이라 보정이 필요하다.)
     """
-    roi = tilted_tube(5.0)
+    roi = tilted_tube(tilt)
     off, _ = measure_length_ex(roi, item, correct_tilt=False)
     on, _ = measure_length_ex(roi, item, correct_tilt=True)
     assert off.meas_length_mm is not None and on.meas_length_mm is not None
-    assert abs(off.meas_length_mm - TRUE_MM) > 50.0, "결함이 재현되지 않았다"
+    assert abs(off.meas_length_mm - roi.shape[1] * SCALE) > 50.0, "ROI 폭을 길이로 내면 안 된다"
+    assert off.meas_length_mm - TRUE_MM > 0.4, "보정 없이 공차(±0.1)의 몇 배로 틀려야 전제가 맞다"
     assert abs(on.meas_length_mm - TRUE_MM) < 0.5
 
 

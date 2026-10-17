@@ -19,7 +19,7 @@ if str(_SERVICES_DIR) not in sys.path:
 
 from vision.imaging import render_batch_overlay, render_overlay  # noqa: E402
 from vision.imaging.draw import draw_length_span  # noqa: E402
-from vision.length import LengthSpan, measure_length_ex  # noqa: E402
+from vision.length import LengthSpan, length_window, measure_length_ex  # noqa: E402
 from vision.multi import inspect_batch  # noqa: E402
 from vision.pipeline import InspectionPipeline  # noqa: E402
 from vision.preprocess import preprocess  # noqa: E402
@@ -30,7 +30,7 @@ from vision.tools.gen_synthetic import make_image, make_multi_image  # noqa: E40
 def test_measure_length_ex_returns_endpoints(item):
     img, bbox = make_image("OK")
     pre = preprocess(img)
-    roi = pre.length_roi.crop(pre.gray_corrected)
+    roi, _x0 = length_window(pre.gray_corrected, pre.length_roi)
     result, endpoints = measure_length_ex(roi, item)
     assert result.edge_detected is True
     assert endpoints is not None

@@ -18,6 +18,13 @@
 6) deviation = meas - ref; OK = -tol_minus <= deviation <= +tol_plus.
 
 끝단 검출 실패(프로파일 평탄/대비 부족) → edge_detected=False, NG.
+
+**측정 창에는 끝단 바깥 배경이 있어야 한다**(END_MARGIN_PX, 2026-10-17). 창이 끝단에서
+딱 끝나면 실제 밝기 변화가 창 밖에 있어 서브픽셀로 잴 것이 없다. 게다가 평활화가 창 바깥을
+0 으로 채워 창 경계에 가짜 에지가 생겼고, 길이가 '창 폭 −1px' 정수로 고정됐다(합성 500px →
+499px, 실제 광학 0.072mm/px 에서 −0.072mm — ±0.1mm 공차의 72%). 이제 호출자(파이프라인·
+다발)가 창을 끝단 밖으로 넓히고, 평활화는 끝값으로 채우며, 끝단 바깥이 배경이 아니면
+(화면·검사 영역 밖까지 이어진 제품) 끝단으로 잡지 않고 정직하게 '끝단 미검출'.
 """
 from __future__ import annotations
 
@@ -30,6 +37,25 @@ from aivis_types import ItemMaster, LengthResult, Verdict
 
 from ..calib.fiducial import FiducialScale
 from .edges import EdgeLineFit, fit_edge_lines
+
+
+#: 측정 창을 끝단 바깥으로 넓히는 폭(px). 끝단의 밝기 변화(블러 포함 몇 px)와 3점 평활이
+#: 창 안에 온전히 들어가야 한다.
+END_MARGIN_PX = 8
+
+
+def length_window(gray: np.ndarray, roi, *, lo: int = 0,
+                  hi: Optional[int] = None) -> Tuple[np.ndarray, int]:
+    """길이를 잴 창 — 제품 상자(roi)를 끝단 바깥으로 END_MARGIN_PX 만큼 넓힌다.
+
+    roi: x0,y0,x1,y1 을 가진 상자(preprocess.Roi 등). lo/hi: 넓힐 수 있는 x 범위(검사
+    영역 등). 반환 (창, 창의 x 시작) — 끝단 좌표 = 창 시작 + 창 안 좌표.
+    상자에서 딱 끝나는 창으로 재면 안 된다(모듈 설명 참조).
+    """
+    hi = gray.shape[1] if hi is None else min(int(hi), gray.shape[1])
+    x0 = max(int(lo), int(roi.x0) - END_MARGIN_PX)
+    x1 = min(hi, int(roi.x1) + END_MARGIN_PX)
+    return gray[int(roi.y0):int(roi.y1), x0:x1], x0
 
 
 @dataclass(frozen=True)
@@ -87,24 +113,36 @@ def _parabolic_subpixel(values: np.ndarray, idx: int) -> float:
     return float(idx) + delta
 
 
+def _smooth_gradient(profile: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """3점 평활 + 1차 차분. 가장자리는 0 이 아니라 **끝값**으로 채운다 — 0 으로 채우면
+    창 경계에 가짜 에지가 생겨 그게 끝단으로 잡혔다(2026-10-17). debug_length 도 이걸 쓴다."""
+    padded = np.pad(np.asarray(profile, dtype=np.float64), 1, mode="edge")
+    smooth = np.convolve(padded, np.ones(3) / 3.0, mode="valid")
+    return smooth, np.gradient(smooth)
+
+
 def _find_edges(
     profile: np.ndarray, min_contrast: float
 ) -> Optional[Tuple[float, float]]:
     """수평 프로파일에서 좌(상승)/우(하강) 끝단 서브픽셀 위치를 찾는다."""
     if profile.size < 5:
         return None
-    # 1차 차분(그래디언트). 평활화로 노이즈 완화.
-    smooth = np.convolve(profile, np.ones(3) / 3.0, mode="same")
-    grad = np.gradient(smooth)
     # 대비 부족이면 실패.
-    if float(np.max(profile) - np.min(profile)) < min_contrast:
+    contrast = float(np.max(profile) - np.min(profile))
+    if contrast < min_contrast:
         return None
+    _smooth, grad = _smooth_gradient(profile)
     left_i = int(np.argmax(grad))    # 가장 강한 상승 에지
     right_i = int(np.argmin(grad))   # 가장 강한 하강 에지
     if right_i <= left_i:
         return None
-    # 에지 강도가 충분한지 확인
-    if abs(grad[left_i]) < 1e-3 or abs(grad[right_i]) < 1e-3:
+    if grad[left_i] < 1e-3 or -grad[right_i] < 1e-3:
+        return None
+    # 끝단이면 그 바깥은 배경(어두움)이다. 바깥이 밝으면 제품이 창 밖까지 이어진 것 —
+    # 화면·검사 영역 경계에 걸린 제품이다. 표면 무늬를 끝단으로 잡지 말고 실패로 보고한다.
+    # (기울기 크기로 거르지 않는 이유: 기운 튜브의 끝단은 세로 평균에서 완만한 경사가 된다.)
+    mid = float(np.min(profile)) + 0.5 * contrast
+    if float(np.min(profile[: left_i + 1])) > mid or float(np.min(profile[right_i:])) > mid:
         return None
     left = _parabolic_subpixel(np.abs(grad), left_i)
     right = _parabolic_subpixel(np.abs(grad), right_i)
@@ -122,6 +160,7 @@ def measure_length_ex(
     correct_tilt: bool = True,
     gauge: Optional[FiducialScale] = None,
     roi_x_offset: float = 0.0,
+    gauge_dir: int = 1,
 ) -> Tuple[LengthResult, Optional[EdgeEndpoints]]:
     """길이 측정 + 끝단 좌표(측정 근거 시각화용) 동시 반환.
 
@@ -135,7 +174,9 @@ def measure_length_ex(
       gauge.span_mm(좌,우) 로 읽는다 — 끝단 옆 마크의 국소 배율이 적용되어
       렌즈 왜곡 잔차·원근이 함께 지워진다(가장 정확한 경로).
       이때 roi_x_offset 으로 ROI 로컬 x 를 **프레임 좌표**로 올려야 한다.
-    roi_x_offset: gray_roi 의 좌상단 x (프레임 좌표). gauge 사용 시 필수.
+    roi_x_offset: gray_roi 의 x=0 이 기준자 좌표로 어디인가(프레임 좌표). gauge 사용 시 필수.
+    gauge_dir: gray_roi 의 x 가 늘 때 기준자 좌표가 +1(같은 방향) / -1(반대). 세로 다발은
+      튜브 crop 을 시계방향으로 돌려 재므로 crop x 가 프레임 y 와 반대로 간다(-1).
     correct_tilt: 기울기 보정 사용. 끄면 종전(수평거리) 동작 — 회귀 비교용이며
       운영에서 끌 이유는 없다.
 
@@ -186,7 +227,9 @@ def measure_length_ex(
     if gauge is not None:
         # 자 읽기. 기울기 보정은 수직거리를 주므로, 수평으로 읽은 값에
         # cos 를 다시 곱해 일관되게 맞춘다.
-        span = gauge.span_mm(roi_x_offset + left, roi_x_offset + right)
+        a = roi_x_offset + gauge_dir * left
+        b = roi_x_offset + gauge_dir * right
+        span = gauge.span_mm(min(a, b), max(a, b))
         if fit is not None:
             span *= pixel_distance / (right - left) if right > left else 1.0
         meas_mm = round(span, 3)

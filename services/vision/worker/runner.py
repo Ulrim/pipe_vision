@@ -795,9 +795,12 @@ class Worker:
             clock.mark("grab")
             inspected_at = held_at or datetime.now(timezone.utc)
             expected = int(getattr(self.item, "expected_count", 1) or 1)
+            # 워커의 파이프라인을 넘긴다 — 새로 만들면 프레임마다 렌즈 보정 파일을 읽고
+            # 왜곡 보정 맵(고해상도에서 무겁다)을 다시 만들며 표면 모델 캐시도 버린다.
             batch = inspect_batch(
                 grab.frame, self.item, expected_count=expected,
                 axis=self._orientation(), stage=self._cur_stage(), area=self.area,
+                pipeline=self.pipeline,
             )
             clock.mark("infer")
             if self._vision() is not None and self._looks_empty(len(batch.tubes), expected):
