@@ -5,6 +5,7 @@
 2. 검사: 영역 밖 물체는 튜브 나누기·단면 세기·단일 제품 찾기에 끼지 않는다. 좌표는 원본
    프레임 기준(라벨링 자르기·오버레이가 그대로 맞는다).
 3. 결과 사진: 노란 점선 사각형, 영역 밖은 어둡게, 영역 안·원본은 그대로.
+   라벨에 가로x세로(px), 길이 검사 모드에서만 mm 근사값도(2026-10-17).
 4. 워커: AIVIS_ROI 하나로 트리거·검사·사진이 같은 영역을 쓴다.
 """
 from __future__ import annotations
@@ -24,7 +25,7 @@ if str(_SERVICES_DIR) not in sys.path:
 from aivis_types import ItemMaster  # noqa: E402
 
 from vision.acquisition import AcquisitionService, VisionTrigger, create_trigger  # noqa: E402
-from vision.imaging.draw import ROI_COLOR  # noqa: E402
+from vision.imaging.draw import ROI_COLOR, inspect_area_label  # noqa: E402
 from vision.imaging.save import (  # noqa: E402
     render_batch_overlay,
     render_count_overlay,
@@ -295,3 +296,54 @@ def test_trigger_uses_same_area(monkeypatch):
 def test_full_frame_worker_draws_nothing(spec, monkeypatch):
     monkeypatch.setenv("AIVIS_ROI", spec)
     assert InspectArea.from_env().full
+
+
+# --- 5. 라벨: 가로x세로 ---------------------------------------------------------
+def test_area_label_px_and_optional_mm():
+    assert inspect_area_label(3648, 1824) == "ROI 3648x1824px"
+    assert inspect_area_label(3648, 1824, 0.072) == "ROI 3648x1824px ~263x131mm"
+    assert inspect_area_label(800, 300, 0.05) == "ROI 800x300px ~40.0x15.0mm"
+    assert inspect_area_label(800, 300, 0) == "ROI 800x300px", "계수가 없으면 px 만"
+
+
+def _record_area_draws(monkeypatch):
+    import vision.imaging.save as save_mod
+
+    calls = []
+    real = save_mod.draw_inspect_area
+
+    def rec(canvas, rect, **kw):
+        calls.append((rect, kw.get("mm_per_px")))
+        return real(canvas, rect, **kw)
+
+    monkeypatch.setattr(save_mod, "draw_inspect_area", rec)
+    return calls
+
+
+def test_worker_mm_only_in_length_mode(tmp_path, monkeypatch):
+    """mm 는 길이 검사 모드에서만 — 표면·크레이트 스테이션은 카메라·거리가 달라 같은 계수로
+    mm 를 내면 틀린 숫자가 된다."""
+    frame, area, _ = _bundle_with_side_object()
+    monkeypatch.setenv("AIVIS_ROI", area.text())
+    calls = _record_area_draws(monkeypatch)
+    backend = FakeBackend(master_requires_auth=True)
+    w = Worker(_cfg(tmp_path, max_iterations=1), client=_client(backend))
+    assert w.startup() is True
+    w.item = w.item.model_copy(update={"expected_count": 5})
+    cam = OneFrameCam(frame)
+    w.camera = cam
+    w.acq = AcquisitionService(camera=cam, max_retries=1, grab_timeout_s=5)
+
+    w._active_stage = "CUT_LENGTH"
+    w.run_once()
+    rect, mm = calls[-1]
+    assert rect is not None and mm == float(w.item.px_to_mm_scale)
+
+    w._active_stage = "POST_WASH_SURFACE"
+    w.run_once()
+    assert calls[-1][1] is None, "표면 모드는 px 만"
+
+    w._active_stage = "CRATE_COUNT"
+    w.run_once()
+    assert calls[-1][1] is None, "크레이트 개수 모드는 px 만"
+    w.shutdown()

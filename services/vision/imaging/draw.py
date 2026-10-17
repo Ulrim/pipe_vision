@@ -141,18 +141,36 @@ ROI_COLOR = (0, 215, 255)
 ROI_DIM = 0.45
 
 
+def inspect_area_label(width_px: int, height_px: int,
+                       mm_per_px: Optional[float] = None) -> str:
+    """검사 영역 라벨 — 'ROI 3648x1824px', mm 환산을 주면 ' ~262x131mm' 를 덧붙인다.
+
+    mm 는 **근사값**(~)이다. 기준정보 px→mm 계수는 길이 카메라·제품 높이 기준이라 길이
+    검사 모드에서만 넘긴다 — 크레이트·표면 스테이션은 카메라·거리가 달라 같은 계수로
+    mm 를 내면 틀린 숫자가 된다. HERSHEY 폰트에 '×'·'≈' 가 없어 x·~ 로 쓴다.
+    """
+    label = f"ROI {int(width_px)}x{int(height_px)}px"
+    if mm_per_px and mm_per_px > 0:
+        def _mm(v: float) -> str:
+            return f"{v:.0f}" if v >= 100 else f"{v:.1f}"
+        label += f" ~{_mm(width_px * mm_per_px)}x{_mm(height_px * mm_per_px)}mm"
+    return label
+
+
 def draw_inspect_area(
     canvas: np.ndarray,
     rect,
     *,
     top_reserved: int = 0,
     txt_scale: Optional[float] = None,
+    mm_per_px: Optional[float] = None,
 ) -> None:
-    """검사 영역(ROI)을 그린다 — 영역 밖은 어둡게, 경계는 노란 점선, 'ROI' 라벨.
+    """검사 영역(ROI)을 그린다 — 영역 밖은 어둡게, 경계는 노란 점선, 라벨에 가로x세로.
 
     rect: preprocess.Roi(원본 프레임 픽셀) 또는 None(화면 전체 → 아무것도 안 그림).
     오버레이를 그리기 **전에** 먼저 부른다 — 판정 표시(튜브 박스·헤더)가 그 위에 온다.
     top_reserved: 위쪽 헤더 높이. 라벨이 헤더에 가리지 않게 그 아래로 내린다.
+    mm_per_px: 주면 라벨에 mm 근사값도 적는다(길이 검사 모드에서만 — inspect_area_label).
     """
     if rect is None:
         return
@@ -177,9 +195,10 @@ def draw_inspect_area(
     for x in (x0, x1):
         dashed_vline(canvas, x, y0, y1, ROI_COLOR, dash=dash, gap=gap, thickness=thick)
 
-    # 3) 라벨 — 영역 위 바깥에 자리가 있으면 거기(판정 표시와 안 겹친다), 없으면 안쪽.
+    # 3) 라벨(가로x세로) — 영역 위 바깥에 자리가 있으면 거기(판정 표시와 안 겹친다),
+    #    없으면 안쪽. 크기는 원본 픽셀 기준(rect 그대로 — 화면 축소와 무관).
     scale = txt_scale if txt_scale is not None else max(0.6, base / 900.0)
-    label = "ROI"
+    label = inspect_area_label(rect.x1 - rect.x0, rect.y1 - rect.y0, mm_per_px)
     (tw, th), _ = cv2.getTextSize(label, _FONT, scale, 2)
     pad = 4
     if y0 - th - 2 * pad >= top_reserved:
@@ -198,4 +217,5 @@ __all__ = [
     "dashed_hline",
     "draw_inspect_area",
     "draw_length_span",
+    "inspect_area_label",
 ]

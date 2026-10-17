@@ -355,6 +355,17 @@ class Worker:
         """지금 돌아야 할 검사 단계(=모드). 활성 오더 > env."""
         return self._active_stage or self.cfg.inspection_stage
 
+    def _area_mm_per_px(self) -> Optional[float]:
+        """검사 영역 라벨의 mm 환산 계수 — **길이 검사 모드에서만**.
+
+        기준정보 px→mm 계수는 길이 카메라·제품 높이에 맞춘 값이다. 표면·크레이트 스테이션은
+        카메라·거리가 달라 같은 계수로 mm 를 내면 틀린 숫자가 되므로 픽셀만 적는다.
+        """
+        if self._cur_stage() != InspectionStage.CUT_LENGTH.value or self.item is None:
+            return None
+        scale = float(getattr(self.item, "px_to_mm_scale", 0) or 0)
+        return scale if scale > 0 else None
+
     def _cur_item_code(self) -> str:
         """검사 결과에 쓸 품목코드 — 전환된 self.item 이 항상 우선."""
         return self.item.item_code if self.item is not None else self.cfg.item_code
@@ -648,6 +659,7 @@ class Worker:
                 force_raw=self._training,
                 length_span=length_span,
                 area=self.area,
+                area_mm_per_px=self._area_mm_per_px(),
             )
             clock.mark("save")
             if saved.error:
@@ -803,6 +815,7 @@ class Worker:
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
                 area=self.area,
+                area_mm_per_px=self._area_mm_per_px(),
             )
             clock.mark("save")
             if saved.error:

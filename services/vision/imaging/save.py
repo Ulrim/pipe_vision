@@ -237,6 +237,7 @@ def render_overlay(
     item=None,
     length_span: Optional[LengthSpan] = None,
     area: Optional[InspectArea] = None,
+    area_mm_per_px: Optional[float] = None,
 ) -> np.ndarray:
     """원본 위에 판정 결과를 시각화한 BGR 이미지를 반환한다(결정적).
 
@@ -245,7 +246,8 @@ def render_overlay(
     length_span: 길이 측정 스팬(끝단 2점·세로 범위, 프레임 좌표). 주어지면 양
       끝단 마커 + 측정선 + 'L=..mm dev=..mm OK/NG' 를 그려 측정 근거를 시각화한다
       (사용자 피드백② 대응). None 이면 기존 오버레이와 동일.
-    area: 검사 영역(AIVIS_ROI). 주면 노란 점선 사각형 + 'ROI' 로 그리고 밖을 어둡게 한다.
+    area: 검사 영역(AIVIS_ROI). 주면 노란 점선 사각형 + 'ROI 가로x세로px' 로 그리고 밖을
+      어둡게 한다. area_mm_per_px 를 주면 mm 근사값도(길이 검사 모드에서만 넘긴다).
 
     표기:
       - 최종 OK/NG: 색(초록/빨강) + 텍스트 기호([OK]/[NG], 색약 고려).
@@ -268,7 +270,8 @@ def render_overlay(
     symbol = "[OK]" if is_ok else "[NG]"
 
     # 0) 검사 영역(ROI) — 먼저 깔고 판정 표시를 그 위에 그린다.
-    draw_inspect_area(canvas, area_rect(area, frame), top_reserved=bar_h)
+    draw_inspect_area(canvas, area_rect(area, frame), top_reserved=bar_h,
+                      mm_per_px=area_mm_per_px)
 
     # 1) 외곽 테두리(색약 고려: 두께 + 색으로 즉시 식별).
     cv2.rectangle(canvas, (1, 1), (w - 2, h - 2), color, thickness=max(3, h // 100))
@@ -357,7 +360,11 @@ def render_overlay(
 
 
 def render_batch_overlay(
-    frame: np.ndarray, batch_result, *, area: Optional[InspectArea] = None
+    frame: np.ndarray,
+    batch_result,
+    *,
+    area: Optional[InspectArea] = None,
+    area_mm_per_px: Optional[float] = None,
 ) -> np.ndarray:
     """다중 튜브 배치 결과를 원본 위에 시각화한 BGR 이미지 반환(결정적).
 
@@ -369,7 +376,8 @@ def render_batch_overlay(
       - 튜브별 bbox 사각형: OK=초록(얇게), NG=빨강(두껍게).
       - 각 튜브 근처: '#N [OK/NG]' + 불량코드(LEN/OIL/DIS/SCR) + 길이(mm).
       - 상단 헤더바: 배치 OK/NG + 검출개수 vs 기대개수, 불일치 시 MISMATCH 경고.
-      - area(검사 영역)가 있으면 노란 점선 사각형 + 'ROI', 영역 밖은 어둡게.
+      - area(검사 영역)가 있으면 노란 점선 사각형 + 'ROI 가로x세로px'(area_mm_per_px 를
+        주면 mm 근사값도 — 길이 검사 모드), 영역 밖은 어둡게.
     OpenCV 그리기만 사용하며 한글을 쓰지 않는다(폰트 깨짐 방지).
     """
     if frame is None or getattr(frame, "ndim", 0) != 3:
@@ -394,7 +402,8 @@ def render_batch_overlay(
 
     bar_h = max(30, h // 12)
     # 0) 검사 영역(ROI) — 가장 먼저(헤더·튜브 박스가 그 위에 온다).
-    draw_inspect_area(canvas, area_rect(area, frame), top_reserved=bar_h)
+    draw_inspect_area(canvas, area_rect(area, frame), top_reserved=bar_h,
+                      mm_per_px=area_mm_per_px)
     # 반투명 배경(0.55) — 그 아래 원본/튜브 픽셀이 비쳐 보인다.
     bar_bg = canvas.copy()
     cv2.rectangle(bar_bg, (0, 0), (w, bar_h), hdr_color, thickness=-1)
@@ -657,9 +666,11 @@ def _save_via_backend(
     cam_id: Optional[str] = None,
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
+    area_mm_per_px: Optional[float] = None,
 ) -> ImageSaveResult:
     """단일 검사 결과를 렌더(render_overlay) 후 백엔드에 업로드(호환 래퍼)."""
-    overlay = render_overlay(frame, result, item=item, length_span=length_span, area=area)
+    overlay = render_overlay(frame, result, item=item, length_span=length_span, area=area,
+                             area_mm_per_px=area_mm_per_px)
     return _save_pair_via_backend(
         backend,
         frame,
@@ -690,10 +701,12 @@ def save_inspection_images(
     cam_id: Optional[str] = None,
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
+    area_mm_per_px: Optional[float] = None,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
 
     area: 검사 영역 — result 사진에만 그린다(원본은 손대지 않는다 — 학습 입력).
+    area_mm_per_px: 영역 라벨에 mm 근사값을 함께 적을 때(길이 검사 모드).
 
     force_raw: 원격 저장에서 원본 정책(AIVIS_REMOTE_RAW)과 무관하게 원본을 올린다
     — 수집용 LOT(라벨링에 원본이 필요하다).
@@ -739,10 +752,12 @@ def save_inspection_images(
                 cam_id=cam_id,
                 force_raw=force_raw,
                 area=area,
+                area_mm_per_px=area_mm_per_px,
             )
         # local 디스크 경로(기존 동작 그대로).
         raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
-        overlay = render_overlay(frame, result, item=item, length_span=length_span, area=area)
+        overlay = render_overlay(frame, result, item=item, length_span=length_span, area=area,
+                                 area_mm_per_px=area_mm_per_px)
         result_path = save_result(
             overlay,
             target_dir,
@@ -775,6 +790,7 @@ def save_batch_images(
     cam_id: Optional[str] = None,
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
+    area_mm_per_px: Optional[float] = None,
 ) -> ImageSaveResult:
     """배치(다중 튜브) 1프레임의 raw + 배치 오버레이 result 를 **1회** 저장.
 
@@ -800,7 +816,8 @@ def save_batch_images(
             backend = build_backend(settings)
 
     try:
-        overlay = render_batch_overlay(frame, batch_result, area=area)
+        overlay = render_batch_overlay(frame, batch_result, area=area,
+                                       area_mm_per_px=area_mm_per_px)
         if backend is not None:
             return _save_pair_via_backend(
                 backend,
