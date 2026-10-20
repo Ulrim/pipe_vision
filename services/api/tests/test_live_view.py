@@ -9,10 +9,10 @@
 from __future__ import annotations
 
 import base64
+import io
 
-import cv2
-import numpy as np
 import pytest
+from PIL import Image
 
 from core import live
 
@@ -25,9 +25,9 @@ def _clean_live():
 
 
 def _jpeg(v: int = 120) -> str:
-    ok, buf = cv2.imencode(".jpg", np.full((48, 64), v, np.uint8))
-    assert ok
-    return base64.b64encode(buf.tobytes()).decode()
+    buf = io.BytesIO()
+    Image.new("L", (64, 48), v).save(buf, format="JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def _beat(client, cam="PI-L1"):
