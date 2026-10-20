@@ -69,9 +69,12 @@ def _flat_tube(length_px: float, *, h: int = 200, w: int = 900, up: int = 10) ->
 def test_end_detection_is_subpixel():
     """길이가 화소 사이 값이어도 그 값으로 잰다(종전: 창 폭 −1px 정수로 고정).
 
-    허용 ±0.25px: 기울기 정점의 포물선 보간은 끝단이 화소 안 어디에 있느냐에 따라 최대
-    0.2px 쯤 치우친다(S자 — 알려진 성질, 실제 광학 0.072mm/px 에서 0.014mm). 실물 MSA 에서
-    확인할 남은 항목이다. 여기서 지키는 것은 '화소 사이 길이를 구분한다' 는 것.
+    허용 ±0.01px(2026-10-20, 종전 ±0.25px). 종전 경로는 위상 따라 최대 0.2px 치우쳤다
+    (500.5→500.596, 500.8→501.000). 원인은 둘이었다 — 끝단 위치를 반사 보정본에서 쟀고
+    (조명 나눗셈·후광·미디언이 끝단 걸침 화소의 밝기를 바꾼다), 기울기 3점 포물선이었다.
+    이제 위치는 선형 그레이에서 대칭 창 기울기 무게중심으로 잰다. 이 합성(블러 없는 면적 적분
+    계단)에서 그 방법은 이론상 정확하다 — 중앙차분이 [f/2, 1/2, (1-f)/2] 라 무게중심이 끝단이다.
+    남는 것은 걸침 화소의 8비트 반올림(끝단당 ≤0.003px)과 mm 소수 셋째 자리 반올림(0.004px).
     """
     lengths = [499.7, 500.0, 500.2, 500.3, 500.5, 500.8]
     meas = []
@@ -79,7 +82,7 @@ def test_end_detection_is_subpixel():
         item = _item(expected_count=1, ref_length_mm=length_px * SCALE)
         r = InspectionPipeline().run(_flat_tube(length_px), item)
         assert r.length.meas_length_mm is not None
-        assert r.length.meas_length_mm == pytest.approx(length_px * SCALE, abs=0.25 * SCALE), \
+        assert r.length.meas_length_mm == pytest.approx(length_px * SCALE, abs=0.01 * SCALE), \
             f"{length_px}px → {r.length.meas_length_mm / SCALE:.3f}px"
         meas.append(r.length.meas_length_mm)
     assert meas == sorted(meas) and len(set(meas)) == len(meas), \

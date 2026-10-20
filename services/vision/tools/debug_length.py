@@ -11,8 +11,9 @@
   - services/vision/length/measure.py, services/vision/preprocess/roi.py 는
     이 파일에서 **수정하지 않는다**. 판정에 쓰이는 실제 함수
     (segment_pipe_roi/preprocess, measure_length, 그리고 private
-    `_find_edges`/`_parabolic_subpixel`)를 그대로 호출해 단일 진실원을
-    유지한다. 시각화를 위해 필요한 '중간값'(그래디언트 등)만 동일 수식으로
+    `_find_edges`·끝단 서브픽셀 추정기 `length/subpixel.edge_subpixel`)를 그대로
+    호출해 단일 진실원을 유지한다. 운영과 같이 끝단 찾기는 반사 보정본, 서브픽셀
+    위치는 선형 그레이(PreprocessResult.gray)로 잰다(2026-10-20). 시각화를 위해 필요한 '중간값'(그래디언트 등)만 동일 수식으로
     재현하며, 재현한 값은 실제 판정에 관여하지 않는다(표시 전용).
   - packages/shared-types 는 변경하지 않는다. `EdgeDebugInfo` 는 이 모듈
     내부 dataclass 로만 존재한다(services/vision/multi/batch.py 의
@@ -101,6 +102,7 @@ from vision.length.measure import (  # noqa: E402  (private 재사용 — 재구
     length_window,
     measure_length,
 )
+from vision.length.subpixel import edge_subpixel  # noqa: E402  (운영 추정기 그대로)
 from vision.multi.batch import tube_window  # noqa: E402
 from vision.multi.segment import TubeROI, segment_tubes  # noqa: E402
 from vision.preprocess.roi import Roi, preprocess  # noqa: E402
@@ -159,9 +161,9 @@ class EdgeDebugInfo:
     right_idx: Optional[int]                          # 그래디언트 argmin(로컬 idx)
     left_sub_local: Optional[float]                    # 서브픽셀 보정 후(로컬 idx)
     right_sub_local: Optional[float]
-    left_delta: Optional[float]                          # 포물선 보정량(표시용)
+    left_delta: Optional[float]                          # 정수 극값 대비 서브픽셀 보정량(표시용)
     right_delta: Optional[float]
-    left_applied: bool                                    # |delta|<=1 로 보정 반영됐는지
+    left_applied: bool                                    # 보정이 반영됐는지(정수 그대로가 아님)
     right_applied: bool
     left_abs: Optional[float]                              # 전체 프레임 절대 x(서브픽셀)
     right_abs: Optional[float]
@@ -174,7 +176,7 @@ def _profile_and_gradient(profile: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     """measure._find_edges 의 평활+그래디언트 계산을 표시용으로 재현한다.
 
     실제 끝단 판정(성공/실패, 서브픽셀 보정값)은 절대 여기서 재구현하지 않고
-    `_find_edges`/`_parabolic_subpixel` 을 그대로 호출한다(단일 진실원). 이
+    `_find_edges`/`edge_subpixel` 을 그대로 호출한다(단일 진실원). 이
     함수는 그 산출 과정의 중간값(smooth/grad)을 그래프로 보여주기 위해 동일
     수식만 되풀이한다.
     """
@@ -205,21 +207,26 @@ def compute_edge_debug(
     if roi is not None:
         # 운영과 같이 끝단 바깥 배경까지 넓힌 창(length_window)으로 잰다.
         gray_roi, roi_x0 = length_window(pre.gray_corrected, roi)
+        lin_roi = length_window(pre.gray, roi)[0] if pre.gray is not None else None
         roi_y0, roi_y1 = roi.y0, roi.y1
     else:
         gray_roi = pre.gray_corrected
+        lin_roi = pre.gray
         roi_x0, roi_y0, roi_y1 = 0, 0, h
 
     profile = np.array([], dtype=np.float32)
+    lin_profile = None
     if gray_roi is not None and gray_roi.ndim == 2 and gray_roi.shape[1] >= 1:
         profile = gray_roi.astype(np.float32).mean(axis=0)
+        if lin_roi is not None:
+            lin_profile = lin_roi.astype(np.float32).mean(axis=0)
     contrast = float(profile.max() - profile.min()) if profile.size else 0.0
     _smooth, grad = _profile_and_gradient(profile)
 
     # 공식 판정 경로(measure._find_edges)를 그대로 호출한다 — 단일 진실원.
     # 성공 시 반환되는 (left, right) 서브픽셀 좌표는 아래 measure_length() 가
     # 내부적으로 산출하는 값과 100% 동일 입력에서 나온 것이라 항상 일치한다.
-    edges = _find_edges(profile, min_contrast) if profile.size else None
+    edges = _find_edges(profile, min_contrast, linear=lin_profile) if profile.size else None
 
     left_idx = right_idx = None
     left_sub_local = right_sub_local = None
@@ -235,10 +242,16 @@ def compute_edge_debug(
             # 성공: 실제 판정에 쓰인 서브픽셀 값을 그대로 표시(진실원 일치).
             left_sub_local, right_sub_local = edges
         else:
-            # 실패(게이트 미달 등): _parabolic_subpixel 을 직접 재사용해
-            # "만약 채택됐다면" 값을 참고용으로만 보여준다(공식 결과 아님).
-            left_sub_local = _parabolic_subpixel(abs_grad, left_idx)
-            right_sub_local = _parabolic_subpixel(abs_grad, right_idx)
+            # 실패(게이트 미달 등): 운영 추정기(edge_subpixel)를 직접 재사용해
+            # "만약 채택됐다면" 값을 참고용으로만 보여준다(공식 결과 아님). 추정이
+            # 실패하면 _find_edges 와 같이 종전 포물선으로 대신한다.
+            src = profile if lin_profile is None else lin_profile
+            left_sub_local = edge_subpixel(src, left_idx)
+            right_sub_local = edge_subpixel(src, right_idx)
+            if left_sub_local is None:
+                left_sub_local = _parabolic_subpixel(abs_grad, left_idx)
+            if right_sub_local is None:
+                right_sub_local = _parabolic_subpixel(abs_grad, right_idx)
         left_delta = left_sub_local - float(left_idx)
         right_delta = right_sub_local - float(right_idx)
         left_applied = abs(left_delta) > 1e-9
@@ -266,7 +279,7 @@ def compute_edge_debug(
             roi.x0 <= 1 or roi.y0 <= 1 or roi.x1 >= w - 1 or roi.y1 >= h - 1
         )
 
-    length = measure_length(gray_roi, item, min_contrast=min_contrast)
+    length = measure_length(gray_roi, item, min_contrast=min_contrast, linear=lin_roi)
 
     return EdgeDebugInfo(
         frame_shape=(h, w),

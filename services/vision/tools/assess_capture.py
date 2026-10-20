@@ -167,9 +167,10 @@ def assess_image(path: str | Path) -> ImageAssessment:
                 or r.x1 >= w - EDGE_TOUCH_PX
                 or r.y1 >= h - EDGE_TOUCH_PX
             )
-            # 운영 파이프라인과 같은 방식으로 자른다(pipeline.py 참조).
+            # 운영 파이프라인과 같은 방식으로 자르고, 위치는 선형 그레이로 잰다(pipeline.py 참조).
             win, _x0 = length_window(pre.gray_corrected, r)
-            _res, ends = measure_length_ex(win, _probe_item())
+            lin = length_window(pre.gray, r)[0] if pre.gray is not None else None
+            _res, ends = measure_length_ex(win, _probe_item(), linear=lin)
             if ends is not None:
                 out.ends_found = True
                 out.pipe_len_px = float(abs(ends.right_x - ends.left_x))

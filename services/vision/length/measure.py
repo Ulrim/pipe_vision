@@ -5,7 +5,14 @@
    파이프는 밝고 배경은 어두우므로 좌/우 끝단에서 급격한 그래디언트가 생긴다.
 2) 프로파일의 그래디언트(소벨/차분)에서 좌측 최대(상승 에지), 우측 최소(하강 에지)
    위치를 픽셀 단위로 찾는다.
-3) 그래디언트 극값 주변 3점 포물선 피팅으로 서브픽셀 끝단 좌표를 구한다.
+3) 그 정수 위치에서 **대칭 창 기울기 무게중심**(subpixel.edge_subpixel_rows)으로
+   서브픽셀 끝단 좌표를 구한다. 종전의 기울기 3점 포물선은 끝단이 화소 안 어디냐에 따라
+   치우쳤다(S자, 2026-10-20 벤치마크 — vision.tools.subpixel_benchmark).
+   **선형 영상(linear)** 을 주면 위치는 그 영상에서 잰다. 반사 보정본은 계측에 못 쓴다 —
+   조명 나눗셈이 끝단에서 화소마다 크게 바뀌는 이득(작은 다발 crop 에서 화소당 ~10%)을
+   곱해 끝단 걸침 화소의 밝기를 바꾸고, 끝단 양옆에 후광을 만들며, 그 뒤의 미디언이 후광을
+   깎으면서 걸침 화소를 평탄부처럼 만든다. 화소 사이 위치 정보가 지워져 어떤 추정기로도
+   0.2~0.3px 가 남는다(합성 막대, 벤치마크). 찾기·가드는 보정본, 위치는 선형 영상이다.
 4) **행별 서브픽셀 에지에 직선을 적합**해 기울기를 구하고, 두 직선의
    **수직거리**를 pixel_distance 로 쓴다(edges.fit_edge_lines).
    세로 평균의 수평거리를 그냥 쓰면 기울기 θ 에 대해 1/cosθ 배로 과대측정된다 —
@@ -37,6 +44,7 @@ from aivis_types import ItemMaster, LengthResult, Verdict
 
 from ..calib.fiducial import FiducialScale
 from .edges import EdgeLineFit, fit_edge_lines
+from .subpixel import edge_subpixel_rows
 
 
 #: 측정 창을 끝단 바깥으로 넓히는 폭(px). 끝단의 밝기 변화(블러 포함 몇 px)와 3점 평활이
@@ -91,10 +99,12 @@ class LengthSpan:
 
 
 def _parabolic_subpixel(values: np.ndarray, idx: int) -> float:
-    """idx 주변 3점 포물선 정점으로 서브픽셀 위치 보정.
+    """idx 주변 3점 포물선 정점으로 서브픽셀 위치 보정 — **종전 추정기, 이제 대비책.**
 
     values: 1D 배열, idx: 정수 극값 위치. 반환: 서브픽셀 위치(float).
-    경계면 보정 없이 idx 반환.
+    경계면 보정 없이 idx 반환. 끝단 위치는 subpixel.edge_subpixel_rows 가 잰다. 이 함수는
+    그게 실패했을 때(가드는 통과했는데 위치 영상의 창 안에 끝단 방향 기울기가 없을 때)만
+    쓰인다 — 측정을 멈추지 않기 위해서다. debug_length·벤치마크가 비교용으로도 부른다.
     """
     if idx <= 0 or idx >= len(values) - 1:
         return float(idx)
@@ -122,9 +132,14 @@ def _smooth_gradient(profile: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _find_edges(
-    profile: np.ndarray, min_contrast: float
+    profile: np.ndarray, min_contrast: float, linear: Optional[np.ndarray] = None,
 ) -> Optional[Tuple[float, float]]:
-    """수평 프로파일에서 좌(상승)/우(하강) 끝단 서브픽셀 위치를 찾는다."""
+    """수평 프로파일에서 좌(상승)/우(하강) 끝단 서브픽셀 위치를 찾는다.
+
+    linear: 같은 창의 **선형 영상** 프로파일(보정·필터 없음). 주면 서브픽셀 위치는 그걸로
+    잰다. 찾기(극값)와 가드(대비·끝단 바깥 배경)는 언제나 profile 로 한다 — 판정 경로가
+    바뀌지 않게.
+    """
     if profile.size < 5:
         return None
     # 대비 부족이면 실패.
@@ -144,8 +159,16 @@ def _find_edges(
     mid = float(np.min(profile)) + 0.5 * contrast
     if float(np.min(profile[: left_i + 1])) > mid or float(np.min(profile[right_i:])) > mid:
         return None
-    left = _parabolic_subpixel(np.abs(grad), left_i)
-    right = _parabolic_subpixel(np.abs(grad), right_i)
+    src = profile if linear is None else np.asarray(linear)
+    if src.shape != profile.shape:
+        raise ValueError("_find_edges: linear 프로파일 길이가 profile 과 다르다")
+    sub = edge_subpixel_rows(np.vstack([src, src]), np.array([left_i, right_i]))
+    left, right = float(sub[0]), float(sub[1])
+    # 추정이 실패하면(가드는 통과 — 끝단은 있다) 종전 포물선으로 잰다. 멈추지 않는다.
+    if not np.isfinite(left):
+        left = _parabolic_subpixel(np.abs(grad), left_i)
+    if not np.isfinite(right):
+        right = _parabolic_subpixel(np.abs(grad), right_i)
     if right <= left:
         return None
     return left, right
@@ -161,6 +184,7 @@ def measure_length_ex(
     gauge: Optional[FiducialScale] = None,
     roi_x_offset: float = 0.0,
     gauge_dir: int = 1,
+    linear: Optional[np.ndarray] = None,
 ) -> Tuple[LengthResult, Optional[EdgeEndpoints]]:
     """길이 측정 + 끝단 좌표(측정 근거 시각화용) 동시 반환.
 
@@ -179,6 +203,9 @@ def measure_length_ex(
       튜브 crop 을 시계방향으로 돌려 재므로 crop x 가 프레임 y 와 반대로 간다(-1).
     correct_tilt: 기울기 보정 사용. 끄면 종전(수평거리) 동작 — 회귀 비교용이며
       운영에서 끌 이유는 없다.
+    linear: gray_roi 와 같은 창의 **선형 그레이**(보정·필터 없음, PreprocessResult.gray).
+      주면 끝단 서브픽셀 위치(프로파일·행별 적합 모두)를 거기서 잰다. 끝단 찾기·가드·적합
+      게이트는 gray_roi 그대로. 운영 파이프라인은 늘 준다(모듈 설명 3) 참조).
 
     우선순위: gauge > mm_per_px_override > item.px_to_mm_scale.
     """
@@ -191,10 +218,13 @@ def measure_length_ex(
     )
 
     edges = None
+    if linear is not None and (gray_roi is None or np.shape(linear) != np.shape(gray_roi)):
+        raise ValueError("measure_length_ex: linear 는 gray_roi 와 같은 창이어야 한다")
     if gray_roi is not None and gray_roi.ndim == 2 and gray_roi.shape[1] >= 5:
         # 세로 평균으로 1D 수평 프로파일 → 끝단의 수직 에지를 강조.
         profile = gray_roi.astype(np.float32).mean(axis=0)
-        edges = _find_edges(profile, min_contrast)
+        lin_profile = None if linear is None else np.asarray(linear).mean(axis=0, dtype=np.float32)
+        edges = _find_edges(profile, min_contrast, linear=lin_profile)
 
     if edges is None:
         elapsed = int(round((time.perf_counter() - t0) * 1000))
@@ -215,7 +245,7 @@ def measure_length_ex(
     pixel_distance = right - left
     fit: Optional[EdgeLineFit] = None
     if correct_tilt:
-        candidate = fit_edge_lines(gray_roi, left, right)
+        candidate = fit_edge_lines(gray_roi, left, right, linear=linear)
         # 게이트를 통과한 적합만 측정을 덮어쓴다. 약한 적합이 이기면 보정이
         # 아니라 새 오차가 된다(행 4개짜리 기울기는 노이즈다).
         if candidate is not None and candidate.reject_reason(gray_roi.shape[0]) is None:
@@ -259,16 +289,18 @@ def measure_length(
     *,
     min_contrast: float = 20.0,
     mm_per_px_override: Optional[float] = None,
+    linear: Optional[np.ndarray] = None,
 ) -> LengthResult:
     """길이 측정. gray_roi 는 length_roi 로 크롭한 그레이(전처리 보정본 권장).
 
     item.px_to_mm_scale, ref_length_mm, tol_plus_mm, tol_minus_mm 사용
     (임계/보정계수 하드코딩 금지 — 모두 ItemMaster 에서 읽는다). 끝단 좌표까지
-    필요하면 measure_length_ex 를 쓴다(이 함수는 그 얇은 래퍼).
+    필요하면 measure_length_ex 를 쓴다(이 함수는 그 얇은 래퍼). linear 도 그쪽 참조.
     """
     result, _endpoints = measure_length_ex(
         gray_roi, item,
         min_contrast=min_contrast,
         mm_per_px_override=mm_per_px_override,
+        linear=linear,
     )
     return result

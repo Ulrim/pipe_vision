@@ -50,6 +50,9 @@ class PreprocessResult:
 
     - gray_corrected: 반사 보정+정규화된 그레이(전체 프레임 크기).
     - mask: 파이프 전경 이진 마스크(uint8 0/255).
+    - gray: **선형** 그레이(BGR→GRAY 만, 보정·필터 없음). 길이 끝단의 서브픽셀 위치는
+      여기서 잰다 — 반사 보정(조명 나눗셈·CLAHE·미디언)은 끝단 옆에 후광을 만들고 끝단 걸침
+      화소의 밝기를 바꿔 화소 사이 위치를 지운다(2026-10-20, length/measure.py 설명 3).
     - length_roi: 길이 측정 영역(파이프 전체 바운딩박스).
     - surface_roi: 표면 판정 영역(끝단을 인셋한 안쪽).
     - found: 파이프 영역 검출 성공 여부.
@@ -61,6 +64,7 @@ class PreprocessResult:
     surface_roi: Optional[Roi]
     found: bool
     proc_time_ms: int = 0
+    gray: Optional[np.ndarray] = None
 
 
 def _correct_reflection(gray: np.ndarray) -> np.ndarray:
@@ -164,4 +168,5 @@ def preprocess(
         surface_roi=surface_roi,
         found=length_roi is not None,
         proc_time_ms=elapsed,
+        gray=gray,
     )

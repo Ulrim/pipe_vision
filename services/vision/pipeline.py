@@ -455,14 +455,17 @@ class InspectionPipeline:
                 # 끝나는 창은 밝기 변화가 창 밖이라 서브픽셀로 잴 것이 없다(창 폭 −1px 로
                 # 고정됐었다). 검사 영역이 있으면 그 밖으로는 넓히지 않는다.
                 rect = area_rect(area, frame_bgr)
-                gray_roi, win_x0 = length_window(
-                    pre.gray_corrected, r,
-                    lo=rect.x0 if rect is not None else 0,
-                    hi=rect.x1 if rect is not None else None,
-                )
+                span_lo = rect.x0 if rect is not None else 0
+                span_hi = rect.x1 if rect is not None else None
+                gray_roi, win_x0 = length_window(pre.gray_corrected, r, lo=span_lo, hi=span_hi)
+                # 끝단 서브픽셀 위치는 같은 창의 **선형** 그레이에서 잰다(찾기·가드는 보정본).
+                # 반사 보정본은 끝단 옆 후광 + 미디언으로 화소 사이 위치가 지워진다(measure.py).
+                linear = (length_window(pre.gray, r, lo=span_lo, hi=span_hi)[0]
+                          if pre.gray is not None else None)
             else:
                 win_x0 = 0
                 gray_roi = pre.gray_corrected  # ROI 미검출 → 끝단검출 실패 유도.
+                linear = pre.gray
             # 기준자가 설정돼 있으면 **이 프레임에서** 배율을 읽어 쓴다.
             # 못 읽으면 저장된 스케일로 떨어지되 반드시 기록에 남긴다 —
             # 조용히 떨어지면 정확도가 왜 나빠졌는지 알 수 없다.
@@ -488,6 +491,7 @@ class InspectionPipeline:
             length, endpoints = measure_length_ex(
                 gray_roi, master, gauge=gauge,
                 roi_x_offset=origin + direction * float(roi_x0), gauge_dir=direction,
+                linear=linear,
             )
             length = self._to_reference_temperature(length, master, gauge_used=gauge is not None)
             if endpoints is not None and pre.length_roi is not None:

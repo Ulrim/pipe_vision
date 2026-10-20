@@ -31,6 +31,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from .subpixel import CONTEXT_PX, edge_subpixel_rows
+
 #: 행별 끝단을 찾을 때 거친 추정 주변으로 볼 창(px). 기울기가 커도 담기도록
 #: 넉넉히 두되, 옆 구조물을 끌어들이지 않을 만큼만.
 SEARCH_HALF_WIDTH_PX = 24
@@ -140,18 +142,15 @@ class EdgeLineFit:
         return None
 
 
-def _row_subpixel(grad_row: np.ndarray, idx: int) -> Optional[float]:
-    """3점 포물선 정점. 경계·평탄이면 None(그 행은 버린다)."""
-    if idx <= 0 or idx >= grad_row.size - 1:
-        return None
-    y0, y1, y2 = float(grad_row[idx - 1]), float(grad_row[idx]), float(grad_row[idx + 1])
-    denom = y0 - 2.0 * y1 + y2
-    if abs(denom) < 1e-9:
-        return float(idx)
-    delta = 0.5 * (y0 - y2) / denom
-    if abs(delta) > 1.0:
-        return float(idx)
-    return float(idx) + delta
+def _row_subpixel(rows: np.ndarray, idx: np.ndarray) -> np.ndarray:
+    """행별 서브픽셀 끝단(창 로컬 x). 못 찾은 행은 NaN(그 행은 버린다).
+
+    rows 는 **밝기**(기울기가 아니다), idx 는 행마다 찾은 기울기 극값. 위치는 세로 평균
+    경로(measure._find_edges)와 같은 추정기로 잰다 — subpixel.edge_subpixel_rows.
+    (종전에는 기울기 3점 포물선이었고 위상 따라 치우쳤다 — 그 모듈 설명 참조.)
+    행마다 파이썬으로 돌지 않고 한 번에 잰다(다발 20개 × 수백 행).
+    """
+    return edge_subpixel_rows(rows, idx)
 
 
 def _fit_line(ys: np.ndarray, xs: np.ndarray, y_center: float) -> Optional[EdgeLine]:
@@ -201,25 +200,36 @@ def fit_edge_lines(
     *,
     half_width: int = SEARCH_HALF_WIDTH_PX,
     min_row_grad: float = MIN_ROW_GRAD,
+    linear: Optional[np.ndarray] = None,
 ) -> Optional[EdgeLineFit]:
     """거친 끝단 추정 주변에서 행별 서브픽셀 에지를 모아 직선 두 개를 적합.
 
     coarse_left/right 는 세로 평균 프로파일로 얻은 값을 넣는다(기존 경로 재사용).
     실패(유효 행 부족)하면 None — 호출자는 종전 방식으로 떨어진다.
+    linear: 같은 창의 선형 그레이. 주면 행별 서브픽셀 위치를 거기서 잰다(극값 찾기와 행
+    강도 게이트는 gray_roi). measure.measure_length_ex 참조.
     """
     if gray_roi is None or gray_roi.ndim != 2:
         return None
     h, w = gray_roi.shape
     if h < 3 or w < 5:
         return None
+    if linear is not None and np.shape(linear) != (h, w):
+        raise ValueError("fit_edge_lines: linear 는 gray_roi 와 같은 창이어야 한다")
 
     g = gray_roi.astype(np.float32)
     # 행 전체의 수평 그래디언트를 한 번에. 행마다 돌면 파이에서 느리다.
     grad = np.gradient(g, axis=1)
+    src = g if linear is None else np.asarray(linear)     # 변환은 떼어 낸 행 블록만(추정기 안)
     ys = np.arange(h)
     y_center = (h - 1) / 2.0
 
-    def side(coarse: float, rising: bool) -> Optional[EdgeLine]:
+    # 위치 추정은 극값 양옆까지 읽으므로 탐색 창보다 CONTEXT_PX 넓은 행 블록을 넘긴다.
+    # 양 끝단 블록 폭을 같게 잡아 **한 번에** 잰다 — 추정기 호출 고정비가 처리시간의 대부분이다.
+    span = 2 * half_width + 1 + 2 * CONTEXT_PX
+
+    def side_rows(coarse: float, rising: bool):
+        """(행 번호, 블록 안 극값 위치, 블록 x 시작, 블록 열) — 행이 모자라면 None."""
         c = int(round(coarse))
         lo = max(0, c - half_width)
         hi = min(w, c + half_width + 1)
@@ -233,17 +243,22 @@ def fit_edge_lines(
         ok = peak >= min_row_grad
         if int(ok.sum()) < 3:
             return None
-        xs = np.empty(h, dtype=np.float64)
-        good = np.zeros(h, dtype=bool)
-        for r in np.nonzero(ok)[0]:
-            sub = _row_subpixel(signed[r], int(idx[r]))
-            if sub is None:
-                continue
-            xs[r] = lo + sub
-            good[r] = True
+        rows = np.nonzero(ok)[0]
+        # 탐색 창 경계에 붙은 극값은 진짜 극값이 창 밖일 수 있다 — 종전과 같이 그 행은 버린다.
+        inner = (idx[rows] > 0) & (idx[rows] < hi - lo - 1)
+        rows = rows[inner]
+        if rows.size < 3:
+            return None
+        x0 = lo - CONTEXT_PX
+        cols = np.clip(np.arange(x0, x0 + span), 0, w - 1)     # 창 밖 열은 끝값
+        return rows, idx[rows] + CONTEXT_PX, x0, cols
+
+    def line(side, sub: np.ndarray) -> Optional[EdgeLine]:
+        rows, _idx, x0, _cols = side
+        good = np.isfinite(sub)
         if int(good.sum()) < 3:
             return None
-        return _fit_line(ys[good], xs[good], y_center)
+        return _fit_line(ys[rows][good], x0 + sub[good], y_center)
 
     # 거친 추정이 ROI 경계에 붙어 있으면 둘 중 하나다.
     #   (a) 크롭이 튜브를 꽉 채워 끝단이 시야 밖 — 적합하면 측정 구간을 안쪽으로
@@ -260,8 +275,14 @@ def fit_edge_lines(
             return None                      # (a) — 종전 경로 유지
         coarse_left, coarse_right = seed
 
-    left = side(coarse_left, rising=True)
-    right = side(coarse_right, rising=False)
+    ls = side_rows(coarse_left, rising=True)
+    rs = side_rows(coarse_right, rising=False)
+    if ls is None or rs is None:
+        return None
+    block = np.concatenate([src[np.ix_(ls[0], ls[3])], src[np.ix_(rs[0], rs[3])]])
+    sub = _row_subpixel(block, np.concatenate([ls[1], rs[1]]))
+    left = line(ls, sub[: ls[0].size])
+    right = line(rs, sub[ls[0].size:])
     if left is None or right is None:
         return None
     if right.intercept <= left.intercept:
