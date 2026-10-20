@@ -1,17 +1,21 @@
 """이상탐지 처리속도 실측 — **검사 장비에서 직접 돌린다** (§1.2 300ms/ea).
 
 **왜 이 도구가 필요한가**: 패치 격자를 키우면 작은 결함(스크래치) 탐지력이 크게
-오르지만 연산도 함께 는다. 어느 격자까지 쓸 수 있는지는 **그 장비에서 재봐야**
-안다. 개발 PC 수치에 배수를 곱해 추정하면 틀린다 — 파이4는 코어 수·메모리
-대역폭·부동소수 성능이 전부 달라서 배수가 연산 종류마다 다르다.
+오른다. 구 기술자(v1)는 패치마다 분위수를 내서 격자를 키우면 연산이 함께 늘었다.
+새 기본(v2)은 화소 맵을 한 번 만들어 평균 풀링하므로 비용이 **격자가 아니라
+화소 수**에 비례한다 — 그래도 표면 ROI 크기에 따라 예산을 넘을 수 있으니 **그
+장비에서 재봐야** 안다. 개발 PC 수치에 배수를 곱해 추정하면 틀린다 — 파이4는
+코어 수·메모리 대역폭·부동소수 성능이 전부 달라서 배수가 연산 종류마다 다르다
+(DAGM_RESULT.md 의 파이4 칸은 ×5 가정 추정이다).
 
 그래서 이 도구는 라즈베리파이에서 직접 실행하도록 만들었다. 예산 안에 들어가는
 가장 큰 격자를 골라 준다.
 
 사용(파이에서):
     python -m vision.tools.bench_anomaly --image /var/lib/aivis/images/raw/<한장>.jpg
-    python -m vision.tools.bench_anomaly --size 1600x400      # 이미지 없이 합성
+    python -m vision.tools.bench_anomaly --size 1728x96       # 이미지 없이 합성(튜브 1개 표면)
     python -m vision.tools.bench_anomaly --budget-ms 200      # 여유를 두고 싶을 때
+    python -m vision.tools.bench_anomaly --feature-set v1     # 구 기술자와 비교
 
 예산은 이상탐지 **단독** 기준이다. 길이 측정·고전 CV·저장이 같은 300ms 안에서
 함께 돌아가므로, 전체 예산을 그대로 넣지 말고 이상탐지 몫만 넣는다(기본 120ms).
@@ -32,7 +36,12 @@ _SERVICES_DIR = Path(__file__).resolve().parents[2]
 if str(_SERVICES_DIR) not in sys.path:
     sys.path.insert(0, str(_SERVICES_DIR))
 
-from vision.surface.anomaly import patch_descriptors  # noqa: E402
+from vision.surface.anomaly import (  # noqa: E402
+    DEFAULT_FEATURE_SET,
+    DEFAULT_PATCH_OVERLAP,
+    FEATURE_SETS,
+    patch_features,
+)
 
 DEFAULT_GRIDS = (1, 2, 4, 6, 8)
 #: 이상탐지에 할당할 기본 예산(ms). 300ms 전체 중 나머지 단계 몫을 남긴 값.
@@ -51,15 +60,22 @@ def bench(
     *,
     grids: Sequence[int] = DEFAULT_GRIDS,
     repeat: int = 5,
+    feature_set: str = DEFAULT_FEATURE_SET,
+    overlap: bool = DEFAULT_PATCH_OVERLAP,
 ) -> list[dict]:
     """격자별 1회 소요시간(ms) 측정. 중앙값을 쓴다(첫 회 캐시 효과 배제)."""
     rows: list[dict] = []
     for g in grids:
-        patch_descriptors(image, None, grid=g)  # 워밍업
+        def run() -> np.ndarray:
+            return patch_features(
+                image, None, feature_set=feature_set, grid=g, overlap=overlap
+            )
+
+        run()  # 워밍업
         times: list[float] = []
         for _ in range(max(1, repeat)):
             t0 = time.perf_counter()
-            out = patch_descriptors(image, None, grid=g)
+            out = run()
             times.append((time.perf_counter() - t0) * 1000.0)
         times.sort()
         rows.append(
@@ -85,7 +101,9 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         prog="bench_anomaly", description="이상탐지 처리속도 실측(장비에서 실행)"
     )
     ap.add_argument("--image", default=None, help="실제 촬영본 경로(권장)")
-    ap.add_argument("--size", default="1600x400", help="이미지 없을 때 합성 크기 WxH")
+    ap.add_argument("--size", default="1728x96", help="이미지 없을 때 합성 크기 WxH")
+    ap.add_argument("--feature-set", choices=FEATURE_SETS, default=DEFAULT_FEATURE_SET,
+                    help=f"기술자 세트(기본 {DEFAULT_FEATURE_SET})")
     ap.add_argument("--budget-ms", type=float, default=DEFAULT_BUDGET_MS)
     ap.add_argument("--repeat", type=int, default=5)
     ap.add_argument("--json", default=None, help="결과 JSON 저장 경로")
@@ -106,17 +124,17 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         img = _synth(w, h)
         src = f"합성 {w}x{h}"
 
-    rows = bench(img, repeat=args.repeat)
+    rows = bench(img, repeat=args.repeat, feature_set=args.feature_set)
     best = recommend(rows, args.budget_ms)
 
-    print(f"대상: {src}")
+    print(f"대상: {src} · 기술자 {args.feature_set}")
     print(f"이상탐지 예산: {args.budget_ms:.0f}ms (전체 300ms 중 이상탐지 몫)")
     print()
     print(f"{'격자':>6} {'패치':>5} {'중앙값(ms)':>11} {'판정':>6}")
     for r in rows:
         mark = "OK" if r["ms_median"] <= args.budget_ms else "초과"
         print(
-            f"{r['grid']:>3}x{r['grid']:<2} {r['patches']:>5} "
+            f"{r['grid']:>6} {r['patches']:>5} "
             f"{r['ms_median']:>11.1f} {mark:>6}"
         )
     print()
@@ -124,11 +142,12 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         print("권장: 이 크기에서는 어떤 격자도 예산에 못 들어갑니다.")
         print("      표면 ROI 를 줄이거나(촬영 구도·크롭) 예산을 재협의하세요.")
     else:
-        print(f"권장 격자: {best}x{best}")
+        print(f"권장 격자: {best}")
         print(f"  설정: 학습 시 --grid {best} (모델 파일에 기록되어 추론이 따라갑니다)")
         if best == 1:
-            print("  주의: 격자 1은 표면 전체를 한 벡터로 봅니다. 작은 스크래치는")
-            print("        통계에 묻혀 놓칠 수 있습니다(DAGM 실측: AUROC 0.76 vs 1.00).")
+            print("  주의: 격자 1은 표면을 가장 큰 패치로 봅니다. 작은 스크래치는")
+            print("        통계에 묻혀 놓칠 수 있습니다(DAGM 교차검증 AUROC: v2 격자1")
+            print("        0.53 vs 격자8 0.99 — models/benchmarks/DAGM_RESULT.md).")
 
     if args.json:
         Path(args.json).write_text(

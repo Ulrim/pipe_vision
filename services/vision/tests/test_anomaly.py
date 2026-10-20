@@ -23,6 +23,7 @@ from vision.pipeline import InspectionPipeline
 from vision.preprocess import preprocess
 from vision.surface import (
     FEATURE_DIM,
+    FEATURE_DIM_V2,
     AnomalySurfaceModel,
     ClassicalSurfaceModel,
     analyze_surface,
@@ -112,19 +113,39 @@ def test_corrupt_model_falls_back(monkeypatch, tmp_path, item):
 # 2)/3) 학습 CLI + 이상 플래깅
 # ---------------------------------------------------------------------------
 def test_train_creates_npz(tmp_path):
+    """기본 학습 = v2 기술자 · 패치 여러 개 · 이미지 단위 임계(새 기본값)."""
     okdir = _write_ok_dataset(tmp_path, n=24)
     out = tmp_path / "anomaly_HP12.npz"
     summary = train_anomaly(okdir, out, item_code="HP12", margin=3.0)
     assert Path(summary["out_path"]).exists()
     assert summary["threshold"] > 0.0
-    assert summary["feature_dim"] == FEATURE_DIM
-    assert summary["n_samples"] == 24
+    assert summary["feature_set"] == "v2"
+    assert summary["feature_dim"] == FEATURE_DIM_V2
+    assert summary["n_crops"] == 24  # 임계는 이미지(crop) 24개 점수에서
+    assert summary["n_samples"] > 24  # 패치가 이미지당 여러 개
+    assert summary["threshold_level"] == "image"
     # npz 내용 검증(allow_pickle 없이 로드 가능).
     data = np.load(summary["out_path"], allow_pickle=False)
-    assert data["mean"].shape == (FEATURE_DIM,)
-    assert data["cov_inv"].shape == (FEATURE_DIM, FEATURE_DIM)
+    assert data["mean"].shape == (FEATURE_DIM_V2,)
+    assert data["cov_inv"].shape == (FEATURE_DIM_V2, FEATURE_DIM_V2)
     assert float(data["threshold"]) > 0.0
-    assert int(data["feature_dim"]) == FEATURE_DIM
+    assert int(data["feature_dim"]) == FEATURE_DIM_V2
+    assert str(data["feature_set"]) == "v2"
+    assert int(data["version"]) == 2
+
+
+def test_train_v1_option_matches_legacy_shape(tmp_path):
+    """--feature-set v1 --grid 1 은 예전 모델과 같은 모양(이미지당 1벡터, 19차원)."""
+    okdir = _write_ok_dataset(tmp_path, n=24)
+    out = tmp_path / "anomaly_HP12_v1.npz"
+    summary = train_anomaly(
+        okdir, out, item_code="HP12", margin=3.0, feature_set="v1", grid=1
+    )
+    assert summary["feature_dim"] == FEATURE_DIM
+    assert summary["n_samples"] == 24
+    assert summary["patch_overlap"] is False and summary["score_topk"] == 1
+    model = AnomalySurfaceModel(summary["out_path"], item_code="HP12")
+    assert model.loaded and model._feature_set == "v1" and model._grid == 1
 
 
 def test_trained_model_flags_anomaly(tmp_path, item):
@@ -309,7 +330,10 @@ def test_threshold_uses_out_of_fold_and_exceeds_in_sample(tmp_path):
     )
 
     okdir = _write_ok_dataset(tmp_path, n=30)
-    X = collect_descriptors(list_ok_images(okdir), segment=False)
+    # 회귀 당시 조건(이미지당 1벡터, n/d≈30/19)을 그대로 재현한다.
+    X = collect_descriptors(
+        list_ok_images(okdir), segment=False, feature_set="v1", grid=1
+    )
     model = fit_model(X)
     assert model["threshold_basis"] == "out_of_fold"
 
@@ -349,7 +373,10 @@ def test_fold_guard_prevents_threshold_explosion(tmp_path):
     from vision.models.train_anomaly import collect_descriptors, list_ok_images
 
     okdir = _write_ok_dataset(tmp_path, n=30)
-    X = collect_descriptors(list_ok_images(okdir), segment=False)
+    # 회귀 당시 조건(이미지당 1벡터, d=19)이어야 폴드 보정이 실제로 일한다.
+    X = collect_descriptors(
+        list_ok_images(okdir), segment=False, feature_set="v1", grid=1
+    )
     tight = fit_model(X, folds=2)
     normal = fit_model(X, folds=5)
     # 폴드 자동 상향으로 임계가 정상 범위(같은 자릿수)에 머문다.
@@ -361,7 +388,20 @@ def test_train_summary_reports_basis_and_warnings(tmp_path):
     """학습 요약이 임계 근거와 표본 부족 경고를 노출한다(현장 판단 근거)."""
     okdir = _write_ok_dataset(tmp_path, n=30)
     out = tmp_path / "anomaly_HP12.npz"
-    summary = train_anomaly(okdir, out, item_code="HP12")
+    summary = train_anomaly(okdir, out, item_code="HP12", feature_set="v1", grid=1)
     assert summary["threshold_basis"] == "out_of_fold"
     # 30표본 < 3×19=57 → 표본 부족 경고가 있어야 한다.
-    assert any("부족" in w for w in summary["warnings"])
+    assert any("특징차원" in w and "부족" in w for w in summary["warnings"])
+
+
+def test_train_summary_warns_when_too_few_images_for_image_threshold(tmp_path):
+    """v2 는 패치가 많아 행 수는 넉넉하지만, 임계는 이미지 점수에서 잡는다.
+
+    정상 이미지 30장으로 상위 1%(백분위 99)를 추정하면 임계가 가장 튀는 정상
+    한두 장에 좌우된다 — 행 수가 아니라 이미지 수로 경고해야 한다.
+    """
+    okdir = _write_ok_dataset(tmp_path, n=30)
+    out = tmp_path / "anomaly_HP12.npz"
+    summary = train_anomaly(okdir, out, item_code="HP12")
+    assert summary["n_samples"] >= 3 * summary["feature_dim"]  # 행 경고는 안 뜬다
+    assert any("이미지" in w and "부족" in w for w in summary["warnings"])

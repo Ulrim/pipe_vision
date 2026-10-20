@@ -23,7 +23,9 @@ from .classical import (
 )
 from .anomaly import (
     FEATURE_DIM,
+    FEATURE_DIM_V2,
     FEATURE_NAMES,
+    FEATURE_NAMES_V2,
     AnomalyReport,
     AnomalySurfaceModel,
     extract_descriptor,
@@ -69,4 +71,6 @@ __all__ = [
     "resolve_surface_model",
     "FEATURE_DIM",
     "FEATURE_NAMES",
+    "FEATURE_DIM_V2",
+    "FEATURE_NAMES_V2",
 ]
