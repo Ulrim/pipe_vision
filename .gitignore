@@ -97,3 +97,6 @@ jntp*.conf
 !scripts/jntp/*.conf.example
 # 포털 제출용 내보내기 작업 폴더
 portal_export/
+
+# Claude Code 에이전트 작업용 로컬 git worktree(저장소에 넣지 않는다)
+.claude/worktrees/
