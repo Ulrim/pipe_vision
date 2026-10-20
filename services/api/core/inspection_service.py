@@ -113,6 +113,7 @@ def _insert_inspection(db: Session, result: InspectionResult, *, mes_mode: str) 
         ref_length_mm=result.ref_length_mm,
         meas_length_mm=result.meas_length_mm,
         deviation_mm=result.deviation_mm,
+        meas_temp_c=result.meas_temp_c,
         length_verdict=_verdict_value(result.length_verdict),
         oil_score=result.oil_score,
         discolor_score=result.discolor_score,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import signal
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -57,6 +58,7 @@ from .timing import CycleClock, per_ea_ms
 from vision.fieldio import SignalTower  # noqa: E402
 from .config import WorkerConfig
 from .dataset import ensure_dataset
+from .live import LivePublisher, LockedCamera
 from .spool import SpoolQueue
 
 log = logging.getLogger("aivis.vision.worker")
@@ -158,6 +160,16 @@ class Worker:
         self.trigger = None
         self.acq: Optional[AcquisitionService] = None
         self._stop = False
+        # 라이브 뷰·1장 촬영(2026-10-20): 화면의 요청은 하트비트·프레임 응답으로 온다.
+        # 1장 촬영은 다음 루프에서 지금 장면을 찍어 평소처럼 검사·저장한다.
+        self._capture = threading.Event()
+        self._manual = False
+        self.live = LivePublisher(
+            lambda: self.camera, self.client, config.cam_id,
+            roi=None if self.area.full else self.area.fractions,
+            on_capture=self._capture.set,
+            trigger_getter=lambda: self.trigger,
+        )
         self.success = 0
         self.failure = 0
         self.processed = 0
@@ -198,7 +210,8 @@ class Worker:
         if self.cfg.camera_mode == "sim":
             dataset_dir = ensure_dataset(self.cfg.dataset_dir)
         try:
-            self.camera = create_camera(dataset_dir=dataset_dir, view_filter=None)
+            # 검사 촬영·영상 트리거·라이브 뷰가 한 카메라를 같이 쓴다 — 한 번에 하나만.
+            self.camera = LockedCamera(create_camera(dataset_dir=dataset_dir, view_filter=None))
             if self.item is not None and self.item.capture_recipe:
                 self.camera.configure(self.item.capture_recipe)
             else:
@@ -239,6 +252,10 @@ class Worker:
         self._last_item_reload = datetime.now(timezone.utc)
         if not self._setup_camera():
             return False
+        # 온도계 첫 읽기(1-wire ~0.75초)를 첫 검사 안이 아니라 지금 끝낸다.
+        getter = getattr(self.pipeline, "temperature_monitor", None)
+        if callable(getter):
+            getter()
         return True
 
     # --- 기준정보 핫리로드 ---
@@ -488,7 +505,7 @@ class Worker:
         self.success/failure/return 값에는 절대 영향을 주지 않는다.
         """
         try:
-            self.client.post_status(
+            resp = self.client.post_status(
                 {
                     "cam_id": self.cfg.cam_id,
                     "item_code": self._cur_item_code(),
@@ -501,13 +518,34 @@ class Worker:
                     "proc_time_ms": int(proc_time_ms),
                     "ts": ts,
                     "error": error,
-                    "host": self._host.snapshot(),
+                    "host": self._host_payload(),
                     # 단계별 처리시간(취득·판정·저장·직전 전송) — 어디가 느린지.
                     "timings": timings,
                 }
             )
+            self._handle_commands(resp)
         except Exception as exc:  # noqa: BLE001
             log.debug("status 하트비트 구성/전송 예외(무시): %s", exc)
+
+    def _host_payload(self) -> dict:
+        """파이 상태 + 제품 온도(길이 20°C 환산용, 2026-10-20). 온도계가 빠지면 화면에 바로 보이게."""
+        snap = dict(self._host.snapshot())
+        getter = getattr(self.pipeline, "temperature_monitor", None)
+        mon = getter() if callable(getter) else None
+        if mon is not None:
+            snap["product_temp_c"] = mon.current()
+            snap["temp_source"] = mon.source.label
+            snap["temp_error"] = mon.stale_reason()
+        return snap
+
+    def _handle_commands(self, resp) -> None:
+        """하트비트 응답에 실린 화면의 요청(2026-10-20): live → 라이브 뷰 송출, capture → 1장 촬영."""
+        if not isinstance(resp, dict):
+            return
+        if resp.get("live"):
+            self.live.activate()
+        if resp.get("capture"):
+            self._capture.set()
 
     # --- 영상 트리거(2026-10-16) ---
     def _vision_mode(self) -> str:
@@ -520,11 +558,17 @@ class Worker:
     def _grab_cycle(self):
         """이번 사이클 사진. 반출 모드가 보관해 둔 사진이 있으면 그것(그 순간이 검사 시각)."""
         take = getattr(self.trigger, "take_frame", None)
-        held = take() if callable(take) else None
+        # 1장 촬영은 '지금' 장면이다 — 반출 모드가 보관해 둔 사진을 쓰지 않는다.
+        held = take() if callable(take) and not self._manual else None
         if held is not None:
             frame, at = held
             return GrabResult(frame=frame, attempts=1), at
         return self.acq.grab_with_retry(), None
+
+    def _empty_gate(self) -> bool:
+        """영상 트리거의 '빈 장면이면 저장 안 함' 을 적용하나. 1장 촬영은 사람이 누른 것이라
+        제품이 안 보여도 결과를 남긴다(설치 확인 사진이 사라지면 안 된다)."""
+        return self._vision() is not None and not self._manual
 
     @staticmethod
     def _looks_empty(detected: int, expected: int) -> bool:
@@ -550,7 +594,7 @@ class Worker:
         detected=0 이지만 '미검출' 이 아니라 waiting=True(제품 대기)다.
         """
         try:
-            self.client.post_status(
+            resp = self.client.post_status(
                 {
                     "cam_id": self.cfg.cam_id,
                     "item_code": self._cur_item_code(),
@@ -563,10 +607,11 @@ class Worker:
                     "proc_time_ms": 0,
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "error": None,
-                    "host": self._host.snapshot(),
+                    "host": self._host_payload(),
                     "waiting": True,
                 }
             )
+            self._handle_commands(resp)
         except Exception as exc:  # noqa: BLE001
             log.debug("대기 하트비트 예외(무시): %s", exc)
 
@@ -633,7 +678,7 @@ class Worker:
                 return False
             clock.mark("grab")
             inspected_at = held_at or datetime.now(timezone.utc)
-            if self._vision() is not None and not segment_tubes(
+            if self._empty_gate() and not segment_tubes(
                     grab.frame, axis=self._orientation(), expected_count=None,
                     area=self.area):
                 # 영상 트리거가 빈 장면에 쏘았다 — '끝단 검출 실패' NG 를 만들지 않는다.
@@ -803,7 +848,7 @@ class Worker:
                 pipeline=self.pipeline,
             )
             clock.mark("infer")
-            if self._vision() is not None and self._looks_empty(len(batch.tubes), expected):
+            if self._empty_gate() and self._looks_empty(len(batch.tubes), expected):
                 # 빈 컨베이어 — 사진을 올리지도, '미검출' 경고를 띄우지도 않는다.
                 self._vision_empty(len(batch.tubes))
                 return True
@@ -925,7 +970,7 @@ class Worker:
             bundle = count_bundle(grab.frame, area=self.area)
             clock.mark("infer")
             detected = int(bundle.count)
-            if self._vision() is not None and self._looks_empty(detected, expected):
+            if self._empty_gate() and self._looks_empty(detected, expected):
                 # 빈 자리(크레이트 없음) — '개수 0 NG' 를 만들지 않는다.
                 self._vision_empty(detected)
                 return True
@@ -1024,13 +1069,20 @@ class Worker:
 
         n = 0
         while not self._stop:
+            if self._capture.is_set():
+                # 화면의 1장 촬영 요청 — 트리거를 기다리지 않고 지금 찍어 검사한다.
+                self._capture.clear()
+                self._run_manual_capture()
+                continue
             # 트리거(주기 sleep). 종료 신호를 빠르게 반영하기 위해 짧은 timeout.
             fired = True
             event_driven = bool(getattr(self.trigger, "event_driven", False))
+            timeout = self.cfg.trigger_idle_s if event_driven else (self.cfg.interval_s or None)
+            if self.live.active:
+                # 라이브 뷰를 보는 동안은 1장 촬영 요청을 1초 안에 받는다.
+                timeout = 1.0 if timeout is None else min(timeout, 1.0)
             try:
-                fired = self.trigger.wait_for_trigger(
-                    timeout=(self.cfg.trigger_idle_s if event_driven else (self.cfg.interval_s or None))
-                )
+                fired = self.trigger.wait_for_trigger(timeout=timeout)
             except Exception as exc:  # noqa: BLE001
                 log.warning("트리거 대기 예외(%s) — 계속", exc)
                 fired = not event_driven
@@ -1089,7 +1141,19 @@ class Worker:
     def _acq_reconnect_count(self) -> int:
         return self.acq.reconnect_count if self.acq is not None else 0
 
+    def _run_manual_capture(self) -> None:
+        """1장 촬영: 지금 장면을 찍어 평소 검사와 똑같이 판정·저장·전송한다."""
+        log.info("1장 촬영 요청 — 지금 장면을 찍어 검사한다")
+        self._manual = True
+        try:
+            self._maybe_reload_item(datetime.now(timezone.utc))
+            self.run_once()
+        finally:
+            self._manual = False
+        self.flush_spool()
+
     def shutdown(self) -> None:
+        self.live.stop()
         self._clear_ready()
         try:
             if self.camera is not None:

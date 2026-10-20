@@ -481,6 +481,9 @@ POST   /mes/quality             # MES 연계(또는 DB-table 모드)
 WS     /ws/live                 # 실시간 검사결과/알람 푸시
 GET    /system/stations         # 카메라별 실시간 현황(파이 여러 대, 대시보드 /live)
 PUT    /inspection/images/{key} # 워커→허브 사진 업로드(서버 내부, 2호기 이상)
+POST   /system/live/{cam}/start|stop|capture  # 라이브 뷰 켜기·끄기·1장 촬영(2026-10-20, 작업자+)
+GET    /system/live/{cam}  /frame.jpg         # 상태·초점/노출 지표 · 최신 장면(API 메모리 중계)
+PUT    /system/live/{cam}/frame               # 워커→API 장면 업로드(서비스 토큰, 화면이 볼 때만)
 
 # 품질·생산실적 MES (별도 서비스 :8100, docs/MES.md)
 GET/POST /orders  /work-orders  /shipments  /claims   # 수주·작업지시·출하·클레임
@@ -852,6 +855,9 @@ MSA 관례상 측정시스템은 공차폭의 1/3 이내를 써야 한다(±0.1m
 > **측정 창은 끝단 바깥 배경을 포함해야 한다**(`length_window`, 2026-10-17 — 종전엔 창이
 > 끝단에서 끝나 길이가 '창 폭 −1px' 로 고정됐다). 다발은 렌즈 보정·기준자를 **전체 프레임에서
 > 한 번**(`InspectionPipeline.prepare_frame`) — 튜브 crop 마다 하면 틀린다.
+> **온도 환산 배선(2026-10-20)**: `AIVIS_TEMP_SOURCE=ds18b20`(1-wire, ±0.5°C) → 길이·편차·판정이
+> 20°C 값, 행에 `meas_temp_c`. 센서가 빠지면 환산 없이 기록(온도 NULL) + 실시간 현황에 경고 — 검사는 안 멈춘다.
+> 설치 때 카메라 위치·초점·노출은 **라이브 뷰**(HMI [카메라 보기]·대시보드 카드)의 초점 막대로 맞춘다.
 > 재현: `python -m vision.tools.length_budget --length 250 --tol 0.1 --sweep`.
 > 전체 근거: `docs/LENGTH_TOLERANCE.md`.
 

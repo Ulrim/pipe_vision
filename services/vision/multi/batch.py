@@ -58,6 +58,8 @@ class TubeResult:
     # 길이 측정 스팬(끝단 2점·세로 범위) — **원본 프레임 좌표**로 환산된 값.
     # 배치 오버레이가 튜브별 측정선을 그리는 데 쓴다(끝단 미검출/세로축이면 None).
     length_span: Optional[LengthSpan] = None
+    # 제품 온도(°C). 있으면 length_mm·deviation_mm 은 20°C 환산값(calib/temperature.py).
+    meas_temp_c: Optional[float] = None
 
 
 @dataclass
@@ -107,6 +109,7 @@ def _tube_from_verdict(
         roi_confidence=roi.confidence,
         proc_time_ms=vr.proc_time_ms,
         length_span=length_span,
+        meas_temp_c=length.meas_temp_c,
     )
 
 
@@ -343,6 +346,7 @@ def tube_to_inspection(
         ref_length_mm=batch_meta.ref_length_mm,
         meas_length_mm=tube.length_mm,
         deviation_mm=tube.deviation_mm,
+        meas_temp_c=tube.meas_temp_c,
         length_verdict=tube.length_verdict or None,
         oil_score=tube.oil_score,
         discolor_score=tube.discolor_score,

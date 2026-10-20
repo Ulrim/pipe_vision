@@ -37,7 +37,9 @@
 ### inspection — 검사결과 (제품 1개 = 1행) (§5 M7,M8)
 식별/메타: `id`(BIGSERIAL PK), `lot`(NOT NULL), `work_order`, `item_code`(FK→item_master),
 `cam_id`(NOT NULL), `inspected_at`(TIMESTAMPTZ NOT NULL), `tube_index`(INT NOT NULL d.0 — 배치 내 튜브 순번 0..N-1, 단일 튜브=0), `tube_bbox`(JSONB, 2026-10-11 마이그레이션 0011 — 그 튜브의 원본 프레임 픽셀 박스 `[x0,y0,x1,y1]`. 라벨링 화면이 어느 튜브인지 강조하고 `labeling.cli dataset` 이 그 튜브만 잘라 학습셋에 넣는다. 단일 사진·이전 적재분은 NULL), `count_detected`/`count_expected`(INT, 2026-10-14 마이그레이션 0012 — 개수 확인(CRATE_COUNT) 실제/기준 개수. MES 포장 실적의 근거. 다른 모드는 NULL), `shift`, `operator`.
-길이: `ref_length_mm`, `meas_length_mm`, `deviation_mm`, `length_verdict`(OK/NG).
+길이: `ref_length_mm`, `meas_length_mm`, `deviation_mm`, `length_verdict`(OK/NG),
+`meas_temp_c`(NUMERIC(5,2), 2026-10-20 — 측정 시 제품 온도. 값이 있으면 길이·편차는 20°C 환산값,
+NULL 이면 환산 안 함. 마이그레이션 0013).
 표면(0~1): `oil_score`, `discolor_score`, `scratch_score` (NUMERIC(5,4)).
 종합: `final_verdict`(NOT NULL OK/NG), `defect_codes`(TEXT[] {LEN,OIL,DIS,SCR,MULTI}),
 `confidence`, `raw_image_path`, `result_image_path`, `proc_time_ms`(처리속도 KPI).

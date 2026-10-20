@@ -30,6 +30,7 @@ def inspection_to_schema(row: Inspection) -> InspectionResult:
         ref_length_mm=_f(row.ref_length_mm),
         meas_length_mm=_f(row.meas_length_mm),
         deviation_mm=_f(row.deviation_mm),
+        meas_temp_c=_f(row.meas_temp_c),
         length_verdict=row.length_verdict,
         oil_score=_f(row.oil_score),
         discolor_score=_f(row.discolor_score),

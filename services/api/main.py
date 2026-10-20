@@ -26,6 +26,7 @@ from routers import (
     inspection,
     kpi,
     labels,
+    live,
     logs,
     master,
     mes,
@@ -202,6 +203,7 @@ app.include_router(labels.router)
 app.include_router(logs.router)
 app.include_router(mes.router)
 app.include_router(system.router)
+app.include_router(live.router)
 app.include_router(ws_live.router)
 
 

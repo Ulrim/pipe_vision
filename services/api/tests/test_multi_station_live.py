@@ -266,3 +266,26 @@ def test_heartbeat_timings_reach_station_card(client, auth):
     assert r.status_code == 202, r.text
     st = _stations(client, auth)["LIVE-TM"]
     assert st["timings"]["per_ea_ms"] == 32 and st["timings"]["grab_ms"] == 60
+
+
+# ---- 제품 온도(길이 20°C 환산, 2026-10-20) ------------------------------------
+def test_product_temperature_heartbeat_and_row_roundtrip(client, auth):
+    """온도계 값이 화면(스테이션 카드)에 뜨고, 검사 행에 '몇 도에서 잰 길이인지' 가 남는다."""
+    _item(client, auth)
+    r = client.post("/inspection/status", json={
+        "cam_id": "LIVE-TEMP", "item_code": "HPLIVE", "expected": 1, "detected": 1,
+        "ts": datetime.now(timezone.utc).isoformat(), "ng": 0, "mismatch": False,
+        "proc_time_ms": 100, "stage": "CUT_LENGTH", "error": None,
+        "host": {"cpu_temp_c": 50.0, "product_temp_c": 23.4, "temp_source": "ds18b20:28-01",
+                 "temp_error": None},
+    })
+    assert r.status_code == 202, r.text
+    host = _stations(client, auth)["LIVE-TEMP"]["host"]
+    assert host["product_temp_c"] == 23.4 and host["temp_source"] == "ds18b20:28-01"
+
+    row = _post(client, cam_id="LIVE-TEMP", meas_length_mm=430.012, deviation_mm=0.012,
+                length_verdict="OK", meas_temp_c=23.4, ref_length_mm=430.0)
+    got = client.get(f"/inspection/{row['id']}", headers=auth("op1")).json()
+    assert got["meas_temp_c"] == 23.4
+    plain = _post(client, cam_id="LIVE-TEMP", lot="LIVE-L2")
+    assert client.get(f"/inspection/{plain['id']}", headers=auth("op1")).json()["meas_temp_c"] is None

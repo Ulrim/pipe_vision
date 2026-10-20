@@ -576,6 +576,11 @@ class StationHost(BaseModel):
     disk_percent: Optional[float] = None
     disk_free_gb: Optional[float] = None
     throttled: Optional[bool] = None
+    #: 제품 온도(길이 20°C 환산용 온도계, 2026-10-20). 온도계를 안 쓰면 None.
+    product_temp_c: Optional[float] = None
+    temp_source: Optional[str] = None
+    #: 온도계를 쓰는데 값이 없을 때 사유(센서 빠짐 등) — 이때 길이는 환산되지 않는다.
+    temp_error: Optional[str] = None
 
 
 class StationLive(BaseModel):

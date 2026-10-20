@@ -273,7 +273,7 @@ class ApiClient:
         return status in (200, 201), detail
 
     # --- 라이브니스 하트비트 ---
-    def post_status(self, payload: dict) -> None:
+    def post_status(self, payload: dict) -> Optional[dict]:
         """POST /inspection/status (검사 사이클 상태 하트비트). 베스트에포트.
 
         HMI 가 "연결됨"인데 0검출/취득실패로 죽은 듯 보이는 문제를 막기 위해, 매
@@ -282,10 +282,13 @@ class ApiClient:
           - 짧은 타임아웃(http_timeout 또는 2초 중 작은 값)을 쓰고,
           - 모든 예외를 삼켜 절대 raise 하지 않는다(실패는 log.debug 만).
         인증 헤더는 post_inspection_json 과 동일한 서비스토큰 정책을 재사용한다.
+
+        응답(2026-10-20)에는 화면의 요청이 실린다 — `live`(라이브 뷰를 보는 화면이 있다),
+        `capture`(1장 촬영 요청). 그대로 돌려준다(실패·형식 불일치는 None).
         """
         timeout = min(self._timeout_s, 2.0)
         try:
-            self._http.post(
+            resp = self._http.post(
                 "/inspection/status",
                 json=payload,
                 headers=self._service_headers(),
@@ -293,6 +296,35 @@ class ApiClient:
             )
         except Exception as exc:  # noqa: BLE001
             log.debug("status 하트비트 전송 실패(무시): %s", exc)
+            return None
+        return self._json_or_none(resp)
+
+    def put_live_frame(self, cam_id: str, payload: dict) -> Optional[dict]:
+        """PUT /system/live/{cam_id}/frame — 라이브 뷰 프레임(2026-10-20). 실패는 None.
+
+        응답 `{"live": bool, "capture": bool}` — 계속 보낼지, 1장 찍을지.
+        """
+        try:
+            resp = self._http.put(
+                f"/system/live/{cam_id}/frame",
+                json=payload,
+                headers=self._service_headers(),
+                timeout=min(self._timeout_s, 3.0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.debug("라이브 뷰 프레임 전송 실패: %s", exc)
+            return None
+        return self._json_or_none(resp)
+
+    @staticmethod
+    def _json_or_none(resp) -> Optional[dict]:
+        try:
+            if resp is None or not (200 <= int(resp.status_code) < 300):
+                return None
+            data = resp.json()
+        except Exception:  # noqa: BLE001 - 본문 없음·JSON 아님
+            return None
+        return data if isinstance(data, dict) else None
 
     def close(self) -> None:
         try:

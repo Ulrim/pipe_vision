@@ -177,6 +177,11 @@ class InspectionResult(BaseModel):
     ref_length_mm: Optional[float] = Field(None, description="기준 길이(mm)")
     meas_length_mm: Optional[float] = Field(None, description="측정 길이(mm)")
     deviation_mm: Optional[float] = Field(None, description="편차(mm)")
+    meas_temp_c: Optional[float] = Field(
+        None,
+        description="길이 측정 시 제품 온도(°C, 2026-10-20). 있으면 meas_length_mm·deviation_mm 은 "
+        "20°C 환산값. None = 환산 안 함.",
+    )
     length_verdict: Optional[Verdict] = Field(None, description="길이 판정 OK/NG")
 
     # 표면 (0~1 신뢰도)

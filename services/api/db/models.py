@@ -126,6 +126,8 @@ class Inspection(Base):
     ref_length_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
     meas_length_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
     deviation_mm: Mapped[float | None] = mapped_column(Numeric(10, 3))
+    # 길이 측정 시 제품 온도(°C, 2026-10-20). 값이 있으면 길이·편차는 20°C 환산값이다.
+    meas_temp_c: Mapped[float | None] = mapped_column(Numeric(5, 2))
     length_verdict: Mapped[str | None] = mapped_column(Text)
 
     # 표면 (0~1 신뢰도)

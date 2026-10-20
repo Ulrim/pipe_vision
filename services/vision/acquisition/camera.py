@@ -653,10 +653,12 @@ class PiCameraAdapter(CameraAdapter):
     - AIVIS_PICAM_SWAP_RB       : "true"/"1" 이면 취득 후 RGB↔BGR 스왑(기본 false).
     - AIVIS_PICAM_WARMUP_FRAMES : start 후 버릴 워밍업 프레임 수(기본 2). AE/AWB
       수렴 및 초기 흐린 프레임 제거용.
-    - AIVIS_PICAM_LORES         : 저해상도 감시 스트림(lores) 사용. 기본은
-      AIVIS_TRIGGER=vision 일 때 켜진다(2026-10-16 영상 트리거). 고해상도 촬영
+    - AIVIS_PICAM_LORES         : 저해상도 감시 스트림(lores) 사용. **기본 켜짐**
+      (2026-10-20 — 영상 트리거와 라이브 뷰가 쓴다; "0" 이면 끈다). 고해상도 촬영
       설정(main)은 그대로이고, 같은 센서에서 작은 흑백 영상을 함께 받아 preview()
       가 싸게 준다. 카메라가 거부하면 lores 없이 다시 열고 main 을 줄여 쓴다.
+    - AIVIS_PICAM_LORES_WIDTH   : lores 가로 화소(기본 640). 라이브 뷰가 이 크기로 보이고,
+      영상 트리거는 이걸 320 으로 줄여 쓴다.
 
     설치(라즈베리파이 OS 64bit):
         sudo apt install -y python3-picamera2
@@ -673,7 +675,7 @@ class PiCameraAdapter(CameraAdapter):
         swap_rb: Optional[bool] = None,
         warmup_frames: Optional[int] = None,
         lores: Optional[bool] = None,
-        lores_width: int = 320,
+        lores_width: Optional[int] = None,
     ) -> None:
         # 생성은 항상 성공한다(picamera2 미설치여도). 디바이스는 lazy open.
         size_str = size or os.environ.get("AIVIS_PICAM_SIZE", self._DEFAULT_SIZE)
@@ -689,11 +691,13 @@ class PiCameraAdapter(CameraAdapter):
         )
         if lores is None:
             raw = os.environ.get("AIVIS_PICAM_LORES", "").strip().lower()
-            if raw:
-                lores = raw in ("1", "true", "yes", "on")
-            else:
-                lores = os.environ.get("AIVIS_TRIGGER", "").strip().lower() == "vision"
+            lores = raw not in ("0", "false", "no", "off")
         self.lores = bool(lores)
+        if lores_width is None:
+            try:
+                lores_width = int(os.environ.get("AIVIS_PICAM_LORES_WIDTH", "640"))
+            except ValueError:
+                lores_width = 640
         self.lores_width = int(lores_width)
         self._lores_size: Optional[tuple] = None  # 실제로 켜진 lores (w, h)
         self._recipe: dict = {}

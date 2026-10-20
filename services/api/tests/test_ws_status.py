@@ -58,7 +58,7 @@ def test_status_heartbeat_broadcast(client, auth):
     with client.websocket_connect(f"/ws/live?token={token}") as ws:
         r = client.post("/inspection/status", json=_status())
         assert r.status_code == 202, r.text
-        assert r.json() == {"status": "broadcast"}
+        assert r.json() == {"status": "broadcast", "live": False, "capture": False}
 
         msg = ws.receive_json()
         assert msg["event"] == "status"

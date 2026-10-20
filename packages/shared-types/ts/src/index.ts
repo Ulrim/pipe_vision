@@ -161,6 +161,8 @@ export interface InspectionResult {
   ref_length_mm?: number | null;
   meas_length_mm?: number | null;
   deviation_mm?: number | null;
+  /** 길이 측정 시 제품 온도(°C, 2026-10-20). 있으면 길이·편차는 20°C 환산값. null = 환산 안 함. */
+  meas_temp_c?: number | null;
   length_verdict?: Verdict | null;
 
   // 표면 (0~1 신뢰도)
@@ -207,6 +209,8 @@ export interface LengthResult {
   ref_length_mm: number;
   meas_length_mm?: number | null;
   deviation_mm?: number | null;
+  /** 제품 온도(°C). 있으면 측정 길이는 20°C 환산값. */
+  meas_temp_c?: number | null;
   length_verdict: Verdict;
   edge_detected: boolean;
   proc_time_ms: number;
@@ -338,4 +342,36 @@ export interface SysLog {
   category: LogCategory;
   message?: string | null;
   payload?: Record<string, unknown> | null;
+}
+
+/**
+ * 라이브 뷰 상태 (GET /system/live/{cam_id}, 2026-10-20).
+ * 설치할 때 카메라 위치·초점·노출·검사 영역을 맞추는 화면이 읽는다.
+ * 영상은 API 메모리에만 있다 — 검사 기록이 아니다.
+ */
+export interface LiveViewState {
+  cam_id: string;
+  /** 화면이 켜 둔 상태(워커가 아직 안 보냈어도 true). */
+  requested: boolean;
+  /** 최근 몇 초 안에 프레임이 왔다. */
+  streaming: boolean;
+  requested_until?: string | null;
+  /** 한 번 켜서 볼 수 있는 남은 시간(초). 0 이면 다시 켜야 한다. */
+  session_left_s?: number | null;
+  frame_at?: string | null;
+  age_s?: number | null;
+  /** 프레임 번호 — 바뀌면 frame.jpg 를 다시 받는다. */
+  seq: number;
+  capture_pending: boolean;
+  /** 초점 지수(검사 영역 라플라시안 분산). 절대값보다 최고값 대비가 의미 있다. */
+  focus?: number | null;
+  focus_peak?: number | null;
+  brightness?: number | null;
+  saturated_pct?: number | null;
+  dark_pct?: number | null;
+  width?: number | null;
+  height?: number | null;
+  /** 검사 영역 [x0,y0,x1,y1] 화면 비율. 없으면 전체. */
+  roi?: number[] | null;
+  trigger?: { mode?: string; motion?: number; change?: number } | null;
 }

@@ -14,6 +14,7 @@ import {
   type Severity,
 } from "@/pages/MonitorPage";
 import { fmtNum } from "@/lib/format";
+import { LiveViewModal } from "@/components/LiveViewModal";
 import { hmiUrlFor } from "@/lib/env";
 import { isCountStage, reasonLines, stageLabel } from "@/lib/stage";
 
@@ -154,6 +155,8 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
   const count = isCountStage(s.stage ?? latest?.inspection_stage);
   const reasons = latest ? reasonLines(latest, { detected: s.detected, expected: s.expected }) : [];
   const hmi = hmiUrlFor(s.cam_id);
+  // 라이브 뷰 — 원격으로 카메라 위치·초점·노출 맞추기, 1장 촬영. 꺼진 라인은 영상을 못 보낸다.
+  const [liveOpen, setLiveOpen] = useState(false);
 
   return (
     <section
@@ -277,17 +280,31 @@ export function StationCard({ s, now = Date.now() }: { s: StationLive; now?: num
 
       <HostRow host={s.host} />
 
-      {hmi && (
-        <a
-          href={hmi}
-          target="_blank"
-          rel="noreferrer"
-          className="self-start text-sm font-semibold text-brand underline"
-          data-testid="card-hmi-link"
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          className="btn btn-ghost text-sm"
+          onClick={() => setLiveOpen(true)}
+          disabled={s.state === "down"}
+          title={s.state === "down" ? "검사기가 꺼져 있어 영상을 보낼 수 없습니다" : undefined}
+          data-testid="card-live-view"
         >
-          이 라인 작업자 화면 열기 ↗
-        </a>
-      )}
+          📹 라이브 뷰
+        </button>
+        {hmi && (
+          <a
+            href={hmi}
+            target="_blank"
+            rel="noreferrer"
+            className="text-sm font-semibold text-brand underline"
+            data-testid="card-hmi-link"
+          >
+            이 라인 작업자 화면 열기 ↗
+          </a>
+        )}
+      </div>
+
+      {liveOpen && <LiveViewModal camId={s.cam_id} onClose={() => setLiveOpen(false)} />}
     </section>
   );
 }
@@ -359,6 +376,14 @@ export function HostRow({ host }: { host: StationHost | null }): JSX.Element {
       testid: "host-power",
     },
   ];
+  // 제품 온도계(길이 20°C 환산) — 쓰는 스테이션만. 값이 없으면 길이가 환산되지 않으니 경고.
+  if (host.temp_source || host.product_temp_c != null) {
+    items.push(
+      host.product_temp_c != null
+        ? { k: "제품온도", v: `${fmtNum(host.product_temp_c, 1)}℃`, sev: "ok", testid: "host-product-temp" }
+        : { k: "제품온도", v: "⚠ 온도계 오류(환산 안 함)", sev: "warn", testid: "host-product-temp" },
+    );
+  }
   return (
     <div className="flex flex-wrap gap-1.5 text-xs" data-testid="card-host">
       {items.map((it) => (

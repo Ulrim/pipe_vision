@@ -33,6 +33,11 @@ class LengthResult(BaseModel):
         True, description="양 끝단 검출 성공 여부. False면 오류 알림 대상(M3 DoD)"
     )
     proc_time_ms: int = Field(0, ge=0, description="이 단계 처리시간(ms)")
+    meas_temp_c: Optional[float] = Field(
+        None,
+        description="제품 온도(°C, 2026-10-20). 있으면 meas_length_mm 은 20°C 환산값이다. "
+        "None 이면 환산하지 않았다(온도 소스 없음·센서 오류).",
+    )
 
 
 class SurfaceResult(BaseModel):

@@ -25,7 +25,7 @@ from aivis_types import (
     Verdict,
 )
 
-from core import heartbeat, local_queue, remote_storage
+from core import heartbeat, live, local_queue, remote_storage
 from core.config import get_settings
 from core.inspection_service import save_inspection
 from core.training import is_training_lot, not_training
@@ -60,6 +60,11 @@ class WorkerHost(BaseModel):
     disk_percent: Optional[float] = None
     disk_free_gb: Optional[float] = None
     throttled: Optional[bool] = None
+    #: 제품 온도(길이 20°C 환산용 온도계, 2026-10-20). 온도계를 안 쓰면 None.
+    product_temp_c: Optional[float] = None
+    temp_source: Optional[str] = None
+    #: 온도계를 쓰는데 값이 없을 때 사유(센서 빠짐 등) — 이때 길이는 환산되지 않는다.
+    temp_error: Optional[str] = None
 
 
 class BatchStatus(BaseModel):
@@ -269,7 +274,10 @@ async def broadcast_status(
     payload = body.model_dump(mode="json")
     payload["training"] = is_training_lot(body.lot)
     await hub.broadcast(make_event("status", payload))
-    return {"status": "broadcast"}
+    # 응답에 화면의 요청을 싣는다(2026-10-20): 라이브 뷰를 보는 화면이 있으면 live, 1장 촬영
+    # 요청이 있으면 capture(한 번만). 워커는 이걸 보고 영상을 올리거나 1장 찍는다(core/live.py).
+    want_live, want_capture = live.wants(body.cam_id)
+    return {"status": "broadcast", "live": want_live, "capture": want_capture}
 
 
 @router.post("/retry-queue")

@@ -39,6 +39,7 @@ import { ReviewDialog } from "@/components/ReviewDialog";
 import { LoginScreen } from "@/components/LoginScreen";
 import { ImageZoom } from "@/components/ImageZoom";
 import { OrderSetup } from "@/components/OrderSetup";
+import { LiveView } from "@/components/LiveView";
 
 export default function App() {
   // 전체 로그인 게이트: 세션(토큰)이 없으면 본문 대신 로그인 화면만 렌더.
@@ -60,6 +61,9 @@ function AppShell() {
   const [zoomed, setZoomed] = useState<InspectionResult | null>(null);
   // 오더 교체 — 제품 길이가 주문마다 바뀌므로 라인에서 직접 바꿔야 한다.
   const [setupOpen, setSetupOpen] = useState(false);
+  // 라이브 뷰 — 설치·점검 때 카메라 위치·초점·노출·검사 영역 맞추기.
+  const [liveOpen, setLiveOpen] = useState(false);
+  const liveCam = CAM_ID ?? status?.cam_id ?? latest?.cam_id ?? null;
   // 공차 밴드를 그리려면 기준정보가 필요하다(검사결과에는 공차가 없다).
   const item = useItemMaster(latest?.item_code);
 
@@ -68,7 +72,16 @@ function AppShell() {
       <HmiHeader />
 
       {/* 오더 교체 진입 — 상단바 아래 고정. 길이·공차가 주문마다 바뀐다. */}
-      <div className="flex flex-none justify-end px-2 pt-2">
+      <div className="flex flex-none justify-end gap-2 px-2 pt-2">
+        <button
+          type="button"
+          onClick={() => setLiveOpen(true)}
+          disabled={!liveCam}
+          data-testid="open-live-view"
+          className="min-h-[72px] rounded-2xl border-4 border-gray-400 bg-white px-8 text-hmi-body font-black text-gray-800 active:scale-95 disabled:opacity-40"
+        >
+          카메라 보기
+        </button>
         <button
           type="button"
           onClick={() => setSetupOpen(true)}
@@ -123,6 +136,10 @@ function AppShell() {
       )}
 
       {zoomed && <ImageZoom result={zoomed} onClose={() => setZoomed(null)} />}
+
+      {liveOpen && liveCam && (
+        <LiveView camId={liveCam} onClose={() => setLiveOpen(false)} />
+      )}
 
       {setupOpen && item && (
         <OrderSetup

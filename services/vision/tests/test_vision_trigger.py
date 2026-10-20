@@ -323,7 +323,7 @@ def _picam(monkeypatch, reject=False, **kw):
 
 
 def test_picam_lores_preview_uses_y_plane(monkeypatch):
-    cam = _picam(monkeypatch, lores=True)
+    cam = _picam(monkeypatch, lores=True, lores_width=320)
     p = cam.preview(320)
     assert p.shape == (180, 320) and p.dtype == np.uint8 and int(p.mean()) == 77
     assert cam._picam2.configs[-1]["lores"] == {"size": (320, 180), "format": "YUV420"}
@@ -337,9 +337,14 @@ def test_picam_lores_rejected_falls_back_to_main(monkeypatch):
     assert cam._picam2.configs[-1]["lores"] is None
 
 
-def test_picam_lores_default_follows_trigger(monkeypatch):
+def test_picam_lores_default_on_for_trigger_and_live_view(monkeypatch):
+    """lores 는 기본으로 켠다(2026-10-20) — 영상 트리거와 라이브 뷰가 쓴다. "0" 이면 끈다."""
     monkeypatch.delenv("AIVIS_PICAM_LORES", raising=False)
-    monkeypatch.setenv("AIVIS_TRIGGER", "vision")
-    assert PiCameraAdapter().lores is True
+    monkeypatch.delenv("AIVIS_PICAM_LORES_WIDTH", raising=False)
     monkeypatch.setenv("AIVIS_TRIGGER", "timer")
+    cam = PiCameraAdapter()
+    assert cam.lores is True and cam.lores_width == 640
+    monkeypatch.setenv("AIVIS_PICAM_LORES", "0")
     assert PiCameraAdapter().lores is False
+    monkeypatch.setenv("AIVIS_PICAM_LORES_WIDTH", "480")
+    assert PiCameraAdapter().lores_width == 480

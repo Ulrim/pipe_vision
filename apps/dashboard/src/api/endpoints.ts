@@ -10,6 +10,7 @@ import type {
   CalibrationRequest,
   KpiSummary,
   KpiManual,
+  LiveViewState,
   LoginRequest,
   TokenResponse,
 } from "@aivis/shared-types";
@@ -419,6 +420,11 @@ export interface StationHost {
   disk_percent: number | null;
   disk_free_gb: number | null;
   throttled: boolean | null;
+  /** 제품 온도(길이 20°C 환산용, 2026-10-20). 온도계를 안 쓰면 없음. */
+  product_temp_c?: number | null;
+  temp_source?: string | null;
+  /** 온도계를 쓰는데 값이 없는 사유 — 이때 길이는 환산되지 않는다. */
+  temp_error?: string | null;
 }
 
 export interface StationLive {
@@ -620,4 +626,30 @@ export function putLabel(
     method: "PUT",
     body: JSON.stringify(body),
   });
+}
+
+/* ---------------- 라이브 뷰·1장 촬영 (2026-10-20) ----------------
+ * 영상은 API 가 중계한다(대시보드가 클라우드에 있어도 파이에 직접 붙지 않는다). 켜면 워커가
+ * 다음 하트비트(대기 중 최대 5초)에서 알아차리고, 화면이 상태를 안 읽으면 서버 기한이 지나 멈춘다.
+ */
+const livePath = (camId: string) => `/system/live/${encodeURIComponent(camId)}`;
+
+export function startLive(camId: string): Promise<LiveViewState> {
+  return requestJson<LiveViewState>(`${livePath(camId)}/start`, { method: "POST" });
+}
+
+export function stopLive(camId: string): Promise<LiveViewState> {
+  return requestJson<LiveViewState>(`${livePath(camId)}/stop`, { method: "POST" });
+}
+
+export function fetchLiveState(camId: string): Promise<LiveViewState> {
+  return requestJson<LiveViewState>(livePath(camId));
+}
+
+export function requestCapture(camId: string): Promise<{ status: string }> {
+  return requestJson<{ status: string }>(`${livePath(camId)}/capture`, { method: "POST" });
+}
+
+export function fetchLiveFrame(camId: string): Promise<Blob> {
+  return requestImageBlob(`${livePath(camId)}/frame.jpg`, { cache: "no-store" });
 }

@@ -6,6 +6,7 @@ import type {
   InspectionResult,
   ItemMaster,
   ItemSpecUpdate,
+  LiveViewState,
   LoginRequest,
   ReviewUpdate,
   TokenResponse,
@@ -187,4 +188,38 @@ export function updateItemSpec(
     { method: "PUT", body: JSON.stringify(body) },
     { auth: true },
   );
+}
+
+/*
+ * 라이브 뷰·1장 촬영 (2026-10-20). 영상은 API 가 중계한다 — 화면이 파이에 직접 붙지 않는다.
+ * 켜면 워커가 다음 하트비트(대기 중 최대 5초)에서 알아차리고 보내기 시작한다.
+ */
+const livePath = (camId: string) => `/system/live/${encodeURIComponent(camId)}`;
+
+export function startLive(camId: string): Promise<LiveViewState> {
+  return request<LiveViewState>(`${livePath(camId)}/start`, { method: "POST" }, { auth: true });
+}
+
+export function stopLive(camId: string): Promise<LiveViewState> {
+  return request<LiveViewState>(`${livePath(camId)}/stop`, { method: "POST" }, { auth: true });
+}
+
+/** 상태·지표. 읽는 동안 서버는 '보고 있다' 로 기한을 연장한다. */
+export function fetchLiveState(camId: string): Promise<LiveViewState> {
+  return request<LiveViewState>(livePath(camId), undefined, { auth: true });
+}
+
+/** 지금 1장 찍어 평소처럼 검사·저장(설치 확인·학습 데이터 수집). */
+export function requestCapture(camId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`${livePath(camId)}/capture`, { method: "POST" }, { auth: true });
+}
+
+/** 최신 프레임 JPEG(인증 필요라 <img src> 대신 blob 으로). 없으면 null. */
+export async function fetchLiveFrame(camId: string): Promise<Blob | null> {
+  const headers: Record<string, string> = {};
+  const token = getAuthToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_BASE}${livePath(camId)}/frame.jpg`, { headers, cache: "no-store" });
+  if (!res.ok) return null;
+  return res.blob();
 }

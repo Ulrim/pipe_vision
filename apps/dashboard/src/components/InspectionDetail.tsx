@@ -53,6 +53,9 @@ export function InspectionDetail({
           <Row k="기준길이(mm)" v={fmtNum(row.ref_length_mm, 3)} />
           <Row k="측정길이(mm)" v={fmtNum(row.meas_length_mm, 3)} />
           <Row k="편차(mm)" v={fmtNum(row.deviation_mm, 3)} />
+          {row.meas_temp_c != null && (
+            <Row k="제품 온도" v={`${fmtNum(row.meas_temp_c, 1)}℃ (길이는 20℃ 환산)`} />
+          )}
           <Row k="유분기" v={fmtNum(row.oil_score, 4)} />
           <Row k="변색" v={fmtNum(row.discolor_score, 4)} />
           <Row k="스크래치" v={fmtNum(row.scratch_score, 4)} />

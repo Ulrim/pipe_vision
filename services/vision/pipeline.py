@@ -37,6 +37,13 @@ from .calib.fiducial import (
 )
 from .calib.fiducial import resolve_config as resolve_fiducial_config
 from .calib.lens import LensCalibration, resolve_calibration
+from .calib.temperature import (
+    CTE_STEEL,
+    TemperatureMonitor,
+    compensation_factor,
+    cte_from_env,
+    monitor_from_env,
+)
 from .preprocess import InspectArea, area_rect, preprocess
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
@@ -187,11 +194,15 @@ class InspectionPipeline:
     #: 기본 검사 단계(=모드). 호출마다 stage= 로 덮어쓸 수 있다. None 이면
     #: 종전처럼 길이·표면을 모두 판정한다(옛 호출자·테스트 호환).
     stage: Optional[str] = None
+    #: 제품 온도 → 길이 20°C 환산. None 이면 환경변수(AIVIS_TEMP_SOURCE)에서 1회 해석한다.
+    #: 미설정이면 환산하지 않는다 — 오차 예산에 열팽창 항이 그대로 남는다(calib/temperature.py).
+    temperature: Optional[TemperatureMonitor] = None
     _model_cache: Dict[tuple, SurfaceModel] = field(
         default_factory=dict, repr=False, compare=False
     )
     _lens_resolved: bool = field(default=False, repr=False, compare=False)
     _fiducial_resolved: bool = field(default=False, repr=False, compare=False)
+    _temperature_resolved: bool = field(default=False, repr=False, compare=False)
 
     def _fiducial_config(self) -> Optional[FiducialConfig]:
         """환경변수에서 한 번만 해석한다(매 프레임 파싱하지 않는다)."""
@@ -201,6 +212,44 @@ class InspectionPipeline:
             self._fiducial_resolved = True
             self.fiducial = resolve_fiducial_config()
         return self.fiducial
+
+    def temperature_monitor(self) -> Optional[TemperatureMonitor]:
+        """환경변수에서 한 번만 해석한다. 워커 하트비트도 같은 값을 쓴다."""
+        if self.temperature is not None:
+            return self.temperature
+        if not self._temperature_resolved:
+            self._temperature_resolved = True
+            self.temperature = monitor_from_env()
+        return self.temperature
+
+    def _to_reference_temperature(
+        self, length: LengthResult, master: ItemMaster, *, gauge_used: bool
+    ) -> LengthResult:
+        """측정 길이를 20°C 환산하고 편차·판정을 다시 낸다. 온도를 모르면 그대로(meas_temp_c=None).
+
+        기준자로 잰 값은 자도 같이 늘어난 눈금이라 (1+α자·ΔT)/(1+α제품·ΔT), 저장된 배율로 잰 값은
+        1/(1+α제품·ΔT) 이다(calib/temperature.compensation_factor).
+        """
+        mon = self.temperature_monitor()
+        if mon is None or length.meas_length_mm is None:
+            return length
+        temp = mon.current()
+        if temp is None:
+            return length  # 센서 오류는 하트비트로 화면에 뜬다. 행에는 '환산 안 함'(NULL)으로 남는다.
+        factor = compensation_factor(
+            temp,
+            part_cte=cte_from_env("AIVIS_PART_CTE", 23.1),
+            ruler_cte=cte_from_env("AIVIS_RULER_CTE", CTE_STEEL) if gauge_used else None,
+        )
+        meas = round(float(length.meas_length_mm) * factor, 3)
+        dev = round(meas - float(length.ref_length_mm), 3)
+        ok = -float(master.tol_minus_mm) <= dev <= float(master.tol_plus_mm)
+        return length.model_copy(update={
+            "meas_length_mm": meas,
+            "deviation_mm": dev,
+            "length_verdict": Verdict.OK if ok else Verdict.NG,
+            "meas_temp_c": round(float(temp), 2),
+        })
 
     def _lens_calibration(self) -> Optional[LensCalibration]:
         """환경변수에서 한 번만 해석한다(매 프레임 파일을 읽지 않는다)."""
@@ -430,6 +479,7 @@ class InspectionPipeline:
                 gray_roi, master, gauge=gauge,
                 roi_x_offset=origin + direction * float(roi_x0), gauge_dir=direction,
             )
+            length = self._to_reference_temperature(length, master, gauge_used=gauge is not None)
             if endpoints is not None and pre.length_roi is not None:
                 r = pre.length_roi
                 # 로컬(측정 창) x → 프레임 x(+창 시작). 세로는 length_roi 범위.
@@ -569,6 +619,7 @@ def to_inspection_result(
         ref_length_mm=length.ref_length_mm,
         meas_length_mm=length.meas_length_mm if see_length else None,
         deviation_mm=length.deviation_mm if see_length else None,
+        meas_temp_c=length.meas_temp_c if see_length else None,
         length_verdict=length.length_verdict if see_length else None,
         oil_score=surface.oil_score if see_surface else None,
         discolor_score=surface.discolor_score if see_surface else None,
