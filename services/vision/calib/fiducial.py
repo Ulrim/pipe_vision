@@ -82,6 +82,42 @@ def resolve_config() -> Optional["FiducialConfig"]:
     return FiducialConfig.parse(spec)
 
 
+#: 촬영 레시피(item_master.capture_recipe)의 기준자 키(2026-10-20).
+RECIPE_KEY = "fiducial"
+
+
+def config_from_recipe(recipe: Optional[dict]) -> Tuple[bool, Optional["FiducialConfig"]]:
+    """품목 촬영 레시피의 기준자 설정 → (레시피에 있었나, 설정).
+
+    품목마다 치구·기준자 위치가 다를 때 쓴다(없으면 스테이션 기본 `AIVIS_FIDUCIAL`).
+      "fiducial": "10:0,0,4056,220"                         ← env 와 같은 형식
+      "fiducial": {"pitch_mm": 10, "roi": [0,0,4056,220], "dark_marks": true}
+      "fiducial": null | "off"                              ← 이 품목은 기준자 없음(저장 배율)
+    틀린 값은 예외 — 오타로 조용히 저장 배율로 떨어지면 정확도가 왜 안 나오는지 모른다.
+    """
+    if not isinstance(recipe, dict) or RECIPE_KEY not in recipe:
+        return False, None
+    v = recipe.get(RECIPE_KEY)
+    if v is None or (isinstance(v, str) and v.strip().lower() in ("", "off", "none")):
+        return True, None
+    if isinstance(v, str):
+        return True, FiducialConfig.parse(v)
+    if isinstance(v, dict):
+        try:
+            pitch = float(v["pitch_mm"])
+            x, y, w, h = (int(t) for t in v["roi"])
+        except Exception as exc:  # noqa: BLE001
+            raise FiducialError(
+                f"촬영 레시피 {RECIPE_KEY} 형식 오류: {v!r} — "
+                '{"pitch_mm": 10, "roi": [x, y, 폭, 높이]}'
+            ) from exc
+        if pitch <= 0 or w <= 0 or h <= 0:
+            raise FiducialError(f"촬영 레시피 {RECIPE_KEY} 값이 0 이하: {v!r}")
+        return True, FiducialConfig(pitch_mm=pitch, roi=(x, y, w, h),
+                                    dark_marks=bool(v.get("dark_marks", True)))
+    raise FiducialError(f"촬영 레시피 {RECIPE_KEY} 형식 오류: {v!r}")
+
+
 class FiducialError(RuntimeError):
     """기준자를 못 읽었다. 호출자는 저장된 스케일로 떨어지되 **기록은 남긴다** —
     조용히 떨어지면 정확도가 왜 나빠졌는지 나중에 알 수 없다."""

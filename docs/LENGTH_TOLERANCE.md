@@ -286,7 +286,8 @@ CM3 는 **렌즈가 고정(f=4.74mm)** 이라 거리를 고를 수 없다. 시�
   `calib/temperature.py` 가 뒤에서 읽고 → 파이프라인이 길이·편차·판정을 20°C 로 환산 → 행의
   `meas_temp_c` 로 남는다. 기준자로 잰 값은 자 재질(`AIVIS_RULER_CTE`, 기본 강척)까지 함께 환산.
   절차 `docs/OPERATIONS_PI.md` §14-3.
-- 기준자 ROI 를 촬영 레시피(`item_master.capture_recipe`)에 넣기.
+- ~~기준자 ROI 를 촬영 레시피에 넣기~~ **완료(2026-10-20)**: `capture_recipe.fiducial` 이
+  스테이션 기본 `AIVIS_FIDUCIAL` 보다 우선(`calib/fiducial.config_from_recipe`).
 
 ## 7. 제품 430mm · ±0.1mm 가 **인라인 선별 기준**일 때 (2026-10-04 확정)
 

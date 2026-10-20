@@ -253,3 +253,35 @@ def test_worker_reuses_its_pipeline_for_bundles(tmp_path, monkeypatch):
     w.run_once()
     assert seen and all(p is w.pipeline for p in seen)
     w.shutdown()
+
+
+# --- 기준자 설정을 품목 촬영 레시피에서 (2026-10-20) --------------------------------
+def test_ruler_from_item_capture_recipe_overrides_station_default(monkeypatch):
+    """치구가 품목마다 다르면 기준자 위치를 품목 레시피에 둔다 — 환경변수보다 우선."""
+    from vision.calib.fiducial import FiducialError, config_from_recipe
+
+    frame, fid, area = _ruler_scene()
+    x, y, w, h = fid.roi
+    monkeypatch.setenv("AIVIS_FIDUCIAL", "5:0,500,10,10")  # 엉뚱한 곳(스테이션 기본)
+    recipe = {"exposure_us": 8000, "fiducial": {"pitch_mm": fid.pitch_mm, "roi": [x, y, w, h]}}
+    item = _item(px_to_mm_scale=0.30, capture_recipe=recipe)
+    b = inspect_batch(frame, item, expected_count=5, area=area, pipeline=InspectionPipeline())
+    assert all(v == pytest.approx(TRUE_MM, abs=0.05) for v in _lengths(b)), _lengths(b)
+    assert not any(t.review_flag for t in b.tubes)
+
+    # 문자열(env 와 같은 형식)도, '기준자 없음'(저장 배율)도 된다.
+    assert config_from_recipe({"fiducial": f"{fid.pitch_mm}:{x},{y},{w},{h}"})[1] == fid
+    assert config_from_recipe({"fiducial": None}) == (True, None)
+    assert config_from_recipe({"exposure_us": 1}) == (False, None)
+    with pytest.raises(FiducialError):
+        config_from_recipe({"fiducial": {"pitch_mm": 0, "roi": [0, 0, 1, 1]}})
+    no_ruler = _item(capture_recipe={"fiducial": "off"})
+    b2 = inspect_batch(frame, no_ruler, expected_count=5, area=area, pipeline=InspectionPipeline())
+    assert all(v == pytest.approx(TRUE_MM, abs=0.05) for v in _lengths(b2)), "저장 배율 0.25 로"
+
+
+def test_bad_recipe_ruler_is_loud_not_silent():
+    frame, _fid, area = _ruler_scene()
+    item = _item(capture_recipe={"fiducial": {"pitch_mm": "x"}})
+    b = inspect_batch(frame, item, expected_count=5, area=area, pipeline=InspectionPipeline())
+    assert all(t.review_flag and t.final_verdict == "NG" for t in b.tubes), "오타로 조용히 떨어지지 않는다"

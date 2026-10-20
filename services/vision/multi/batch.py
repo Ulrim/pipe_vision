@@ -193,7 +193,7 @@ def inspect_batch(
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
-    prep = pipe.prepare_frame(frame, axis=axis, stage=stage)
+    prep = pipe.prepare_frame(frame, axis=axis, stage=stage, item=item)
     frame = prep.frame
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가

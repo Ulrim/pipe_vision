@@ -35,6 +35,7 @@ from .calib.fiducial import (
     measure_scale,
     measure_scale_along,
 )
+from .calib.fiducial import config_from_recipe as fiducial_from_recipe
 from .calib.fiducial import resolve_config as resolve_fiducial_config
 from .calib.lens import LensCalibration, resolve_calibration
 from .calib.temperature import (
@@ -204,8 +205,16 @@ class InspectionPipeline:
     _fiducial_resolved: bool = field(default=False, repr=False, compare=False)
     _temperature_resolved: bool = field(default=False, repr=False, compare=False)
 
-    def _fiducial_config(self) -> Optional[FiducialConfig]:
-        """환경변수에서 한 번만 해석한다(매 프레임 파싱하지 않는다)."""
+    def _fiducial_config(self, master: Optional[ItemMaster] = None) -> Optional[FiducialConfig]:
+        """기준자 설정: 품목 촬영 레시피(`fiducial`) > 주입값 > 환경변수(한 번만 해석).
+
+        품목마다 치구·기준자 위치가 다를 수 있어 레시피가 이긴다(2026-10-20). 레시피에
+        `"fiducial": null` 이면 그 품목은 기준자 없이 저장 배율로 잰다.
+        """
+        recipe = getattr(master, "capture_recipe", None) if master is not None else None
+        found, cfg = fiducial_from_recipe(recipe)
+        if found:
+            return cfg
         if self.fiducial is not None:
             return self.fiducial
         if not self._fiducial_resolved:
@@ -281,6 +290,7 @@ class InspectionPipeline:
         *,
         axis: str = "horizontal",
         stage: Optional[str] = None,
+        item: Union[ItemMaster, Dict[str, Any], None] = None,
     ) -> FramePrep:
         """다발 검사 전에 전체 프레임에서 렌즈 보정·기준자 판독을 한 번 한다.
 
@@ -304,7 +314,7 @@ class InspectionPipeline:
         gauge_read = False
         if DefectCode.LEN in codes_for_stage(stage):
             try:
-                fid = self._fiducial_config()
+                fid = self._fiducial_config(_to_item(item) if item is not None else None)
             except Exception as exc:  # noqa: BLE001 - 설정 오타(resolve_config 가 raise)
                 fid = None
                 gauge_read = True
@@ -463,7 +473,7 @@ class InspectionPipeline:
                 gauge = crop.prep.gauge
                 origin, direction = crop.origin, crop.direction
             else:
-                fid = self._fiducial_config()
+                fid = self._fiducial_config(master)
                 if fid is not None:
                     try:
                         gauge = measure_scale(
