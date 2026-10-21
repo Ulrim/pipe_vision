@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultApiBase, resolveCamId, withWsToken } from "@/lib/config";
+import { defaultApiBase, resolveCamId, resolveWsUrl, withWsToken } from "@/lib/config";
 
 describe("defaultApiBase (실사용: 접속 호스트 기준 API 결정)", () => {
   it("파이 LCD(localhost) → localhost:8000", () => {
@@ -39,5 +39,25 @@ describe("resolveCamId (2대 구성: 이 화면이 보는 카메라)", () => {
     expect(resolveCamId("", undefined)).toBeNull();
     expect(resolveCamId("?cam=", "")).toBeNull();
     expect(resolveCamId("?cam=%20", undefined)).toBeNull();
+  });
+});
+
+
+describe("resolveWsUrl — 한 도메인 배포(/api)·역프록시(\"\")도 절대 주소로", () => {
+  const https = { protocol: "https:", host: "aivis.example.com" };
+  it("절대 API 주소 → http(s)→ws(s)", () => {
+    expect(resolveWsUrl("https://api.x.com", undefined, https)).toBe("wss://api.x.com/ws/live");
+    expect(resolveWsUrl("http://192.168.0.42:8000", undefined, https)).toBe(
+      "ws://192.168.0.42:8000/ws/live",
+    );
+  });
+  it("같은 출처 경로 → 페이지 주소 기준 절대 주소", () => {
+    expect(resolveWsUrl("/api", undefined, https)).toBe("wss://aivis.example.com/api/ws/live");
+    expect(resolveWsUrl("", undefined, { protocol: "http:", host: "pi:8080" })).toBe(
+      "ws://pi:8080/ws/live",
+    );
+  });
+  it("VITE_WS_URL 이 있으면 그대로", () => {
+    expect(resolveWsUrl("/api", "wss://ws.x.com/live", https)).toBe("wss://ws.x.com/live");
   });
 });

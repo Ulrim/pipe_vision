@@ -28,11 +28,23 @@ export const API_BASE: string =
 
 /**
  * WS URL 우선순위: VITE_WS_URL → API_BASE 에서 http(s)→ws(s) 변환 + /ws/live.
+ *
+ * API_BASE 가 같은 출처 경로(`/api` — Vercel services 한 도메인 배포, `""` — 역프록시)면
+ * 접속한 페이지 주소로 절대 주소를 만든다(`wss://<호스트>/api/ws/live`). 상대 주소를
+ * 받지 못하는 브라우저(구형 키오스크 Chromium)가 있다.
  */
-export function resolveWsUrl(): string {
-  const explicit = import.meta.env.VITE_WS_URL;
+export function resolveWsUrl(
+  base: string = API_BASE,
+  explicit: string | undefined = import.meta.env.VITE_WS_URL,
+  loc: { protocol: string; host: string } | undefined =
+    typeof window !== "undefined" ? window.location : undefined,
+): string {
   if (explicit) return explicit;
-  const base = API_BASE.replace(/^http/, "ws");
+  if (/^https?:\/\//.test(base)) return `${base.replace(/^http/, "ws")}/ws/live`;
+  if (loc?.host) {
+    const scheme = loc.protocol === "https:" ? "wss" : "ws";
+    return `${scheme}://${loc.host}${base}/ws/live`;
+  }
   return `${base}/ws/live`;
 }
 

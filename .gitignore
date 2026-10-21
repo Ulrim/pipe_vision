@@ -100,3 +100,6 @@ portal_export/
 
 # Claude Code 에이전트 작업용 로컬 git worktree(저장소에 넣지 않는다)
 .claude/worktrees/
+
+# Vercel api 서비스 빌드 때 복사되는 공용 스키마(packages/shared-types/python/aivis_types)
+services/api/aivis_types/

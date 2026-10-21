@@ -1,0 +1,40 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "services": {
+    "dashboard": {
+      "root": "apps/dashboard",
+      "framework": "vite",
+      "installCommand": "cd ../.. && npm ci",
+      "buildCommand": "cd ../.. && VITE_API_BASE=/api VITE_MES_API_BASE=/mes-api VITE_HMI_URL=/hmi npm run build:dashboard",
+      "outputDirectory": "dist"
+    },
+    "hmi": {
+      "root": "apps/hmi",
+      "framework": "vite",
+      "installCommand": "cd ../.. && npm ci",
+      "buildCommand": "cd ../.. && AIVIS_HMI_BASE=/hmi/ VITE_API_BASE=/api npm run build:hmi",
+      "outputDirectory": "dist"
+    },
+    "api": {
+      "root": "services/api",
+      "framework": "fastapi",
+      "entrypoint": "main.py",
+      "buildCommand": "rm -rf aivis_types && cp -r ../../packages/shared-types/python/aivis_types ./aivis_types",
+      "bindings": [
+        { "type": "service", "service": "mes", "format": "url", "env": "MES_SERVICE_URL" }
+      ]
+    },
+    "mes": {
+      "root": "services/mes",
+      "framework": "fastapi",
+      "entrypoint": "mes_app/main.py"
+    }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": { "service": "api" } },
+    { "source": "/mes-api/(.*)", "destination": { "service": "mes" } },
+    { "source": "/hmi", "destination": { "service": "hmi" } },
+    { "source": "/hmi/(.*)", "destination": { "service": "hmi" } },
+    { "source": "/(.*)", "destination": { "service": "dashboard" } }
+  ]
+}

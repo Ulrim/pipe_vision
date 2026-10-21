@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from aivis_types import Role
+from core.prefix import StripPathPrefix, path_prefix_from_env
 from core.config import get_settings
 from core import remote_storage
 from core.retention import cleanup_images, storage_usage
@@ -205,6 +206,10 @@ app.include_router(mes.router)
 app.include_router(system.router)
 app.include_router(live.router)
 app.include_router(ws_live.router)
+
+# 한 도메인 아래 `/api` 로 물린 배포(Vercel services)는 경로를 그대로 넘긴다 — 앞의 접두어를 벗긴다.
+# 마지막에 더해 가장 바깥(CORS 보다 먼저)에서 돈다. 접두어 없이 온 요청은 그대로(core/prefix.py).
+app.add_middleware(StripPathPrefix, prefix=path_prefix_from_env())
 
 
 @app.get("/health", tags=["health"])

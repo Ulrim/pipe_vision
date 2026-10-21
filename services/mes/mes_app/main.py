@@ -13,6 +13,7 @@ from mes_app import __doc__ as _doc
 from mes_app.config import get_settings
 from mes_app.db import SessionLocal, engine, init_db, interface_engine
 from mes_app.intake import InterfaceReader, Poller
+from mes_app.prefix import StripPathPrefix, path_prefix_from_env
 from mes_app.routers import intake, logistics, orders
 
 log = logging.getLogger("mes")
@@ -52,6 +53,10 @@ app.add_middleware(
 app.include_router(orders.router)
 app.include_router(logistics.router)
 app.include_router(intake.router)
+
+# 한 도메인 아래 `/mes-api` 로 물린 배포(Vercel services)는 경로를 그대로 넘긴다 — 앞의 접두어를 벗긴다.
+# 마지막에 더해 가장 바깥에서 돈다. 접두어 없이 온 요청(바인딩 주소로 직접)은 그대로(mes_app/prefix.py).
+app.add_middleware(StripPathPrefix, prefix=path_prefix_from_env())
 
 
 @app.get("/health", tags=["health"])

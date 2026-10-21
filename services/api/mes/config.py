@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from core.config import get_settings
 
@@ -85,6 +86,17 @@ class MesConfig:
         return "rest_fake" if self.rest_fake else "rest_unconfigured"
 
 
+def resolve_rest_url(env=None) -> Optional[str]:
+    """MES 수신 주소. `MES_REST_URL`(전체 주소)이 우선, 없으면 Vercel 서비스 바인딩이 넣어 주는
+    `MES_SERVICE_URL`(MES 서비스의 내부 기본 주소) + `/intake/quality` (2026-10-21)."""
+    e = os.environ if env is None else env
+    explicit = (e.get("MES_REST_URL") or "").strip()
+    if explicit:
+        return explicit
+    base = (e.get("MES_SERVICE_URL") or "").strip().rstrip("/")
+    return f"{base}/intake/quality" if base else None
+
+
 def get_mes_config() -> MesConfig:
     """환경변수에서 MES 설정을 읽어 스냅샷 생성.
 
@@ -97,7 +109,7 @@ def get_mes_config() -> MesConfig:
 
     return MesConfig(
         mode=mode,
-        rest_url=os.getenv("MES_REST_URL") or None,
+        rest_url=resolve_rest_url(),
         rest_fake=(os.getenv("MES_REST_FAKE", "false").strip().lower() in ("1", "true", "yes")),
         rest_token=(os.getenv("MES_REST_TOKEN") or "").strip() or None,
         rest_timeout_s=_float("MES_REST_TIMEOUT_S", 5.0),
