@@ -425,6 +425,11 @@ export interface StationHost {
   temp_source?: string | null;
   /** 온도계를 쓰는데 값이 없는 사유 — 이때 길이는 환산되지 않는다. */
   temp_error?: string | null;
+  /** 현장 NAS 사진 보관(2026-10-21). 안 쓰면 없음. */
+  nas_ok?: boolean | null;
+  nas_pending?: number | null;
+  nas_dropped?: number | null;
+  nas_error?: string | null;
 }
 
 export interface StationLive {

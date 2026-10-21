@@ -10,7 +10,8 @@ vi.mock("@/api/endpoints", () => ({
   fetchInspectionImageBlob: (...a: unknown[]) => fetchInspectionImageBlob(...a),
 }));
 
-import { LivePage, agoKo, gridCols, procView } from "./LivePage";
+import { HostRow, LivePage, agoKo, gridCols, procView } from "./LivePage";
+import { render } from "@testing-library/react";
 
 const NOW = new Date().toISOString();
 
@@ -205,5 +206,38 @@ describe("LivePage — 파이 여러 대를 한 화면에", () => {
     expect(agoKo(3.4)).toBe("3초 전");
     expect(agoKo(125)).toBe("2분 전");
     expect(agoKo(7300)).toBe("2시간 전");
+  });
+});
+
+
+describe("HostRow — 제품 온도계·NAS 보관 (2026-10-20/21)", () => {
+  const base = {
+    cpu_temp_c: 50, cpu_percent: 10, load_1m: 0.2, mem_percent: 30,
+    disk_percent: 20, disk_free_gb: 50, throttled: false,
+  };
+
+  it("안 쓰는 스테이션에는 표시하지 않는다", () => {
+    render(<HostRow host={base} />);
+    expect(screen.queryByTestId("host-nas")).toBeNull();
+    expect(screen.queryByTestId("host-product-temp")).toBeNull();
+  });
+
+  it("NAS 정상 · 옮기는 중 · 끊김", () => {
+    const { rerender } = render(<HostRow host={{ ...base, nas_ok: true, nas_pending: 0 }} />);
+    expect(screen.getByTestId("host-nas")).toHaveTextContent("NAS 정상");
+    expect(screen.getByTestId("host-nas")).toHaveAttribute("data-sev", "ok");
+    rerender(<HostRow host={{ ...base, nas_ok: true, nas_pending: 12 }} />);
+    expect(screen.getByTestId("host-nas")).toHaveTextContent("⚠ NAS 옮기는 중 12장");
+    rerender(<HostRow host={{ ...base, nas_ok: false, nas_pending: 340, nas_dropped: 0 }} />);
+    const el = screen.getByTestId("host-nas");
+    expect(el).toHaveAttribute("data-sev", "danger");
+    expect(el.textContent).toBe("✕ NAS 끊김 · 대기 340장");
+  });
+
+  it("제품 온도계 값·오류", () => {
+    const { rerender } = render(<HostRow host={{ ...base, product_temp_c: 23.4, temp_source: "ds18b20" }} />);
+    expect(screen.getByTestId("host-product-temp")).toHaveTextContent("제품온도 23.4℃");
+    rerender(<HostRow host={{ ...base, product_temp_c: null, temp_source: "ds18b20" }} />);
+    expect(screen.getByTestId("host-product-temp").textContent).toBe("⚠ 제품온도 온도계 오류(환산 안 함)");
   });
 });

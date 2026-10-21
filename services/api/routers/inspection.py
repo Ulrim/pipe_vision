@@ -65,6 +65,11 @@ class WorkerHost(BaseModel):
     temp_source: Optional[str] = None
     #: 온도계를 쓰는데 값이 없을 때 사유(센서 빠짐 등) — 이때 길이는 환산되지 않는다.
     temp_error: Optional[str] = None
+    #: 현장 NAS 사진 보관(AIVIS_ARCHIVE_DIR, 2026-10-21). 안 쓰면 None.
+    nas_ok: Optional[bool] = None
+    nas_pending: Optional[int] = None
+    nas_dropped: Optional[int] = None
+    nas_error: Optional[str] = None
 
 
 class BatchStatus(BaseModel):

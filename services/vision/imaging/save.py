@@ -29,6 +29,7 @@ import numpy as np
 from ..length.measure import LengthSpan
 from ..preprocess.area import InspectArea, area_rect
 from .draw import draw_inspect_area, draw_length_span
+from .archive import NasArchive, archive_put
 from .storage import (
     StorageBackend,
     StorageSettings,
@@ -593,6 +594,7 @@ def _save_pair_via_backend(
     pending_sink=None,
     cam_id: Optional[str] = None,
     force_raw: bool = False,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """이미 렌더된 (frame, overlay) 쌍을 스토리지 백엔드에 업로드.
 
@@ -609,9 +611,17 @@ def _save_pair_via_backend(
     pending: list = []
     raw_path: Optional[str] = None
     if keep_remote_raw(verdict, review, force_raw):
+        raw_jpeg = encode_jpeg(frame)
+        archive_put(archive, raw_key, ts, jpeg=raw_jpeg)
         raw_path = _put_or_spool(
-            backend, raw_key, encode_jpeg(frame), pending_sink, pending
+            backend, raw_key, raw_jpeg, pending_sink, pending
         )
+    else:
+        # 클라우드에 안 올리는 원본(정상품)도 NAS 에는 남긴다 — 재학습에 가장 많이 필요한 사진.
+        archive_put(archive, raw_key, ts, image=frame)
+    archive_put(archive, result_key, ts, image=overlay)
+    if review:
+        archive_put(archive, f"{_REVIEW}/{fname}", ts, image=overlay)
     overlay_jpeg = encode_jpeg(overlay, remote_jpeg_quality())
     result_path = _put_or_spool(
         backend, result_key, overlay_jpeg, pending_sink, pending
@@ -640,6 +650,7 @@ def _save_pair_local(
     verdict: str,
     review: bool,
     cam_id: Optional[str] = None,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """이미 렌더된 (frame, overlay) 쌍을 로컬 디스크에 저장(raw/ + result/)."""
     raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
@@ -647,7 +658,21 @@ def _save_pair_local(
         overlay, target_dir, lot, item_code, ts, verdict, review_flag=review,
         cam_id=cam_id,
     )
+    _archive_pair(archive, frame, overlay, raw_path, result_path, review, ts)
     return ImageSaveResult(raw_image_path=raw_path, result_image_path=result_path)
+
+
+def _archive_pair(archive: Optional[NasArchive], frame, overlay, raw_path: Optional[str],
+                  result_path: Optional[str], review: bool, ts: datetime) -> None:
+    """로컬 저장한 쌍을 NAS 에도(키 = 같은 상대경로). 보관이 꺼져 있으면 아무것도 안 한다."""
+    if archive is None:
+        return
+    if raw_path:
+        archive_put(archive, raw_path, ts, image=frame)
+    if result_path:
+        archive_put(archive, result_path, ts, image=overlay)
+        if review:
+            archive_put(archive, f"{_REVIEW}/{result_path.split('/', 1)[1]}", ts, image=overlay)
 
 
 def _save_via_backend(
@@ -667,6 +692,7 @@ def _save_via_backend(
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
     area_mm_per_px: Optional[float] = None,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """단일 검사 결과를 렌더(render_overlay) 후 백엔드에 업로드(호환 래퍼)."""
     overlay = render_overlay(frame, result, item=item, length_span=length_span, area=area,
@@ -683,6 +709,7 @@ def _save_via_backend(
         pending_sink=pending_sink,
         cam_id=cam_id,
         force_raw=force_raw,
+        archive=archive,
     )
 
 
@@ -702,8 +729,12 @@ def save_inspection_images(
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
     area_mm_per_px: Optional[float] = None,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """raw + result 저장 일괄 처리(워커 통합 진입점).
+
+    archive: NAS 보관(imaging/archive.py) — 원본·결과를 **전부** 한 벌 더(뒤에서) 쓴다.
+    클라우드 원본 정책(AIVIS_REMOTE_RAW)과 무관하다.
 
     area: 검사 영역 — result 사진에만 그린다(원본은 손대지 않는다 — 학습 입력).
     area_mm_per_px: 영역 라벨에 mm 근사값을 함께 적을 때(길이 검사 모드).
@@ -753,6 +784,7 @@ def save_inspection_images(
                 force_raw=force_raw,
                 area=area,
                 area_mm_per_px=area_mm_per_px,
+                archive=archive,
             )
         # local 디스크 경로(기존 동작 그대로).
         raw_path = save_raw(frame, target_dir, lot, item_code, ts, verdict, cam_id=cam_id)
@@ -768,6 +800,7 @@ def save_inspection_images(
             review_flag=review,
             cam_id=cam_id,
         )
+        _archive_pair(archive, frame, overlay, raw_path, result_path, review, ts)
         return ImageSaveResult(raw_image_path=raw_path, result_image_path=result_path)
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(
@@ -791,6 +824,7 @@ def save_batch_images(
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
     area_mm_per_px: Optional[float] = None,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """배치(다중 튜브) 1프레임의 raw + 배치 오버레이 result 를 **1회** 저장.
 
@@ -831,6 +865,7 @@ def save_batch_images(
                 pending_sink=pending_sink,
                 cam_id=cam_id,
                 force_raw=force_raw,
+                archive=archive,
             )
         return _save_pair_local(
             frame,
@@ -842,6 +877,7 @@ def save_batch_images(
             verdict=verdict,
             review=review,
             cam_id=cam_id,
+            archive=archive,
         )
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")
@@ -900,6 +936,7 @@ def save_count_images(
     cam_id: Optional[str] = None,
     force_raw: bool = False,
     area: Optional[InspectArea] = None,
+    archive: Optional[NasArchive] = None,
 ) -> ImageSaveResult:
     """개수 확인 1프레임의 raw + 개수 오버레이 result 를 1회 저장.
 
@@ -922,11 +959,11 @@ def save_count_images(
             return _save_pair_via_backend(
                 backend, frame, overlay, lot=lot, item_code=item_code, ts=ts,
                 verdict=str(verdict), review=review, pending_sink=pending_sink,
-                cam_id=cam_id, force_raw=force_raw,
+                cam_id=cam_id, force_raw=force_raw, archive=archive,
             )
         return _save_pair_local(
             frame, overlay, target_dir, lot=lot, item_code=item_code, ts=ts,
-            verdict=str(verdict), review=review, cam_id=cam_id,
+            verdict=str(verdict), review=review, cam_id=cam_id, archive=archive,
         )
     except Exception as exc:  # noqa: BLE001
         return ImageSaveResult(error=f"{type(exc).__name__}: {exc}")

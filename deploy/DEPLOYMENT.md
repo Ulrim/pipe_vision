@@ -199,6 +199,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now aivis-vision.service
 | 타이머 1.5초 + `ng` | 약 6GB | 결과 사진 위주 |
 | 영상 트리거(예: 20초에 한 다발) + `ng` | 약 0.5GB | **권장** |
 
+- **현장 NAS 보관(권장, 2026-10-21)**: 파이가 원본·결과 사진 **전부**를 공장 내부망 Synology 에도 쓴다
+  (`AIVIS_ARCHIVE_DIR`, `docs/OPERATIONS_PI.md` §15). 그러면 클라우드는 최근 사진만 두면 된다 —
+  `AIVIS_REMOTE_RETENTION_DAYS=30` 이면 파이 2대 기준 약 20GB(Supabase Pro 100GB 안).
 - **보관기한**: api 가 `AIVIS_REMOTE_RETENTION_DAYS`(기본 90일)보다 오래된 사진을 Supabase 에서
   지운다(검사 기록은 DB 에 남고, 화면에는 "보관기간 경과"). 0 이면 끈다.
 - **Supabase 무료**: DB 500MB·Storage 1GB, 1주간 활동 없으면 일시정지. 생산에 붙이면 **Pro** 를 권한다.

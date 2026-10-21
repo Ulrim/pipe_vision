@@ -381,7 +381,19 @@ export function HostRow({ host }: { host: StationHost | null }): JSX.Element {
     items.push(
       host.product_temp_c != null
         ? { k: "제품온도", v: `${fmtNum(host.product_temp_c, 1)}℃`, sev: "ok", testid: "host-product-temp" }
-        : { k: "제품온도", v: "⚠ 온도계 오류(환산 안 함)", sev: "warn", testid: "host-product-temp" },
+        : { k: "제품온도", v: "온도계 오류(환산 안 함)", sev: "warn", testid: "host-product-temp" },
+    );
+  }
+  // 현장 NAS 사진 보관 — 쓰는 스테이션만. 끊기면 파이에 모았다가 다시 붙으면 옮긴다.
+  if (host.nas_ok != null) {
+    const pend = host.nas_pending ?? 0;
+    const lost = host.nas_dropped ?? 0;
+    items.push(
+      !host.nas_ok
+        ? { k: "NAS", v: `끊김 · 대기 ${fmtNum(pend, 0)}장${lost ? ` · 버림 ${fmtNum(lost, 0)}` : ""}`, sev: "danger", testid: "host-nas" }
+        : pend > 0
+          ? { k: "NAS", v: `옮기는 중 ${fmtNum(pend, 0)}장`, sev: "warn", testid: "host-nas" }
+          : { k: "NAS", v: lost ? `정상 · 버림 ${fmtNum(lost, 0)}` : "정상", sev: lost ? "warn" : "ok", testid: "host-nas" },
     );
   }
   return (

@@ -1243,3 +1243,88 @@ AIVIS_TEMP_SOURCE=ds18b20         # none(기본) | fixed:<°C> | ds18b20[:<센�
   그만큼 틀린다 — 온도계가 정직하다.
 - **절단 직후에 길이를 재면 이 방법이 안 통한다**(톱 발열로 제품마다 온도가 다르다).
 - 표면·개수 스테이션은 설정하지 않는다(길이를 보지 않는다).
+
+---
+
+## 15. 사진 NAS 보관 — Synology (2026-10-21)
+
+클라우드(Supabase)에는 용량 때문에 **결과 사진 + NG 원본**만 올리고 보관기한이 지나면 지운다.
+그러면 **정상품 원본**은 어디에도 남지 않는다 — 표면 모델 재학습에 가장 많이 필요한 사진이다.
+그래서 파이가 같은 공장 내부망의 Synology 에 **원본·결과 사진 전부**를 한 벌 더 쓴다.
+
+```
+현장 파이 ──(공장 내부망, SMB)──▶ Synology : 모든 사진 영구 보관(정상품 원본 포함)
+     └──────(인터넷)────────────▶ Supabase : 최근 사진만(사무실·외부 조회용)
+```
+
+- 인터넷을 쓰지 않는다. 쓰기는 검사와 따로(뒤에서) 해서 처리시간(300ms/ea)에 영향이 없다.
+- 폴더: `YYYY/MM/DD/raw|result|review/` (날짜는 한국 시간). 파일명은 운영 규칙 그대로
+  `{LOT}_{품목}_{카메라}_{시각}_{판정}.jpg` — Synology 파일 검색에 LOT 을 넣으면 찾는다.
+- 파이 여러 대가 **같은 폴더**를 써도 된다(파일명에 카메라 ID 가 있다).
+- 현장 단독(모드 B)·클라우드(모드 A) 모두 같은 설정으로 동작한다.
+
+### 15-1. Synology 쪽 (DSM 7, 한 번만)
+
+1. **제어판 → 공유 폴더 → 생성**: 이름 `aivis`.
+2. **제어판 → 사용자 및 그룹 → 생성**: 사용자 `aivis-pi`, 강한 비밀번호.
+   - 권한: `aivis` **읽기/쓰기**, 다른 공유 폴더는 **액세스 없음**.
+   - 응용 프로그램: **SMB 만** 허용.
+3. **제어판 → 파일 서비스 → SMB**: 사용(기본 켜짐). 고급 설정의 최소 프로토콜 **SMB2** 이상.
+4. NAS 를 **고정 IP** 로(공유기 DHCP 예약 또는 DSM 네트워크 설정). 아래 예시는 `192.168.0.50`.
+5. (권장) **저장소 관리자 → 알림**: 용량 80% 경고. 필요하면 **Hyper Backup** 으로 외장 디스크에 2차 백업.
+
+### 15-2. 파이 쪽 (대마다)
+
+```bash
+sudo apt install -y cifs-utils
+sudo mkdir -p /mnt/nas
+# NAS 계정 — 파일 권한 600(다른 사용자는 못 읽는다)
+sudo install -m600 /dev/null /etc/aivis/nas.cred
+sudo nano /etc/aivis/nas.cred
+#   username=aivis-pi
+#   password=<15-1 의 비밀번호>
+
+# 부팅 때 자동 연결 — /etc/fstab 맨 아래에 한 줄
+echo '//192.168.0.50/aivis /mnt/nas cifs credentials=/etc/aivis/nas.cred,uid=pi,gid=pi,file_mode=0664,dir_mode=0775,vers=3.0,iocharset=utf8,_netdev,nofail,x-systemd.automount,x-systemd.mount-timeout=10 0 0' | sudo tee -a /etc/fstab
+sudo systemctl daemon-reload && sudo mount -a
+
+# NAS 표식 — 처음 한 번(같은 NAS 를 쓰는 다른 파이는 이미 있으면 건너뛴다)
+mkdir -p /mnt/nas/photos && touch /mnt/nas/photos/.aivis-nas
+ls -la /mnt/nas/photos/.aivis-nas && echo "NAS 연결 OK"
+```
+
+워커 설정(`/etc/aivis/worker.env`, 현장 단독이면 `/etc/aivis/standalone.env`)에 한 줄:
+
+```bash
+AIVIS_ARCHIVE_DIR=/mnt/nas/photos
+# AIVIS_ARCHIVE_SPOOL_MAX_GB=5     # NAS 가 끊겼을 때 파이에 모아 둘 상한
+```
+
+```bash
+sudo systemctl restart aivis-vision      # 현장 단독이면 aivis-standalone
+```
+
+대시보드 **실시간 현황** 카드에 **NAS 정상** 이 뜨면 끝이다. 다음 검사부터 Synology `aivis/photos/`
+아래 날짜 폴더에 사진이 쌓인다.
+
+### 15-3. NAS 가 끊기면
+
+- **표식 파일(`.aivis-nas`)이 보일 때만 쓴다.** NAS 가 안 붙은 채로 `/mnt/nas` 에 쓰면 사진이 파이 SD
+  카드에 조용히 쌓여 카드를 채운다 — 그래서 표식이 없으면 'NAS 끊김' 으로 본다.
+- 끊긴 동안은 파이 스풀(`AIVIS_SPOOL_DIR/archive`)에 모았다가, 다시 붙으면 30초 안에 오래된 것부터 옮긴다.
+- 카드 표시: **NAS 정상** / **⚠ NAS 옮기는 중 n장** / **✕ NAS 끊김 · 대기 n장**.
+- 스풀이 상한(기본 5GB, 원본 약 4천 장)을 넘으면 새 사진은 버리고 '버림 n' 으로 센다 — SD 카드를
+  지키는 쪽을 택했다. 그 전에 NAS 를 살린다(전원·랜선·`sudo mount -a`).
+- 검사·저장·클라우드 전송은 NAS 와 무관하게 계속된다.
+
+### 15-4. 용량 · 클라우드 보관기한
+
+| 조건(파이 1대) | 하루 8시간 | 1년(250일) |
+|---|---|---|
+| 영상 트리거, 20초에 한 다발, 원본 약 1MB + 결과 약 0.3MB | 약 1.9GB | 약 470GB |
+
+- 파이 2대면 1년 약 1TB(추정 — 첫 주 실제 사용량을 Synology 저장소 관리자로 확인).
+- 연·월 폴더라 오래된 해는 폴더째 외장 디스크로 옮기거나 지우면 된다(검사 기록은 DB 에 남는다).
+- NAS 에 전부 있으니 **클라우드 보관기한을 줄인다** — Render 의 aivis-api 환경변수
+  `AIVIS_REMOTE_RETENTION_DAYS=30` 이면 파이 2대 기준 Supabase 사진 약 20GB 로 Pro(100GB) 안에서
+  여유 있다(`deploy/DEPLOYMENT.md` §8).

@@ -46,6 +46,7 @@ from vision.multi import (  # noqa: E402
 )
 
 from vision.imaging.save import save_count_images  # noqa: E402
+from vision.imaging.archive import NasArchive  # noqa: E402
 from vision.multi.bundle import count_bundle  # noqa: E402
 from vision.multi.segment import segment_tubes  # noqa: E402
 from vision.preprocess.area import InspectArea  # noqa: E402
@@ -127,6 +128,8 @@ class Worker:
             max_mb=config.spool_max_mb,
             flush_batch=config.spool_flush_batch,
         )
+        # 현장 NAS(Synology) 보관 — 원본·결과 사진 전부를 내부망으로 한 벌 더(AIVIS_ARCHIVE_DIR).
+        self.archive: Optional[NasArchive] = NasArchive.from_env(spool_dir=config.spool_dir)
         # flush 시 pending 이미지 업로더((key, jpeg) -> None). 주입 없으면
         # supabase 설정이 있을 때 lazily 구성한다.
         self._image_uploader = image_uploader
@@ -536,6 +539,8 @@ class Worker:
             snap["product_temp_c"] = mon.current()
             snap["temp_source"] = mon.source.label
             snap["temp_error"] = mon.stale_reason()
+        if self.archive is not None:
+            snap.update(self.archive.status())
         return snap
 
     def _handle_commands(self, resp) -> None:
@@ -700,6 +705,7 @@ class Worker:
                 inspected_at=inspected_at,
                 item=self.item,
                 pending_sink=self.spool.save_image,
+                archive=self.archive,
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
                 length_span=length_span,
@@ -860,6 +866,7 @@ class Worker:
                 item_code=self._cur_item_code(),
                 inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
+                archive=self.archive,
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
                 area=self.area,
@@ -985,6 +992,7 @@ class Worker:
                 images_dir=self.cfg.images_dir, lot=self._cur_lot(),
                 item_code=self._cur_item_code(), inspected_at=inspected_at,
                 pending_sink=self.spool.save_image,
+                archive=self.archive,
                 cam_id=self.cfg.cam_id,
                 force_raw=self._training,
                 area=self.area,
@@ -1154,6 +1162,8 @@ class Worker:
 
     def shutdown(self) -> None:
         self.live.stop()
+        if self.archive is not None:
+            self.archive.close(timeout=5.0)
         self._clear_ready()
         try:
             if self.camera is not None:
