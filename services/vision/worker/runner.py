@@ -400,14 +400,16 @@ class Worker:
     def _orientation(self) -> str:
         """품목별 배치 방향(모양 대응): capture_recipe.orientation.
 
-        "horizontal"(기본, 튜브가 가로로 누움) | "vertical". 그 외 값은 경고 후
-        horizontal. 기준정보에서 관리(하드코딩 금지) — 품목 전환 시 함께 바뀐다.
+        "auto"(기본, 2026-10-21 — 영상에서 가로·세로를 정하고 비스듬하면 돌려 잰다) |
+        "horizontal"(튜브가 가로로 누움) | "vertical". 그 외 값은 경고 후 auto.
+        기준정보에서 관리(하드코딩 금지) — 품목 전환 시 함께 바뀐다. 치구로 방향이 고정된 현장은
+        horizontal 로 고정해 두면 방향 판단을 건너뛴다.
         """
         recipe = getattr(self.item, "capture_recipe", None) or {}
-        val = str(recipe.get("orientation", "horizontal")).lower()
-        if val not in ("horizontal", "vertical"):
-            log.warning("orientation 값 무효(%r) — horizontal 로 대체", val)
-            return "horizontal"
+        val = str(recipe.get("orientation", "auto")).lower()
+        if val not in ("horizontal", "vertical", "auto"):
+            log.warning("orientation 값 무효(%r) — auto 로 대체", val)
+            return "auto"
         return val
 
     def _log_item_change(self, old: ItemMaster, new: ItemMaster) -> None:

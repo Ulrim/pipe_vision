@@ -850,7 +850,10 @@ def save_batch_images(
             backend = build_backend(settings)
 
     try:
-        overlay = render_batch_overlay(frame, batch_result, area=area,
+        # 비스듬한 튜브를 돌려 쟀으면 그 돌린 영상에 그린다(좌표가 그 영상 기준). 원본은 그대로 저장.
+        view = getattr(batch_result, "view", None)
+        overlay = render_batch_overlay(view if view is not None else frame, batch_result,
+                                       area=None if view is not None else area,
                                        area_mm_per_px=area_mm_per_px)
         if backend is not None:
             return _save_pair_via_backend(

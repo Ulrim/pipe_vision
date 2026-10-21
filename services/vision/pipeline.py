@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 
+import cv2
 import numpy as np
 from aivis_types import (
     DefectCode,
@@ -27,7 +28,7 @@ from aivis_types import (
 )
 
 from .length import LengthSpan, measure_length_ex
-from .length.measure import length_window
+from .length.measure import END_MARGIN_PX, length_window
 from .calib.fiducial import (
     FiducialConfig,
     FiducialError,
@@ -46,6 +47,8 @@ from .calib.temperature import (
     monitor_from_env,
 )
 from .preprocess import InspectArea, area_rect, preprocess
+from .preprocess.foreground import light_background
+from .preprocess.roi import Roi
 from .surface.anomaly import resolve_surface_model
 from .surface.model import SurfaceModel
 from .verdict import combine_verdict
@@ -143,6 +146,8 @@ class FramePrep:
     """기준자 설정이 있어 전체 프레임에서 읽기를 시도했는가(성공·실패 무관)."""
     notes: tuple = ()
     """튜브마다 오류로 남길 사유(렌즈 보정 실패·기준자 읽기 실패) — 단일 경로와 같은 규칙."""
+    light_bg: bool = False
+    """배경이 제품보다 밝다(밝은 바닥 등) — 전체 프레임에서 한 번 정한다(foreground.py)."""
 
 
 @dataclass(frozen=True)
@@ -156,6 +161,55 @@ class CropContext:
     prep: FramePrep
     origin: float = 0.0
     direction: int = 1
+    mask: Optional[np.ndarray] = None
+    """이 튜브만의 제품 마스크(crop 크기) — 전체 프레임에서 찾은 것. 있으면 crop 에서 다시 찾지 않는다."""
+
+
+def _mask_tilt_deg(mask: Optional[np.ndarray], roi) -> Optional[float]:
+    """제품 마스크에서 튜브 축의 기울기(도) — 열마다 마스크 중심 높이를 직선으로 적합(밝은 배경용).
+
+    끝단 근처(양쪽 10%)는 빼고, 적합에서 3px 넘게 벗어난 열은 버리고 다시 적합한다(이웃 튜브·그림자).
+    열이 모자라면 None.
+    """
+    if mask is None or roi is None:
+        return None
+    sub = mask[roi.y0:roi.y1, roi.x0:roi.x1] > 0
+    h, w = sub.shape[:2]
+    if h < 3 or w < 20:
+        return None
+    a, b = int(0.1 * w), int(0.9 * w)
+    cols = sub[:, a:b]
+    cnt = cols.sum(axis=0)
+    ok = cnt >= max(2, 0.2 * float(np.median(cnt)) if cnt.size else 2)
+    if ok.sum() < 10:
+        return None
+    ys = np.arange(h, dtype=np.float64)[:, None]
+    cy = (cols * ys).sum(axis=0) / np.maximum(cnt, 1)
+    xs = np.arange(a, b, dtype=np.float64)[ok]
+    cy = cy[ok]
+    k, c0 = np.polyfit(xs, cy, 1)
+    keep = np.abs(cy - (k * xs + c0)) <= 3.0
+    if keep.sum() >= 10:
+        k, _ = np.polyfit(xs[keep], cy[keep], 1)
+    return float(np.degrees(np.arctan(k)))
+
+
+def _background_contrast(win: np.ndarray, margin: int) -> np.ndarray:
+    """측정 창 → |영상 − 행별 배경| (밝은 배경용). 배경 = 창 양 끝 margin 열의 행별 중앙값을 잇는 직선.
+
+    금속 튜브는 반사 띠(밝음)와 가장자리(어두움)가 섞여 평균 밝기가 바닥과 비슷할 수 있다. 차의
+    **크기** 는 두 쪽 모두 커서, 행을 평균하면 튜브 안이 배경보다 확실히 높다 — 끝단 찾기 규칙
+    (상승·하강, 바깥은 낮음)이 그대로 맞는다. 배경을 한 값으로 두지 않고 양 끝 사이를 잇는 이유:
+    튜브는 길어서 한쪽 바닥이 그늘이면(현장 사진: 왼쪽 126, 오른쪽 198) 두 값의 중간이 튜브와 비슷해져
+    끝단이 사라졌다.
+    """
+    w = win.astype(np.float32)
+    m = max(2, min(int(margin), w.shape[1] // 4))
+    left = np.median(w[:, :m], axis=1, keepdims=True)
+    right = np.median(w[:, -m:], axis=1, keepdims=True)
+    t = np.clip((np.arange(w.shape[1], dtype=np.float32) - 0.5 * m) / max(w.shape[1] - m, 1), 0.0, 1.0)
+    bg = left + (right - left) * t[None, :]
+    return np.clip(np.abs(w - bg), 0, 255).astype(np.uint8)
 
 
 @dataclass
@@ -325,8 +379,9 @@ class InspectionPipeline:
                     gauge = measure_scale_along(frame, fid, axis=axis)
                 except FiducialError as exc:
                     notes.append(f"기준자 읽기 실패(저장된 스케일 사용): {exc}")
+        light = light_background(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
         return FramePrep(frame=frame, lens_applied=lens_applied, gauge=gauge,
-                         gauge_read=gauge_read, notes=tuple(notes))
+                         gauge_read=gauge_read, notes=tuple(notes), light_bg=light)
 
     def run(
         self,
@@ -433,7 +488,13 @@ class InspectionPipeline:
 
         # ② 전처리 — 실패해도 검사 자체는 NG 로 종료(미판정 0).
         try:
-            pre = preprocess(frame_bgr, self.surface_inset_ratio, area=area)
+            # 배경 밝기는 전체 프레임에서 정한다 — 다발 crop 은 튜브가 화면을 채워 판단이 틀린다.
+            if crop is not None:
+                light = crop.prep.light_bg
+            else:
+                light = light_background(cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY))
+            pre = preprocess(frame_bgr, self.surface_inset_ratio, area=area,
+                             mask_hint=crop.mask if crop is not None else None, light=light)
         except Exception as exc:  # noqa: BLE001
             total = int(round((time.perf_counter() - t0) * 1000))
             reason = f"preprocess 실패: {type(exc).__name__}: {exc}"
@@ -457,15 +518,28 @@ class InspectionPipeline:
                 rect = area_rect(area, frame_bgr)
                 span_lo = rect.x0 if rect is not None else 0
                 span_hi = rect.x1 if rect is not None else None
-                gray_roi, win_x0 = length_window(pre.gray_corrected, r, lo=span_lo, hi=span_hi)
-                # 끝단 서브픽셀 위치는 같은 창의 **선형** 그레이에서 잰다(찾기·가드는 보정본).
-                # 반사 보정본은 끝단 옆 후광 + 미디언으로 화소 사이 위치가 지워진다(measure.py).
-                linear = (length_window(pre.gray, r, lo=span_lo, hi=span_hi)[0]
-                          if pre.gray is not None else None)
+                if light and pre.gray is not None:
+                    # 밝은 배경(2026-10-21): 끝단 찾기는 '밝은 제품 · 어두운 바깥' 을 가정한다.
+                    # 끝단 바깥 배경과의 차 |영상 − 배경| 로 바꿔 재면 극성과 무관하게 같은 규칙이
+                    # 맞는다. 배경 마스크는 덜 정확하므로 창을 더 넓혀 바깥 배경을 확실히 담는다.
+                    m = max(3 * END_MARGIN_PX, int(0.03 * (r.x1 - r.x0)))
+                    hi_x = frame_bgr.shape[1] if span_hi is None else span_hi
+                    rr = Roi(max(span_lo, r.x0 - m), r.y0, min(hi_x, r.x1 + m), r.y1)
+                    lin_win, win_x0 = length_window(pre.gray, rr, lo=span_lo, hi=span_hi)
+                    gray_roi = linear = _background_contrast(lin_win, END_MARGIN_PX)
+                    hint = (float(r.x0 - win_x0), float(r.x1 - win_x0))
+                else:
+                    gray_roi, win_x0 = length_window(pre.gray_corrected, r, lo=span_lo, hi=span_hi)
+                    # 끝단 서브픽셀 위치는 같은 창의 **선형** 그레이에서 잰다(찾기·가드는 보정본).
+                    # 반사 보정본은 끝단 옆 후광 + 미디언으로 화소 사이 위치가 지워진다(measure.py).
+                    linear = (length_window(pre.gray, r, lo=span_lo, hi=span_hi)[0]
+                              if pre.gray is not None else None)
             else:
                 win_x0 = 0
                 gray_roi = pre.gray_corrected  # ROI 미검출 → 끝단검출 실패 유도.
                 linear = pre.gray
+            if not light or pre.length_roi is None:
+                hint = None
             # 기준자가 설정돼 있으면 **이 프레임에서** 배율을 읽어 쓴다.
             # 못 읽으면 저장된 스케일로 떨어지되 반드시 기록에 남긴다 —
             # 조용히 떨어지면 정확도가 왜 나빠졌는지 알 수 없다.
@@ -492,6 +566,12 @@ class InspectionPipeline:
                 gray_roi, master, gauge=gauge,
                 roi_x_offset=origin + direction * float(roi_x0), gauge_dir=direction,
                 linear=linear,
+                # 밝은 배경: 끝단은 바깥에서 들어오는 50% 교차로(표면 무늬를 끝단으로 잡지 않게),
+                # 행별 기울기 적합은 끈다(행마다 무늬에 걸린다). 현장 권장은 어두운 배경이다.
+                edge_mode="crossing" if light else "gradient",
+                correct_tilt=not light,
+                extent_hint=hint,
+                tilt_deg=_mask_tilt_deg(pre.mask, pre.length_roi) if hint is not None else None,
             )
             length = self._to_reference_temperature(length, master, gauge_used=gauge is not None)
             if endpoints is not None and pre.length_roi is not None:

@@ -31,6 +31,13 @@ import cv2
 import numpy as np
 
 from ..preprocess.area import InspectArea, area_rect
+from ..preprocess.foreground import (
+    contrast_mask,
+    dominant_angle,
+    label_blobs,
+    light_background,
+    select_tubes,
+)
 
 # 한 프레임에서 분할할 수 있는 튜브 수의 안전 상한.
 #
@@ -282,8 +289,86 @@ def _segment_axis(
     # 오인하는 것을 차단(상위에서 count=0 처리, graceful).
     if float(gray.max()) - float(gray.min()) < 20.0:
         return []
+    if light_background(gray):
+        return _segment_light(gray, expected_count, min_tubes, max_tubes)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _t, binm = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return _segment_band(gray, binm, expected_count, min_tubes, max_tubes)
+
+
+def _segment_light(
+    gray: np.ndarray,
+    expected_count: Optional[int],
+    min_tubes: int,
+    max_tubes: int,
+) -> List[Tuple[int, int, int, int, float]]:
+    """밝은·무늬 배경(2026-10-21) — 떨어져 놓인 튜브는 덩어리 하나가 튜브 하나, 붙은 다발은 그 덩어리
+    안에서 종전처럼 seam(어두운 골)으로 나눈다.
+
+    종전 밴드 방식은 '튜브가 서로 붙은 다발 하나' 를 가정해, 떨어진 튜브 사이의 빈 행에서 밴드가
+    끊겨 하나만 남았다. 덩어리별로 보면 떨어져 있든 붙어 있든 같은 코드로 된다.
+    덩어리당 튜브 수 = 폭 ÷ 가장 가는 덩어리 폭(반올림). 덩어리가 하나뿐이면 폭 기준이 없어 seam 자동.
+    기대 개수가 덩어리 수와 같으면 하나씩, 덩어리가 하나면 그 안을 기대 개수로 나눈다.
+    """
+    mask = contrast_mask(gray)
+    lab, blobs = label_blobs(mask)
+    tubes = sorted(select_tubes(blobs), key=lambda b: b.cy)
+    if not tubes:
+        return []
+    unit = min(b.width for b in tubes) if len(tubes) > 1 else None
+    per: List[Optional[int]] = [max(1, int(round(b.width / unit))) if unit else None for b in tubes]
+    if expected_count:
+        if len(tubes) == expected_count:
+            per = [1] * len(tubes)
+        elif len(tubes) == 1:
+            per = [int(expected_count)]
+        elif None in per or sum(p or 0 for p in per) != expected_count:
+            per = [p if p and p > 1 else (1 if unit else None) for p in per]
+    boxes: List[Tuple[int, int, int, int, float]] = []
+    for b, n in zip(tubes, per):
+        if n == 1:
+            boxes.append((b.x0, b.y0, b.x1, b.y1, 1.0))
+            continue
+        sub_g = gray[b.y0:b.y1, b.x0:b.x1]
+        sub_m = ((lab[b.y0:b.y1, b.x0:b.x1] == b.label).astype(np.uint8)) * 255
+        inner = _merge_slivers(_segment_band(sub_g, sub_m, n, min_tubes, max_tubes))
+        if not inner:
+            boxes.append((b.x0, b.y0, b.x1, b.y1, 0.5))
+            continue
+        boxes.extend((x0 + b.x0, y0 + b.y0, x1 + b.x0, y1 + b.y0, c) for (x0, y0, x1, y1, c) in inner)
+    return boxes
+
+
+def _merge_slivers(
+    boxes: List[Tuple[int, int, int, int, float]],
+) -> List[Tuple[int, int, int, int, float]]:
+    """폭이 중앙값의 절반도 안 되는 조각을 이웃 띠에 붙인다(가로 튜브 — 띠는 y 순서).
+
+    밝은 배경에서 붙은 다발의 바깥 튜브는 가장자리 어두운 테두리가 골처럼 보여, 자동 분할이 다발
+    양끝에 얇은 조각을 하나씩 더 만들었다(현장 사진: 4개 → 6개). 튜브 지름은 같으므로 조각은 튜브가 아니다.
+    """
+    out = list(boxes)
+    while len(out) > 1:
+        hs = [b[3] - b[1] for b in out]
+        med = float(np.median(hs))
+        i = int(np.argmin(hs))
+        if hs[i] >= 0.5 * med:
+            break
+        j = i + 1 if i == 0 else (i - 1 if i == len(out) - 1 else (i - 1 if hs[i - 1] <= hs[i + 1] else i + 1))
+        a, b = out[min(i, j)], out[max(i, j)]
+        merged = (min(a[0], b[0]), a[1], max(a[2], b[2]), b[3], min(a[4], b[4]))
+        out[min(i, j):max(i, j) + 1] = [merged]
+    return out
+
+
+def _segment_band(
+    gray: np.ndarray,
+    binm: np.ndarray,
+    expected_count: Optional[int],
+    min_tubes: int,
+    max_tubes: int,
+) -> List[Tuple[int, int, int, int, float]]:
+    """전경 마스크(binm)의 튜브 밴드 하나를 seam 으로 나눈다(종전 분할 본체)."""
     band = _foreground_band(binm)
     if band is None:
         return []
@@ -356,8 +441,10 @@ def segment_tubes(
         return [TubeROI(index=t.index, x0=t.x0 + rect.x0, y0=t.y0 + rect.y0,
                         x1=t.x1 + rect.x0, y1=t.y1 + rect.y0, confidence=t.confidence)
                 for t in inner]
+    if axis == "auto":
+        axis = resolve_axis(frame)
     if axis not in ("horizontal", "vertical"):
-        raise ValueError("segment_tubes: axis 는 horizontal|vertical")
+        raise ValueError("segment_tubes: axis 는 horizontal|vertical|auto")
     max_tubes = int(max(1, min(MAX_TUBES_HARD, max_tubes)))
     min_tubes = int(max(1, min(max_tubes, min_tubes)))
     if expected_count is not None and expected_count < 1:
@@ -378,4 +465,11 @@ def segment_tubes(
     ]
 
 
-__all__ = ["TubeROI", "segment_tubes", "MAX_TUBES_HARD"]
+def resolve_axis(frame: np.ndarray) -> str:
+    """튜브가 가로로 누웠나 세로로 섰나 — 대표 기울기가 ±45° 안이면 가로(튜브가 없으면 가로)."""
+    gray = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    ang = dominant_angle(gray)
+    return "vertical" if ang is not None and abs(ang) > 45.0 else "horizontal"
+
+
+__all__ = ["TubeROI", "segment_tubes", "resolve_axis", "MAX_TUBES_HARD"]

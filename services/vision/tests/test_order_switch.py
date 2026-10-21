@@ -228,13 +228,13 @@ def test_orientation_passed_to_inspect_batch(tmp_path, monkeypatch):
     worker.shutdown()
 
 
-def test_orientation_invalid_falls_back_horizontal(tmp_path):
-    """orientation 무효값은 경고 후 horizontal(안전 기본값)."""
+def test_orientation_invalid_falls_back_auto(tmp_path):
+    """orientation 무효값은 경고 후 auto(기본값, 2026-10-21 — 영상에서 방향을 정한다)."""
     backend = _backend(recipe={"orientation": "diagonal"})
     worker = Worker(_cfg(tmp_path, item_reload_s=1.0), client=_client(backend))
     assert worker.startup() is True
     backend.active = {"item_code": "HP20", "lot": "L", "work_order": None}
     _open_reload_window(worker)
     worker._maybe_reload_item(datetime.now(timezone.utc))
-    assert worker._orientation() == "horizontal"
+    assert worker._orientation() == "auto"
     worker.shutdown()

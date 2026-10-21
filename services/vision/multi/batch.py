@@ -24,9 +24,14 @@ import numpy as np
 from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 
 from ..length.measure import END_MARGIN_PX, LengthSpan
-from ..pipeline import CropContext, InspectionPipeline
+from ..pipeline import CropContext, FramePrep, InspectionPipeline
 from ..preprocess.area import InspectArea, area_rect
+from ..preprocess.foreground import contrast_mask, dominant_angle, light_background
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
+
+#: 튜브가 축(가로·세로)에서 이만큼 넘게 기울면 프레임을 돌려 바로 세운다(axis="auto" 일 때).
+#: 그 밑의 기울기는 길이 측정의 기울기 보정이 처리한다.
+DESKEW_MIN_DEG = 8.0
 
 #: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
 #: 하드 상한(MAX_TUBES_HARD)과 다르다 — 자동 추정은 상한이 크면 최소 피치가
@@ -58,6 +63,8 @@ class TubeResult:
     # 길이 측정 스팬(끝단 2점·세로 범위) — **원본 프레임 좌표**로 환산된 값.
     # 배치 오버레이가 튜브별 측정선을 그리는 데 쓴다(끝단 미검출/세로축이면 None).
     length_span: Optional[LengthSpan] = None
+    # 프레임을 돌려 바로 세운 뒤 잰 튜브 — bbox 는 돌린 영상 좌표라 원본 사진에 맞지 않는다.
+    rotated: bool = False
     # 제품 온도(°C). 있으면 length_mm·deviation_mm 은 20°C 환산값(calib/temperature.py).
     meas_temp_c: Optional[float] = None
 
@@ -77,6 +84,9 @@ class BatchResult:
     axis: str
     proc_time_ms: int
     per_tube_avg_ms: float
+    #: 비스듬한 튜브를 바로 세우려고 돌린 각도(도)와 그 영상(결과 사진은 이 영상에 그린다).
+    rotation_deg: float = 0.0
+    view: Optional[np.ndarray] = None
 
 
 def _v(x) -> str:
@@ -133,7 +143,7 @@ def _tube_span_in_frame(
 
 
 def tube_window(roi: TubeROI, frame_shape, *, axis: str = "horizontal",
-                bounds=None) -> TubeROI:
+                bounds=None, pad: Optional[int] = None) -> TubeROI:
     """튜브를 잴 crop — 분할 상자를 **축 방향으로** 2×END_MARGIN_PX 넓힌다.
 
     분할 상자는 다발 전체의 끝단에서 딱 끝나므로 그대로 자르면 가장 긴 튜브의 끝단 바깥
@@ -144,7 +154,7 @@ def tube_window(roi: TubeROI, frame_shape, *, axis: str = "horizontal",
     fh, fw = frame_shape[:2]
     bx0, by0, bx1, by1 = ((bounds.x0, bounds.y0, bounds.x1, bounds.y1) if bounds is not None
                           else (0, 0, fw, fh))
-    pad = 2 * END_MARGIN_PX
+    pad = 2 * END_MARGIN_PX if pad is None else int(pad)
     if axis == "vertical":
         return TubeROI(index=roi.index, x0=roi.x0, x1=roi.x1,
                        y0=max(by0, roi.y0 - pad), y1=min(by1, roi.y1 + pad),
@@ -193,8 +203,14 @@ def inspect_batch(
     """
     t0 = time.perf_counter()
     pipe = pipeline or InspectionPipeline()
-    prep = pipe.prepare_frame(frame, axis=axis, stage=stage, item=item)
+    prep = pipe.prepare_frame(frame, axis="vertical" if axis == "vertical" else "horizontal",
+                              stage=stage, item=item)
     frame = prep.frame
+    rotation = 0.0
+    view: Optional[np.ndarray] = None
+    if axis == "auto":
+        axis, frame, prep, area, rotation = _orient(frame, prep, area)
+        view = frame if rotation else None
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
     # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
@@ -233,24 +249,36 @@ def inspect_batch(
     # 튜브 crop 은 분할 상자보다 축 방향으로 넓게(tube_window) — 끝단 바깥 배경이 있어야
     # 서브픽셀로 잰다. 화면·검사 영역 밖으로는 넓히지 않는다(밖은 검사하지 않는다).
     bound = area_rect(area, frame)
+    # 밝은 배경: 제품 마스크를 전체 프레임에서 한 번 찾아 튜브마다 잘라 넘긴다(crop 에서 다시 찾으면
+    # 튜브가 화면을 채워 틀린다). 끝단 바깥 배경도 더 넉넉히 담는다(배경 마스크는 덜 정확하다).
+    full_mask = contrast_mask(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) if prep.light_bg else None
     tubes: List[TubeResult] = []
     for roi in rois:
-        win = tube_window(roi, frame.shape, axis=axis, bounds=bound)
+        pad = None
+        if full_mask is not None:
+            along = (roi.y1 - roi.y0) if axis == "vertical" else (roi.x1 - roi.x0)
+            pad = max(4 * END_MARGIN_PX, int(0.04 * along))
+        win = tube_window(roi, frame.shape, axis=axis, bounds=bound, pad=pad)
         crop = win.crop(frame)
+        mask_c = win.crop(full_mask) if full_mask is not None else None
         if axis == "vertical":
             # 세로 튜브 → 가로로 회전(measure_length 는 가로 튜브 가정).
             crop = cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
+            if mask_c is not None:
+                mask_c = cv2.rotate(mask_c, cv2.ROTATE_90_CLOCKWISE)
         # 끝단 좌표(span)까지 받아 배치 오버레이 측정선 표기에 쓴다.
         # 검사 단계(=모드)를 튜브마다 그대로 넘긴다 — 길이 모드면 길이만 판정.
         if axis == "vertical":
             # 시계방향 회전: crop x' = (높이-1) - y_local → 프레임 y = y0 + 높이-1 - x'.
-            ctx = CropContext(prep=prep, origin=float(win.y1 - 1), direction=-1)
+            ctx = CropContext(prep=prep, origin=float(win.y1 - 1), direction=-1, mask=mask_c)
         else:
-            ctx = CropContext(prep=prep, origin=float(win.x0), direction=1)
+            ctx = CropContext(prep=prep, origin=float(win.x0), direction=1, mask=mask_c)
         vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage, crop=ctx)
         # 측정선은 실제로 자른 창(win) 기준 좌표 → 프레임. bbox 는 분할 상자 그대로.
         frame_span = _tube_span_in_frame(crop_span, win, axis)
-        tubes.append(_tube_from_verdict(roi.index, roi, vr, frame_span))
+        tube = _tube_from_verdict(roi.index, roi, vr, frame_span)
+        tube.rotated = bool(rotation)
+        tubes.append(tube)
 
     count_mismatch = (
         expected_count is not None and count_detected != expected_count
@@ -280,7 +308,48 @@ def inspect_batch(
         axis=axis,
         proc_time_ms=total_ms,
         per_tube_avg_ms=per_tube,
+        rotation_deg=round(rotation, 1),
+        view=view,
     )
+
+
+def _rotate_keep(img: np.ndarray, deg: float) -> np.ndarray:
+    """영상을 deg 만큼 돌린다(잘리지 않게 캔버스를 넓히고 가장자리는 이어 붙인다)."""
+    h, w = img.shape[:2]
+    m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), deg, 1.0)
+    c, s = abs(m[0, 0]), abs(m[0, 1])
+    nw, nh = int(h * s + w * c + 0.5), int(h * c + w * s + 0.5)
+    m[0, 2] += nw / 2.0 - w / 2.0
+    m[1, 2] += nh / 2.0 - h / 2.0
+    return cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def _orient(frame: np.ndarray, prep: FramePrep, area: Optional[InspectArea]):
+    """axis="auto": 튜브 방향을 영상에서 정하고, 비스듬하면(≥ DESKEW_MIN_DEG) 바로 세운다.
+
+    현장 사진처럼 튜브가 30~40° 기울면 가로·세로 어느 축으로도 밴드가 잡히지 않는다. 대표 기울기만큼
+    돌려 가로(또는 세로)로 만든 뒤 잰다. 검사 영역이 있으면 그 안만 돌린다(돌린 뒤에는 영역 = 화면).
+    기준자는 원래 좌표에 있어 돌린 영상에 쓸 수 없다 — 설정돼 있으면 사유를 남긴다(NG + 재확인, 정렬 필요).
+    반환: (axis, frame, prep, area, rotation_deg)
+    """
+    rect = area_rect(area, frame)
+    base = rect.crop(frame) if rect is not None else frame
+    ang = dominant_angle(cv2.cvtColor(base, cv2.COLOR_BGR2GRAY))
+    if ang is None:
+        return "horizontal", frame, prep, area, 0.0
+    axis = "vertical" if abs(ang) > 45.0 else "horizontal"
+    target = 0.0 if axis == "horizontal" else (90.0 if ang > 0 else -90.0)
+    dev = ang - target
+    if abs(dev) < DESKEW_MIN_DEG:
+        return axis, frame, prep, area, 0.0
+    turned = _rotate_keep(base, dev)
+    notes = list(prep.notes)
+    if prep.gauge_read:
+        notes.append(f"튜브가 {dev:+.0f}° 기울어 영상을 돌려 쟀다 — 기준자를 쓸 수 없다(카메라·치구 정렬 필요)")
+    light = light_background(cv2.cvtColor(turned, cv2.COLOR_BGR2GRAY))
+    new_prep = FramePrep(frame=turned, lens_applied=prep.lens_applied, gauge=None,
+                         gauge_read=prep.gauge_read, notes=tuple(notes), light_bg=light)
+    return axis, turned, new_prep, None, dev
 
 
 @dataclass
@@ -340,7 +409,7 @@ def tube_to_inspection(
         inspected_at=batch_meta.inspected_at,
         tube_index=max(0, int(tube.index) - 1),
         # 사진 속 위치 — 라벨링 화면 강조·튜브 단위 학습셋 자르기(2026-10-11).
-        tube_bbox=_bbox_list(tube.bbox),
+        tube_bbox=None if getattr(tube, "rotated", False) else _bbox_list(tube.bbox),
         shift=batch_meta.shift,
         operator=batch_meta.operator,
         ref_length_mm=batch_meta.ref_length_mm,

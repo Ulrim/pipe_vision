@@ -35,6 +35,7 @@
 """
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -174,6 +175,86 @@ def _find_edges(
     return left, right
 
 
+def _find_edges_crossing(profile: np.ndarray, min_contrast: float,
+                         hint: Optional[Tuple[float, float]] = None) -> Optional[Tuple[float, float]]:
+    """끝단 = 바깥에서 들어오며 '배경과 제품 수준의 중간' 을 처음 넘는 곳(밝은 배경용, 2026-10-21).
+
+    밝은 바닥 위 금속 튜브는 표면의 글자·긁힘이 끝단보다 날카로운 밝기 변화를 만든다. '가장 강한
+    상승·하강' 규칙은 그 무늬를 끝단으로 잡았다(현장 사진: 길이 3~7px). 양쪽 바깥에서 안으로 훑어
+    처음 넘는 곳을 쓰면 안쪽 무늬는 고를 수 없다. 50% 교차는 표준 끝단 위치이고 화소 사이는 선형 보간.
+    profile 은 배경 ≈ 0 인 대비 프로파일(|영상 − 배경|)이다.
+
+    hint: 제품 마스크가 본 양 끝(프로파일 좌표). 주면 끝단마다 **그 끝 바로 안쪽**의 제품 수준으로
+    중간값을 잡고 그 근처에서만 찾는다. 튜브 한쪽이 바닥과 비슷한 밝기면(반사 띠가 끊긴 구간) 전체
+    중앙값 기준으로는 거기서 먼저 떨어져 길이가 짧게 나왔다(현장 사진: 1,220px 튜브가 706px).
+    """
+    n = int(profile.size)
+    if n < 9:
+        return None
+    p = np.convolve(profile.astype(np.float64), np.ones(5) / 5.0, mode="same")
+    p[:2], p[-2:] = profile[:2], profile[-2:]
+    m = max(2, n // 25)
+    bg_l, bg_r = float(np.median(p[:m])), float(np.median(p[-m:]))
+    if hint is not None:
+        return _crossing_near(p, hint, bg_l, bg_r, min_contrast)
+    bg = float(np.median(np.r_[p[:m], p[-m:]]))
+    plateau = float(np.median(p[n // 4: 3 * n // 4]))
+    if plateau - bg < 0.5 * min_contrast:
+        return None
+    mid = bg + 0.5 * (plateau - bg)
+    above = np.flatnonzero(p >= mid)
+    if above.size == 0:
+        return None
+    i, j = int(above[0]), int(above[-1])
+    if i == 0 or j >= n - 1:
+        return None  # 제품이 창 끝까지 — 화면·검사 영역에 걸렸다
+    left = (i - 1) + (mid - p[i - 1]) / max(p[i] - p[i - 1], 1e-9)
+    right = j + (p[j] - mid) / max(p[j] - p[j + 1], 1e-9)
+    return (float(left), float(right)) if right > left else None
+
+
+def _crossing_near(p: np.ndarray, hint: Tuple[float, float], bg_l: float, bg_r: float,
+                   min_contrast: float) -> Optional[Tuple[float, float]]:
+    """마스크 끝(hint) 근처에서 끝단마다 따로 50% 교차를 찾는다. 하나라도 못 찾으면 None(실패 보고)."""
+    n = int(p.size)
+    lo, hi = float(hint[0]), float(hint[1])
+    span = hi - lo
+    if span < 5:
+        return None
+    reach = int(max(8, round(0.04 * span)))      # 마스크 오차(축소·형태 연산) 범위
+    inner = int(max(6, round(0.06 * span)))      # 제품 수준을 재는 끝 안쪽 구간 길이
+
+    def level(a: int, b: int) -> float:
+        a, b = max(0, a), min(n, b)
+        return float(np.median(p[a:b])) if b > a else 0.0
+
+    # 끝단 후보 = 바깥→안으로 중간값을 넘어가는 곳. 여럿이면 마스크 끝에 가장 가까운 것 — 바깥의
+    # 타일 이음매·얼룩, 안쪽의 무늬도 같은 교차를 만들지만 마스크가 본 끝에서는 멀다.
+    h = int(round(lo))
+    mid = bg_l + 0.5 * (level(h + reach // 2, h + reach // 2 + inner) - bg_l)
+    if mid - bg_l < 0.25 * min_contrast:
+        return None
+    cand = [i for i in range(max(1, h - reach), min(n - 1, h + reach)) if p[i - 1] < mid <= p[i]]
+    left = None
+    if cand:
+        i = min(cand, key=lambda k: abs(k - lo))
+        left = (i - 1) + (mid - p[i - 1]) / max(p[i] - p[i - 1], 1e-9)
+    h = int(round(hi))
+    mid = bg_r + 0.5 * (level(h - reach // 2 - inner, h - reach // 2) - bg_r)
+    if mid - bg_r < 0.25 * min_contrast:
+        return None
+    cand = [j for j in range(max(0, h - reach), min(n - 2, h + reach)) if p[j] >= mid > p[j + 1]]
+    right = None
+    if cand:
+        j = min(cand, key=lambda k: abs(k - hi))
+        right = j + (p[j] - mid) / max(p[j] - p[j + 1], 1e-9)
+    if left is None or right is None or right <= left:
+        return None
+    if left <= 0.5 or right >= n - 1.5:
+        return None  # 제품이 창 끝까지 — 화면·검사 영역에 걸렸다
+    return float(left), float(right)
+
+
 def measure_length_ex(
     gray_roi: np.ndarray,
     item: ItemMaster,
@@ -185,6 +266,9 @@ def measure_length_ex(
     roi_x_offset: float = 0.0,
     gauge_dir: int = 1,
     linear: Optional[np.ndarray] = None,
+    edge_mode: str = "gradient",
+    extent_hint: Optional[Tuple[float, float]] = None,
+    tilt_deg: Optional[float] = None,
 ) -> Tuple[LengthResult, Optional[EdgeEndpoints]]:
     """길이 측정 + 끝단 좌표(측정 근거 시각화용) 동시 반환.
 
@@ -206,6 +290,11 @@ def measure_length_ex(
     linear: gray_roi 와 같은 창의 **선형 그레이**(보정·필터 없음, PreprocessResult.gray).
       주면 끝단 서브픽셀 위치(프로파일·행별 적합 모두)를 거기서 잰다. 끝단 찾기·가드·적합
       게이트는 gray_roi 그대로. 운영 파이프라인은 늘 준다(모듈 설명 3) 참조).
+    edge_mode: "gradient"(기본, 가장 강한 상승·하강) | "crossing"(바깥에서 들어오는 50% 교차 —
+      밝은 배경, gray_roi 는 배경과의 차 영상).
+    extent_hint: crossing 에서 제품 마스크가 본 양 끝(gray_roi x). 끝단마다 그 근처·그 안쪽 수준으로 찾는다.
+    tilt_deg: 튜브 축의 기울기(도) — 행별 적합을 못 쓸 때(밝은 배경) 제품 마스크에서 잰 값. 세로 평균
+      프로파일은 기울어진 튜브의 수평 투영(L·cosθ)을 재므로 cosθ 로 나눠 참 길이로 돌린다.
 
     우선순위: gauge > mm_per_px_override > item.px_to_mm_scale.
     """
@@ -224,7 +313,10 @@ def measure_length_ex(
         # 세로 평균으로 1D 수평 프로파일 → 끝단의 수직 에지를 강조.
         profile = gray_roi.astype(np.float32).mean(axis=0)
         lin_profile = None if linear is None else np.asarray(linear).mean(axis=0, dtype=np.float32)
-        edges = _find_edges(profile, min_contrast, linear=lin_profile)
+        if edge_mode == "crossing":
+            edges = _find_edges_crossing(profile, min_contrast, hint=extent_hint)
+        else:
+            edges = _find_edges(profile, min_contrast, linear=lin_profile)
 
     if edges is None:
         elapsed = int(round((time.perf_counter() - t0) * 1000))
@@ -254,14 +346,16 @@ def measure_length_ex(
             pixel_distance = fit.perpendicular_px
             # 적합이 준 중앙 x 가 세로평균 추정보다 정밀하다 — 오버레이도 맞춘다.
             left, right = fit.left.intercept, fit.right.intercept
+    if fit is None and tilt_deg is not None and abs(tilt_deg) < 45.0:
+        pixel_distance /= math.cos(math.radians(tilt_deg))
     if gauge is not None:
         # 자 읽기. 기울기 보정은 수직거리를 주므로, 수평으로 읽은 값에
         # cos 를 다시 곱해 일관되게 맞춘다.
         a = roi_x_offset + gauge_dir * left
         b = roi_x_offset + gauge_dir * right
         span = gauge.span_mm(min(a, b), max(a, b))
-        if fit is not None:
-            span *= pixel_distance / (right - left) if right > left else 1.0
+        if right > left and abs(pixel_distance - (right - left)) > 1e-9:
+            span *= pixel_distance / (right - left)
         meas_mm = round(span, 3)
     else:
         meas_mm = round(pixel_distance * scale, 3)

@@ -19,6 +19,8 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
+from .foreground import tube_mask
+
 
 @dataclass(frozen=True)
 class Roi:
@@ -93,19 +95,23 @@ def segment_pipe_roi(
     surface_inset_ratio: float = 0.06,
     *,
     within: Optional[Roi] = None,
+    mask_hint: Optional[np.ndarray] = None,
+    light: Optional[bool] = None,
 ) -> Tuple[np.ndarray, Optional[Roi], Optional[Roi]]:
     """파이프 ROI 분리. (mask, length_roi, surface_roi) 반환.
 
     surface_inset_ratio: 표면 ROI 를 길이 ROI 양 끝에서 안쪽으로 줄이는 비율
     (끝단 에지/그림자가 표면 판정 오탐을 일으키지 않도록).
     within: 검사 영역(픽셀). 주면 그 밖의 전경은 버리고 영역 안에서 가장 큰 제품을 고른다.
+    mask_hint: 이미 찾은 제품 마스크(다발 — 전체 프레임에서 찾아 이 튜브만 잘라 넘긴다). 주면 그대로 쓴다.
+    light: 배경이 밝은가(전체 프레임에서 정한 값). None 이면 이 영상에서 판단 — 전체 프레임일 때만 맞다.
     """
-    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Otsu: 밝은 파이프 vs 어두운 배경. 결정적.
-    _t, binary = cv2.threshold(
-        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
+    if mask_hint is not None and mask_hint.shape[:2] == img_bgr.shape[:2]:
+        binary = (mask_hint > 0).astype(np.uint8) * 255
+    else:
+        # 어두운 배경: Otsu(밝은 파이프 vs 어두운 배경, 종전 그대로). 밝은·무늬 배경: 배경과 다른 정도
+        # (극성 무관) — preprocess/foreground.py. 결정적.
+        binary = tube_mask(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), light)
     # 모폴로지 정리(작은 점/구멍 제거).
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=1)
@@ -143,6 +149,8 @@ def preprocess(
     surface_inset_ratio: float = 0.06,
     *,
     area=None,
+    mask_hint: Optional[np.ndarray] = None,
+    light: Optional[bool] = None,
 ) -> PreprocessResult:
     """전체 전처리 파이프라인. 결정적이며 proc_time_ms 를 계측한다.
 
@@ -155,7 +163,7 @@ def preprocess(
     from .area import area_rect
 
     mask, length_roi, surface_roi = segment_pipe_roi(
-        img_bgr, surface_inset_ratio, within=area_rect(area, img_bgr))
+        img_bgr, surface_inset_ratio, within=area_rect(area, img_bgr), mask_hint=mask_hint, light=light)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     corrected = _correct_reflection(gray)
     corrected = _denoise(corrected)
