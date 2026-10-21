@@ -863,6 +863,10 @@ MSA 관례상 측정시스템은 공차폭의 1/3 이내를 써야 한다(±0.1m
 > **밝은 바닥·방향 자동(2026-10-21)**: 배경 밝기는 **전체 프레임**에서 정하고(`preprocess/foreground.py`),
 > 밝으면 '배경과 다른 정도'로 찾고 끝단은 50% 교차로 잰다. 레시피 `orientation` 기본 `auto`(가로·세로 판단,
 > 8° 넘게 비스듬하면 돌려 잼 → `tube_bbox` 없음). 어두운 배경 경로는 불변 — 현장 권장도 그대로 어두운 배경.
+> **붙어 누운 큰 다발(2026-10-21, `multi/dense.py`)**: 밝은 배경에서 종전 분할보다 많이 찾으면 이 경로 —
+> 줄무늬 에너지로 위치, 소실점 모형(m = a + b·(u − yc))으로 원근 펴기, 틈 간격 p(y) 격자 + 표면 결 경계로
+> 개수, 튜브별 띠(ribbon, 회전만 한 1:1)를 파이프라인이 잰다. 경계가 애매하면 `count_uncertain` → 그 판 전부
+> 재확인(조용히 고르지 않는다). `multi/bundle.py` 는 크레이트 단면 계수(count_bundle)라 다른 모듈이다.
 > 재현: `python -m vision.tools.length_budget --length 250 --tol 0.1 --sweep`.
 > 전체 근거: `docs/LENGTH_TOLERANCE.md`.
 

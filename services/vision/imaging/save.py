@@ -51,6 +51,7 @@ _GREEN = (60, 180, 75)   # OK
 _RED = (40, 40, 220)     # NG
 _WHITE = (255, 255, 255)
 _BLACK = (0, 0, 0)
+_ORANGE = (0, 140, 255)  # 측정선(붙은 다발)
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -435,6 +436,27 @@ def render_batch_overlay(
         color = _GREEN if is_ok else _RED
         # 색약 고려: NG 는 더 두꺼운 테두리로도 구분.
         thick = 2 if is_ok else 4
+        quad = getattr(t, "quad", None)
+        if quad:
+            # 붙은 다발(비스듬·원근): 상자 대신 튜브 네 모서리. 라벨은 튜브 왼쪽 끝 바깥에 한 줄로.
+            pts = np.array(quad, dtype=np.float64).round().astype(np.int32)
+            cv2.polylines(canvas, [pts], True, color, thickness=max(1, thick - 1), lineType=cv2.LINE_AA)
+            line = getattr(t, "axis_line", None)
+            if line is not None:
+                (ax, ay), (bx, by) = line
+                cv2.line(canvas, (int(round(ax)), int(round(ay))), (int(round(bx)), int(round(by))),
+                         _ORANGE, 1, cv2.LINE_AA)
+                for qx, qy in ((ax, ay), (bx, by)):
+                    cv2.circle(canvas, (int(round(qx)), int(round(qy))), 3, _ORANGE, -1, cv2.LINE_AA)
+            idx = getattr(t, "index", 0)
+            length_mm = getattr(t, "length_mm", None)
+            label = f"#{idx}" + ("" if length_mm is None else f" {length_mm:.1f}")
+            lx, ly = int(min(p[0] for p in quad[:1] + quad[3:])), int(0.5 * (quad[0][1] + quad[3][1]))
+            (lw, lh), _ = cv2.getTextSize(label, _FONT, txt_scale * 0.8, 1)
+            lx = max(0, lx - lw - 6)
+            cv2.rectangle(canvas, (lx - 2, ly - lh - 2), (lx + lw + 2, ly + 3), _BLACK, thickness=-1)
+            cv2.putText(canvas, label, (lx, ly), _FONT, txt_scale * 0.8, color, 1, cv2.LINE_AA)
+            continue
         cv2.rectangle(canvas, (x0, y0), (x1 - 1, y1 - 1), color, thickness=thick)
 
         idx = getattr(t, "index", 0)

@@ -194,9 +194,11 @@ def _find_edges_crossing(profile: np.ndarray, min_contrast: float,
     p = np.convolve(profile.astype(np.float64), np.ones(5) / 5.0, mode="same")
     p[:2], p[-2:] = profile[:2], profile[-2:]
     m = max(2, n // 25)
-    bg_l, bg_r = float(np.median(p[:m])), float(np.median(p[-m:]))
     if hint is not None:
-        return _crossing_near(p, hint, bg_l, bg_r, min_contrast)
+        # 배경은 힌트(제품 마스크) 바깥에서만 — 창 여백이 n/25 보다 좁으면 제품이 배경에 섞였다.
+        ml = max(2, min(m, int(hint[0]) // 2))
+        mr = max(2, min(m, (n - 1 - int(np.ceil(hint[1]))) // 2))
+        return _crossing_near(p, hint, float(np.median(p[:ml])), float(np.median(p[-mr:])), min_contrast)
     bg = float(np.median(np.r_[p[:m], p[-m:]]))
     plateau = float(np.median(p[n // 4: 3 * n // 4]))
     if plateau - bg < 0.5 * min_contrast:

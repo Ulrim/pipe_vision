@@ -900,8 +900,11 @@ class Worker:
             frame_ms = clock.total_ms()
             ea = per_ea_ms(frame_ms, len(results))
             results = [r.model_copy(update={"proc_time_ms": ea}) for r in results]
-            # 한 장에 1개라도 NG(또는 개수 불일치)면 경광등 적색.
-            self.tower.signal(ng=bool(batch.ng_count) or bool(batch.count_mismatch))
+            # 한 장에 1개라도 NG(또는 개수 불일치·개수 불확실)면 경광등 적색.
+            uncertain = bool(getattr(batch, "count_uncertain", False))
+            self.tower.signal(ng=bool(batch.ng_count) or bool(batch.count_mismatch) or uncertain)
+            for note in getattr(batch, "notes", None) or []:
+                log.warning("배치 검사 참고: %s", note)
 
             log.info(
                 "배치 검사: detected=%d/%s NG=%d mismatch=%s tubes=%d",
