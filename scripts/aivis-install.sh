@@ -185,19 +185,43 @@ fi
 # =============================================================================
 step "3/6" "파이썬 환경 만들기"
 
+# 만들어 둔 환경을 그대로 써도 되는가. 아니면 지우고 다시 만든다(여러 번 실행해도 안전하게).
+#  - 저장소 폴더를 옮기면(mv) 환경 안 프로그램들이 **옛 경로**를 가리켜
+#    "pip: cannot execute: required file not found" 로 멈춘다(현장 확인 2026-10-21).
+#  - OS 를 올려 파이썬 판이 바뀌면(3.11 → 3.13) 설치해 둔 패키지가 안 보인다.
+venv_usable() {  # $1 = 환경 경로
+  local v="$1" sb vv sv
+  [ -x "$v/bin/python" ] || return 1
+  "$v/bin/python" -m pip --version >/dev/null 2>&1 || return 1
+  sb="$(head -1 "$v/bin/pip" 2>/dev/null | sed 's/^#!//')"
+  [ -z "$sb" ] || [ "$(dirname "$sb")" = "$v/bin" ] || return 1
+  vv="$("$v/bin/python" -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)"
+  sv="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null)"
+  [ -n "$vv" ] && [ "$vv" = "$sv" ]
+}
+ensure_venv() {  # $1 = 환경 경로, 나머지 = python3 -m venv 옵션
+  local v="$1"; shift
+  if [ -e "$v" ] && ! venv_usable "$v"; then
+    warn "기존 환경을 쓸 수 없어 다시 만듭니다(폴더를 옮겼거나 파이썬이 바뀜): $v"
+    rm -rf "$v"
+  fi
+  if [ ! -x "$v/bin/python" ]; then
+    python3 -m venv "$@" "$v" || return 1
+  fi
+}
+
 # (a) 검사 워커 — 카메라 라이브러리(picamera2/cv2)를 시스템에서 상속해야 하므로
 #     반드시 --system-site-packages 로 만든다. 이게 핵심이다.
 WORKER_VENV="$REPO/services/vision/.venv"
-if [ ! -x "$WORKER_VENV/bin/python" ]; then
-  info "검사 워커용 환경 생성 중… (카메라 라이브러리 상속)"
-  python3 -m venv --system-site-packages "$WORKER_VENV" \
-    || die "[3/6] 워커 환경 생성 실패"
-fi
+info "검사 워커용 환경 확인… (카메라 라이브러리 상속)"
+ensure_venv "$WORKER_VENV" --system-site-packages \
+  || die "[3/6] 워커 환경 생성 실패 — sudo apt install python3-venv 후 다시 실행하세요."
+WPIP=("$WORKER_VENV/bin/python" -m pip)   # pip 스크립트 대신 python -m pip(경로에 안 묶인다)
 info "검사 워커 패키지 설치 중… (수 분 걸릴 수 있습니다)"
-"$WORKER_VENV/bin/pip" install -q --upgrade pip >/dev/null 2>&1
-"$WORKER_VENV/bin/pip" install -q httpx numpy \
+"${WPIP[@]}" install -q --upgrade pip >/dev/null 2>&1
+"${WPIP[@]}" install -q httpx numpy \
   || die "[3/6] 워커 패키지 설치 실패 — 인터넷 연결을 확인하세요."
-"$WORKER_VENV/bin/pip" install -q -e "$REPO/packages/shared-types/python" \
+"${WPIP[@]}" install -q -e "$REPO/packages/shared-types/python" \
   || die "[3/6] 공용 스키마 설치 실패"
 
 # --- 상속받은 numpy 가 **실제로 동작하는지** 확인하고, 아니면 고친다 ---
@@ -208,7 +232,7 @@ info "검사 워커 패키지 설치 중… (수 분 걸릴 수 있습니다)"
 # 그 numpy 에 맞춰 빌드돼 있어, 다른 버전으로 덮으면 오히려 깨진다.
 if ! "$WORKER_VENV/bin/python" -c "import numpy" >/dev/null 2>&1; then
   warn "시스템 numpy 가 정상 동작하지 않아 이 환경 전용으로 다시 설치합니다."
-  "$WORKER_VENV/bin/pip" install -q --ignore-installed "numpy>=1.26,<2.2" \
+  "${WPIP[@]}" install -q --ignore-installed "numpy>=1.26,<2.2" \
     || die "[3/6] numpy 재설치 실패"
   "$WORKER_VENV/bin/python" -c "import numpy" >/dev/null 2>&1 \
     || die "[3/6] numpy 를 사용할 수 없습니다. 다음을 실행한 뒤 다시 시도하세요:
@@ -222,7 +246,7 @@ fi
 # 받았으면 이 환경에 pip 로 채워 넣는다(requirements 에 있는 headless 판).
 if ! "$WORKER_VENV/bin/python" -c "import cv2" >/dev/null 2>&1; then
   warn "영상 라이브러리(opencv)가 없어 설치합니다… (수 분 걸릴 수 있습니다)"
-  "$WORKER_VENV/bin/pip" install -q "opencv-python-headless>=4.9,<5" \
+  "${WPIP[@]}" install -q "opencv-python-headless>=4.9,<5" \
     || die "[3/6] 영상 라이브러리 설치 실패. 다음을 먼저 실행해 보세요:
     sudo apt install python3-opencv"
   "$WORKER_VENV/bin/python" -c "import cv2" >/dev/null 2>&1 \
@@ -242,15 +266,14 @@ fi
 
 # (b) API — 독립된 환경(시스템 패키지 상속 불필요).
 API_VENV="$REPO/services/api/.venv-api"
-if [ ! -x "$API_VENV/bin/python" ]; then
-  info "API 환경 생성 중…"
-  python3 -m venv "$API_VENV" || die "[3/6] API 환경 생성 실패"
-fi
+info "API 환경 확인…"
+ensure_venv "$API_VENV" || die "[3/6] API 환경 생성 실패 — sudo apt install python3-venv 후 다시 실행하세요."
+APIP=("$API_VENV/bin/python" -m pip)
 info "API 패키지 설치 중… (파이에서 수 분 걸립니다)"
-"$API_VENV/bin/pip" install -q --upgrade pip >/dev/null 2>&1
-"$API_VENV/bin/pip" install -q -r "$REPO/services/api/requirements.txt" \
+"${APIP[@]}" install -q --upgrade pip >/dev/null 2>&1
+"${APIP[@]}" install -q -r "$REPO/services/api/requirements.txt" \
   || die "[3/6] API 패키지 설치 실패 — 인터넷 연결을 확인하세요."
-"$API_VENV/bin/pip" install -q -e "$REPO/packages/shared-types/python" \
+"${APIP[@]}" install -q -e "$REPO/packages/shared-types/python" \
   || die "[3/6] 공용 스키마 설치 실패(API)"
 ok "API 환경 준비 완료"
 
