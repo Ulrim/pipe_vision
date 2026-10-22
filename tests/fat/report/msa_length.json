@@ -30,6 +30,6 @@
     "측정시스템 능력(실제 %GR&R)은 실물 부품·실제 카메라로만 확인된다: python -m vision.tools.run_msa (docs/LENGTH_TOLERANCE.md).",
     "재현성(AV)은 surface_inset_ratio 조건 변동에 대한 길이측정 안정성."
   ],
-  "generated_at": "2026-10-10T07:08:00.954172+00:00",
+  "generated_at": "2026-10-22T03:18:44.859002+00:00",
   "evidence": "synthetic-reference"
 }
