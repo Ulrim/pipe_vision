@@ -21,7 +21,7 @@
     {
       "no": 3,
       "name": "검사 처리속도 p95",
-      "measured": "14.986ms",
+      "measured": "16.600ms",
       "target": "≤300ms",
       "passed": true
     },
@@ -140,29 +140,29 @@
   "metric3_latency": {
     "scope": "acquire_to_save",
     "breakdown_mean_ms": {
-      "read_ms": 1.333,
-      "infer_ms": 7.272,
-      "save_ms": 3.637
+      "read_ms": 1.35,
+      "infer_ms": 8.235,
+      "save_ms": 3.565
     },
     "infer_only": {
       "scope": "acquire_to_save",
       "breakdown_mean_ms": {},
       "count": 1000,
-      "p50_ms": 7.067,
-      "p95_ms": 9.083,
-      "p99_ms": 10.598,
-      "max_ms": 12.332,
-      "mean_ms": 7.272,
+      "p50_ms": 7.937,
+      "p95_ms": 10.475,
+      "p99_ms": 11.49,
+      "max_ms": 26.759,
+      "mean_ms": 8.235,
       "over_300_count": 0,
       "threshold_ms": 300.0,
       "passed": true
     },
     "count": 1000,
-    "p50_ms": 11.787,
-    "p95_ms": 14.986,
-    "p99_ms": 17.987,
-    "max_ms": 45.64,
-    "mean_ms": 12.241,
+    "p50_ms": 12.655,
+    "p95_ms": 16.6,
+    "p99_ms": 18.955,
+    "max_ms": 31.445,
+    "mean_ms": 13.15,
     "over_300_count": 0,
     "threshold_ms": 300.0,
     "passed": true
@@ -225,6 +225,6 @@
     "AIVIS_DATASET_DIR 설정 시 실데이터를 우선 사용(부록 A.6).",
     "사용성: operator 로그인→/inspection 조회→/kpi/summary 산출 스모크."
   ],
-  "generated_at": "2026-10-22T03:19:07.748959+00:00",
+  "generated_at": "2026-10-24T17:57:12.752199+00:00",
   "evidence": "synthetic-reference"
 }
