@@ -153,3 +153,30 @@ def test_layout_gray_floor_and_dust():
 def test_field_kind_spec():
     sp = random_spec(np.random.default_rng(3), kind="field", seed=1)
     assert sp.background == "dark" and sp.bg_level is not None and 5 <= sp.n_tubes <= 40
+
+
+def test_calibrate_offset_tool(tmp_path):
+    """마스터 시료 도구: 캘리퍼 값과 측정의 평균 차 = length_offset_mm. 넣고 다시 재면 차가 0 근처."""
+    from vision.tools.calibrate_offset import main as cal_main
+    from vision.tools.calibrate_offset import measure, summarize
+
+    shots = []
+    for seed in (31, 32, 33):
+        img, gt = _scene(seed, background="dark", n_tubes=3, arrangement="gap", length_mm=250.0, diameter_mm=14.0,
+                         length_sigma_mm=0.0, len_defect_rate=0.0, angle_deg=0.8)
+        p = tmp_path / f"m{seed}.png"
+        cv2.imwrite(str(p), img)
+        shots.append((str(p), gt["tubes"][0]["length_mm"], gt["mm_per_px"]))
+    from aivis_types import ItemMaster
+
+    item = ItemMaster(item_code="M", item_name="m", ref_length_mm=250.0, tol_plus_mm=1.0, tol_minus_mm=1.0,
+                      px_to_mm_scale=shots[0][2], oil_threshold=0.5, discolor_threshold=0.5, scratch_threshold=0.5)
+    rows = measure([(p, L) for p, L, _ in shots], item)
+    res = summarize(rows)
+    assert res["samples"] == 9 and res["sd_mm"] < 0.2
+    assert 0.1 < res["length_offset_mm"] < 0.8          # 절단면 그늘 치우침(약 1px)
+    fixed = item.model_copy(update={"capture_recipe": {"length_offset_mm": res["length_offset_mm"]}})
+    errs = [t.length_mm - L for p, L, _ in shots
+            for t in inspect_batch(cv2.imread(p), fixed, axis="auto", stage="CUT_LENGTH").tubes]
+    assert abs(float(np.mean(errs))) < 0.05
+    assert cal_main([f"{p}:{L}" for p, L, _ in shots] + ["--scale", str(shots[0][2]), "--ref", "250"]) == 0
