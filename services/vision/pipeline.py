@@ -167,6 +167,27 @@ class CropContext:
     """이 튜브만의 제품 마스크(crop 크기) — 전체 프레임에서 찾은 것. 있으면 crop 에서 다시 찾지 않는다."""
 
 
+def _apply_length_offset(length: LengthResult, master: ItemMaster) -> LengthResult:
+    """마스터 시료 보정(2026-10-24): 기준정보 촬영 레시피 `length_offset_mm` 를 측정 길이에 더하고 편차·판정을 다시 낸다.
+
+    끝단은 절단면 테두리가 약간 어둡게 보여 바깥보다 반 화소쯤 안쪽에서 읽힌다(양 끝 합쳐 약 1px — 직접 만든 장면
+    평가에서 −0.41mm @0.354mm/px). 장면마다 같은 방향·크기의 치우침이라, 길이를 아는 튜브(캘리퍼 값)를 몇 번 재서
+    평균 차이를 넣으면 지워진다(MSA 치우침 항목과 같은 절차). 값이 없거나 0 이면 그대로. 온도 환산 전에 더한다.
+    """
+    recipe = getattr(master, "capture_recipe", None) or {}
+    try:
+        off = float(recipe.get("length_offset_mm", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return length
+    if off == 0.0 or length.meas_length_mm is None:
+        return length
+    meas = round(float(length.meas_length_mm) + off, 3)
+    dev = round(meas - float(length.ref_length_mm), 3)
+    ok = -float(master.tol_minus_mm) <= dev <= float(master.tol_plus_mm)
+    return length.model_copy(update={"meas_length_mm": meas, "deviation_mm": dev,
+                                     "length_verdict": Verdict.OK if ok else Verdict.NG})
+
+
 def _mask_tilt_deg(mask: Optional[np.ndarray], roi) -> Optional[float]:
     """제품 마스크에서 튜브 축의 기울기(도) — 열마다 마스크 중심 높이를 직선으로 적합(밝은 배경용).
 
@@ -575,7 +596,8 @@ class InspectionPipeline:
                 extent_hint=hint,
                 tilt_deg=_mask_tilt_deg(pre.mask, pre.length_roi) if hint is not None else None,
             )
-            length = self._to_reference_temperature(length, master, gauge_used=gauge is not None)
+            length = self._to_reference_temperature(_apply_length_offset(length, master), master,
+                                                    gauge_used=gauge is not None)
             if endpoints is not None and pre.length_roi is not None:
                 r = pre.length_roi
                 # 로컬(측정 창) x → 프레임 x(+창 시작). 세로는 length_roi 범위.

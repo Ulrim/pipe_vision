@@ -114,3 +114,23 @@ def test_eval_scenes_runs(tmp_path):
     assert s["scenes"] == 2 and s["count_accuracy"] == 1.0
     assert s["mismatch_scenes"] == 1 and s["mismatch_detected"] == 1
     assert res["note"].startswith("직접 만든 데이터")
+
+
+def test_length_offset_master_calibration():
+    """기준정보 촬영 레시피 length_offset_mm(마스터 시료 보정)를 길이에 더하고 편차·판정을 다시 낸다."""
+    from aivis_types import ItemMaster
+
+    from vision.pipeline import InspectionPipeline
+
+    img = np.full((200, 800, 3), 25, np.uint8)
+    img[80:120, 100:700] = 170                      # 600px 튜브(끝 그늘 없음 — 측정은 정확)
+    base = dict(item_code="T", item_name="t", ref_length_mm=600.0, tol_plus_mm=0.3, tol_minus_mm=0.3,
+                px_to_mm_scale=1.0, oil_threshold=0.3, discolor_threshold=0.2, scratch_threshold=0.15)
+    pipe = InspectionPipeline()
+    plain = pipe.run(img, ItemMaster(**base), stage="CUT_LENGTH").length
+    shifted = pipe.run(img, ItemMaster(**base, capture_recipe={"length_offset_mm": 0.5}), stage="CUT_LENGTH").length
+    assert plain.meas_length_mm == pytest.approx(600.0, abs=0.1)
+    assert shifted.meas_length_mm == pytest.approx(plain.meas_length_mm + 0.5, abs=1e-6)
+    assert shifted.deviation_mm == pytest.approx(shifted.meas_length_mm - 600.0, abs=1e-6)
+    assert str(getattr(plain.length_verdict, "value", plain.length_verdict)) == "OK"
+    assert str(getattr(shifted.length_verdict, "value", shifted.length_verdict)) == "NG"

@@ -514,8 +514,10 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
         # 단, 덩어리 쪽이 튜브 폭을 알고 있으면 줄무늬 간격이 그 폭과 맞아야 한다 — 떨어진 튜브 몇 개가 놓인
         # 바닥 전체를 무늬로 잘게 썰어 수십~수백 개로 세는 일을 막는다(직접 만든 바닥 장면에서 155개).
         # 떨어진 튜브가 덩어리마다 하나씩, 폭·길이가 고르게 잡혔으면(바닥 위 낱개) 줄무늬 분석은 보지 않는다.
+        # 줄무늬 분석이 확실하면(경계 여유·두 셈 일치) 개수와 무관하게 그쪽 — 붙은 다발이 트레이 무늬와 섞여 마스크
+        # 덩어리로는 더 많이 세는 일이 있었다(현장 사진 10장 중 3장 21~24개, 줄무늬 분석은 19개 정답).
         bundle = None if _separated_ok(lay) else find_dense_bundle(gray, valid=vmask, pitch_hint=unit)
-        if bundle is not None and (bundle.count > lay.count or (lay.uncertain and not bundle.uncertain)):
+        if bundle is not None and (not bundle.uncertain or bundle.count > lay.count or lay.uncertain):
             cell = float(np.median([t.u1 - t.u0 for t in bundle.tubes]))
             if lay.unit_px is None or lay.count < 2 or 0.6 <= cell / lay.unit_px <= 1.6:
                 lay = layout_from_bundle(bundle)
