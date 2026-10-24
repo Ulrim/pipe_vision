@@ -50,6 +50,8 @@ class SceneSpec:
     jpeg_quality: int = 92
     ruler: bool = False
     end_faces: bool = False           # 끝면(구멍)이 보이는가 — 비스듬히 찍을 때만. 위에서 수직이면 끝면은 카메라 반대쪽을 본다
+    bg_level: Optional[float] = None  # 어두운 바닥 밝기(없으면 18~55 무작위) — 무광 검정이 덜 검은 현장
+    dust: int = 0                     # 어두운 바닥의 먼지·부스러기 점 개수
     shift: Tuple[float, float] = (0.0, 0.0)   # 다발 중심 이동(화면 비)
     seed: int = 0
 
@@ -74,9 +76,13 @@ class TubeTruth:
 def _background(spec: SceneSpec, rng: np.random.Generator, bundle_box) -> np.ndarray:
     h, w = spec.height, spec.width
     if spec.background == "dark":
-        base = rng.uniform(18, 55)
+        base = rng.uniform(18, 55) if spec.bg_level is None else float(spec.bg_level)
         img = np.full((h, w), base, np.float32)
         img += cv2.GaussianBlur(rng.normal(0, 3.0, (h, w)).astype(np.float32), (0, 0), 1.2)
+        for _ in range(int(spec.dust)):           # 먼지·알루미늄 부스러기(밝거나 어두운 작은 점)
+            cx, cy = int(rng.uniform(0, w)), int(rng.uniform(0, h))
+            r = int(rng.integers(1, 5))
+            cv2.circle(img, (cx, cy), r, float(np.clip(base + rng.choice([-1, 1]) * rng.uniform(40, 140), 0, 255)), -1)
         return np.dstack([img] * 3)
     # 밝은 얼룩 바닥(floor) — tray 의 바깥에도 쓴다
     base = rng.uniform(165, 205)
@@ -303,6 +309,7 @@ def random_spec(rng: np.random.Generator, *, kind: str, seed: int, size: Tuple[i
     tray       : 밝은 트레이 위 붙은 다발(사진 시험 조건) — 회전·원근 있음.
     floor      : 밝은 바닥 위 떨어진 튜브 몇 개.
     hard       : 강한 원근·큰 회전·흐림·저대비.
+    field      : production 에서 현장에서 흔히 벗어나는 것들(약한 원근·덜 검은 바닥·조명 기울기·흐림·먼지·큰 다발).
     """
     w, h = size
     n = int(rng.integers(8, 26))
@@ -316,6 +323,16 @@ def random_spec(rng: np.random.Generator, *, kind: str, seed: int, size: Tuple[i
                          keystone=0.0, light_gradient=float(rng.uniform(0.0, 0.2)), blur_sigma=float(rng.uniform(0, 0.8)),
                          ruler=True, shift=(float(rng.uniform(-1, 1)), float(rng.uniform(-1, 1))),
                          mm_per_px=0.354, **common)
+    if kind == "field":
+        # 현장 조건에서 흔히 벗어나는 것들: 카메라가 조금 기욺(약한 원근), 덜 검은 바닥, 한쪽으로 기운 조명,
+        # 초점 흐림, 먼지·부스러기, 큰 다발(최대 40개), ±5°, 기준자 없는 경우.
+        return SceneSpec(background="dark", n_tubes=int(rng.integers(5, 41)),
+                         arrangement=str(rng.choice(["touching", "touching", "mixed", "gap"])),
+                         stagger_frac=float(rng.uniform(0.0, 0.05)), angle_deg=float(rng.uniform(-5, 5)),
+                         keystone=float(rng.choice([0.0, rng.uniform(0.005, 0.025)])),
+                         light_gradient=float(rng.uniform(0.0, 0.35)), blur_sigma=float(rng.uniform(0, 1.2)),
+                         ruler=bool(rng.random() < 0.7), shift=(float(rng.uniform(-1, 1)), float(rng.uniform(-1, 1))),
+                         bg_level=float(rng.uniform(15, 85)), dust=int(rng.integers(0, 60)), mm_per_px=0.354, **common)
     if kind == "tray":
         sp = SceneSpec(background="tray", n_tubes=n, arrangement=str(rng.choice(["touching", "touching", "mixed"])),
                        stagger_frac=float(rng.uniform(0.0, 0.05)), angle_deg=float(rng.uniform(-50, 50)),

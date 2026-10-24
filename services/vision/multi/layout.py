@@ -140,6 +140,33 @@ class _BlobFrame:
         return float(p[0]), float(p[1])
 
 
+def _dark_mask(g: np.ndarray) -> np.ndarray:
+    """어두운 바닥의 제품 마스크 — 배경보다 '튜브 밝기 폭의 30%' 넘게 밝은 곳.
+
+    전역 Otsu 는 바닥이 덜 검거나(밝기 60~85) 조명이 기울면 문턱이 튜브 밝기 범위 한가운데로 올라가, 반사 띠와
+    몸통 사이의 옅은 골에서 튜브 하나를 가는 띠 둘로 갈랐다(직접 만든 현장 변형 장면에서 14개 → 28개).
+    배경은 Otsu 로 배경이라 본 화소만으로 넓게 흐려 추정하고(정규화 합성곱 — 튜브가 배경 추정에 섞이지 않는다),
+    배경과의 차가 배경 잡음의 5배와 튜브 쪽 차(중앙값)의 25% 중 큰 값을 넘으면 제품이다(반사 띠가 센 튜브도 몸통까지).
+    먼지 점은 덩어리 크기 거르기에서 빠진다.
+    """
+    gf = cv2.GaussianBlur(g, (5, 5), 0).astype(np.float32)
+    t, _ = cv2.threshold(gf.astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    bgm = (gf <= t).astype(np.float32)
+    k = max(15, int(min(g.shape[:2]) / 10) | 1)
+    num = cv2.blur(gf * bgm, (k, k))
+    den = cv2.blur(bgm, (k, k))
+    bg = np.where(den > 0.05, num / np.maximum(den, 1e-6), float(np.median(gf[bgm > 0])) if bgm.any() else float(t))
+    diff = gf - bg
+    fg = diff[bgm == 0]
+    level = float(np.percentile(fg, 50)) if fg.size else 0.0
+    if level <= 5.0:
+        return (gf > t).astype(np.uint8) * 255
+    # 문턱 = 배경 잡음의 5배와 튜브 쪽 차(중앙값)의 25% 중 큰 값 — 반사 띠가 센 튜브도 어두운 몸통까지 잡는다
+    bd = diff[bgm > 0]
+    sigma = 1.4826 * float(np.median(np.abs(bd - np.median(bd)))) if bd.size else 2.0
+    return (diff > max(5.0 * sigma, 0.25 * level)).astype(np.uint8) * 255
+
+
 def _pca(xs: np.ndarray, ys: np.ndarray) -> Tuple[np.ndarray, float, float]:
     c = np.array([xs.mean(), ys.mean()])
     cov = np.cov(np.vstack([xs - c[0], ys - c[1]]))
@@ -303,6 +330,54 @@ def _split(g: np.ndarray, f: _BlobFrame, n: int) -> List[TubeGeom]:
     return _cut(f, [b0 + x for x in _snap_seams(prof, n)])
 
 
+def _estimate_unit(g: np.ndarray, cand: List[_BlobFrame], phi_g: float, *, light: bool = False) -> Optional[float]:
+    """기준정보 외경이 없을 때 튜브 한 개 폭(피치).
+
+    마스크 폭은 튜브 밝기에 따라 두 배까지 흔들린다(어둡게 찍힌 튜브는 가늘게 잡힌다 — 직접 만든 현장 변형
+    장면에서 지름 32px 튜브가 14~30px). 그래서 폭보다 **간격** 을 먼저 본다.
+    1) 붙은 덩어리 안의 깊은 골(튜브 사이 틈) 간격(가장자리~골 포함) — 3개 이상이면 그 중앙값이 곧 피치다.
+    2) 가늘고 긴 덩어리(대개 한 개)들의 중심 간격 하위 25% — 붙어 누운 튜브면 지름, 틈이 있으면 조금 크다.
+       단 가는 덩어리 폭 중앙값의 2.2배를 넘으면(떨어져 놓인 튜브) 쓰지 않는다.
+    3) 둘 다 없으면 폭들을 '한 폭의 정수배' 로 가장 잘 설명하는 값(_unit_from_widths).
+    """
+    thin = [f for f in cand if f.length / f.width >= 5.0]
+    by_width = _unit_from_widths([f.width for f in thin]) if len(thin) >= 2 else None
+    if light:
+        # 밝은 바닥: 튜브 가장자리가 바닥보다 어두워 한 튜브 안에도 '깊은 골' 이 생기고(그림자까지),
+        # 낱개는 멀리 떨어져 놓인다 — 간격으로는 못 잰다. 폭으로만.
+        return by_width
+    seams: List[float] = []
+    for f in cand:
+        if f.width < 12:
+            continue
+        prof, _b0 = _cross_profile(g, f)
+        sp = np.convolve(np.pad(prof.astype(np.float64), 1, mode="edge"), np.ones(3) / 3, mode="valid")
+        rng = float(sp.max() - sp.min())
+        if rng < 8.0:
+            continue
+        mins = [i for i in range(3, len(sp) - 3) if sp[i] <= sp[i - 1] and sp[i] < sp[i + 1]
+                and _prominence(sp, i) >= 0.4 * rng]
+        if mins:
+            # 덩어리 가장자리 = 바깥 튜브 가장자리(배경 기준 마스크) — 가장자리~첫 골도 한 칸이다
+            seams.extend(float(d) for d in np.diff([0] + mins + [len(sp) - 1]) if d >= 6)
+    if len(seams) >= 3:
+        pitch = float(np.median(seams))
+        if by_width is None or pitch >= 0.6 * by_width:
+            return pitch
+    if len(thin) >= 3:
+        t = np.radians(phi_g)
+        n_g = np.array([-np.sin(t), np.cos(t)])
+        pos = np.sort([float(f.c @ n_g) for f in thin])
+        gaps = np.diff(pos)
+        gaps = gaps[gaps > 3]
+        if gaps.size >= 2:
+            nb = float(np.percentile(gaps, 25))
+            medw = float(np.median([f.width for f in thin]))
+            if nb <= 2.2 * medw:
+                return max(nb, by_width or 0.0)
+    return by_width
+
+
 def _unit_from_widths(ws: List[float]) -> Optional[float]:
     """덩어리 폭들을 '한 폭 × 정수' 로 가장 잘 설명하는 한 폭.
 
@@ -328,6 +403,21 @@ def _unit_from_widths(ws: List[float]) -> Optional[float]:
         if best is None or score < best[0]:
             best = (score, u)
     return best[1] if best else None
+
+
+def _gaps(f: _BlobFrame, geoms: List[TubeGeom]) -> List[Tuple[float, float]]:
+    """덩어리의 축 가로 범위 중 어느 튜브에도 안 덮인 구간들(b 좌표, 2px 이상)."""
+    iv = sorted((float((q.center - f.c) @ f.n) - 0.5 * q.width, float((q.center - f.c) @ f.n) + 0.5 * q.width)
+                for q in geoms)
+    out: List[Tuple[float, float]] = []
+    edge = f.b_lo
+    for lo, hi in iv:
+        if lo - edge >= 2.0:
+            out.append((edge, lo))
+        edge = max(edge, hi)
+    if f.b_hi + 1.0 - edge >= 2.0:
+        out.append((edge, f.b_hi + 1.0))
+    return out
 
 
 def _sub(f: _BlobFrame, lo: float, hi: float) -> _BlobFrame:
@@ -369,17 +459,21 @@ def _gap_groups(g: np.ndarray, mask: np.ndarray, f: _BlobFrame, unit: float) -> 
     if not cuts:
         return [(f.b_lo, f.b_hi + 1.0)]
     edges = [0] + [x for c0, c1 in cuts for x in (c0, c1)] + [n]
-    out = []
-    for k in range(0, len(edges), 2):
-        lo, hi = edges[k], edges[k + 1]
-        if hi - lo >= max(2, 0.3 * unit):
-            out.append((b0 + lo, b0 + hi))
+    pieces = [[edges[k], edges[k + 1]] for k in range(0, len(edges), 2)]
+    # 반 폭도 안 되는 조각(반사 띠가 바닥 밝기와 같아져 튜브가 갈라진 것, 그림자 띠)은 이웃에 붙인다
+    merged: List[List[int]] = []
+    for pc in pieces:
+        if merged and (pc[1] - pc[0] < 0.5 * unit or merged[-1][1] - merged[-1][0] < 0.5 * unit):
+            merged[-1][1] = pc[1]
+        else:
+            merged.append(list(pc))
+    out = [(b0 + lo, b0 + hi) for lo, hi in merged if hi - lo >= max(2, 0.3 * unit)]
     return out or [(f.b_lo, f.b_hi + 1.0)]
 
 
-def _single(f: _BlobFrame) -> TubeGeom:
+def _single(f: _BlobFrame, source: str = "blob") -> TubeGeom:
     bm = 0.5 * (f.b_lo + f.b_hi)
-    return TubeGeom(f.point(f.a_lo, bm), f.point(f.a_hi, bm), f.width, source="blob")
+    return TubeGeom(f.point(f.a_lo, bm), f.point(f.a_hi, bm), f.width, source=source)
 
 
 def _dense_in_blob(g: np.ndarray, lab: np.ndarray, f: _BlobFrame, pad: int, hint: Optional[float] = None):
@@ -422,7 +516,7 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
     s = min(1.0, WORK_SIDE / float(max(h, w)))
     g = gray if s == 1.0 else cv2.resize(gray, (max(1, int(w * s)), max(1, int(h * s))),
                                          interpolation=cv2.INTER_AREA)
-    mask = tube_mask(g, light=light).copy()
+    mask = tube_mask(g, light=True).copy() if light else _dark_mask(g)
     if valid is not None:
         vm = valid if s == 1.0 else cv2.resize(valid, (g.shape[1], g.shape[0]), interpolation=cv2.INTER_NEAREST)
         mask[vm == 0] = 0
@@ -468,9 +562,7 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
     unit = unit_px * s if unit_px and unit_px > 0 else None
     given = unit is not None
     if unit is None:
-        # 덩어리 하나로는 폭 기준을 못 세운다(그 폭이 곧 기준이 돼 무엇이든 한 개가 된다)
-        thin = [f.width for f in cand if f.length / f.width >= 5.0]
-        unit = _unit_from_widths(thin) if len(thin) >= 2 else None
+        unit = _estimate_unit(g, cand, phi_g, light=light)
 
     tubes: List[TubeGeom] = []
     notes: List[str] = []
@@ -508,7 +600,8 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
     for f, parted in work:
         r = f.width / unit if unit else None
         if r is not None and r < SINGLE_MAX:
-            tubes.append(_single(f))
+            # 덩어리를 틈으로 가른 조각은 '떨어져 놓인 낱개' 가 아니다(배치 쪽 _separated_ok 판단에 쓰인다)
+            tubes.append(_single(f, source="split" if parted else "blob"))
             continue
         prof, b0 = _cross_profile(g, f)
         seams, regular = _valley_seams(prof, unit)
@@ -534,7 +627,9 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
                 name, geoms, bundle = min(opts, key=lambda o: (abs(len(o[1]) - r), rank[o[0]]))
             else:
                 name, geoms, bundle = "blob", [_single(f)], None
-            if abs(len(geoms) - r) > max(0.45, 0.1 * r) or (bundle is not None and bundle.uncertain):
+            # 줄무늬 분석 스스로는 애매해도(경계 여유) 골 셈·폭 기준이 같은 개수면 믿는다 — 셋이 독립이다
+            agree = sum(1 for o in opts if len(o[1]) == len(geoms)) >= 2
+            if abs(len(geoms) - r) > max(0.45, 0.1 * r) or (bundle is not None and bundle.uncertain and not agree):
                 uncertain = True
                 notes.append(f"덩어리 폭 튜브 {r:.1f}개분 — {name} 셈 {len(geoms)}개(재확인)")
         else:
@@ -555,7 +650,34 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         if bundle is not None:
             dense_used = True
             notes.extend(bundle.notes)
+        if unit and len(geoms) >= 2:
+            # 나눈 튜브들이 덩어리를 다 덮지 못했다 — 바깥 튜브 하나를 빠뜨린 것(줄무늬 경계가 한 칸 안쪽).
+            # 빈 구간이 튜브 한 개 폭(0.75~1.3)이면 그 자리에 튜브를 넣고, 그 밖이면 재확인으로 보낸다.
+            geoms = list(geoms)
+            for lo, hi in _gaps(f, geoms):
+                k = (hi - lo) / unit
+                if 0.75 <= k <= 1.3:
+                    geoms.extend(_cut(_sub(f, lo, hi), []))
+                    notes.append("줄무늬 분석이 빠뜨린 가장자리 튜브 1개를 마스크로 채움")
+                elif k > 0.6:
+                    uncertain = True
+                    notes.append(f"덩어리의 {k:.1f}개분이 어느 튜브에도 안 들어감(재확인)")
         tubes.extend(geoms)
+
+    # 나눈 조각이 낱개 덩어리 폭의 절반도 안 되면 한 폭을 너무 작게 잡은 것이다(밝기가 고르지 않은 다발)
+    if not given and unit:
+        singles_w = [f.width for f in cand if f.length / f.width >= 5.0]
+        pieces = [q.width for q in tubes if q.source in ("split", "dense")]
+        if singles_w and pieces and min(pieces) < 0.45 * float(np.median(singles_w)):
+            uncertain = True
+            notes.append("나눈 조각이 낱개 튜브 폭의 절반도 안 됨 — 한 개 폭 추정이 의심스럽다(재확인, 기준정보 외경 입력 권장)")
+
+    # 헤더 파이프는 가늘고 길다 — 추정한 한 폭으로 길이/폭이 8 도 안 되면 폭 추정을 믿기 어렵다(원근·흐림)
+    if not given and unit and tubes:
+        aspect = float(np.median([q.length for q in tubes])) / unit
+        if aspect < 8.0:
+            uncertain = True
+            notes.append(f"튜브 길이/폭 {aspect:.1f} — 한 개 폭 추정이 의심스럽다(재확인, 기준정보 외경 입력 권장)")
 
     # 축을 가로지르는 순서(위 → 아래)
     t = np.radians(phi_g)

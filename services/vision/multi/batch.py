@@ -518,8 +518,13 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
         # 덩어리로는 더 많이 세는 일이 있었다(현장 사진 10장 중 3장 21~24개, 줄무늬 분석은 19개 정답).
         bundle = None if _separated_ok(lay) else find_dense_bundle(gray, valid=vmask, pitch_hint=unit)
         if bundle is not None and (not bundle.uncertain or bundle.count > lay.count or lay.uncertain):
+            # 간격 대조는 덩어리 쪽에 '덩어리 하나 = 튜브 하나' 인 낱개가 3개 이상일 때 그 폭으로 —
+            # 붙은 다발을 조각낸 쪽의 폭 추정은 믿을 수 없다(현장 트레이 사진에서 줄무늬 정답을 막았다).
+            singles = [t.width for t in lay.tubes if t.source == "blob"]
             cell = float(np.median([t.u1 - t.u0 for t in bundle.tubes]))
-            if lay.unit_px is None or lay.count < 2 or 0.6 <= cell / lay.unit_px <= 1.6:
+            # 낱개가 3개 이상 잡혔는데 줄무늬가 그 1.5배 넘게 세면 바닥 무늬를 썬 것이다(바닥 장면 7개 → 50개).
+            if len(singles) < 3 or (0.6 <= cell / float(np.median(singles)) <= 1.6
+                                    and bundle.count <= 1.5 * lay.count + 2):
                 lay = layout_from_bundle(bundle)
     notes = list(lay.notes)
     if lay.rulers:

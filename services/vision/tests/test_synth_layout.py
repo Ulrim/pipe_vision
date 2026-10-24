@@ -134,3 +134,22 @@ def test_length_offset_master_calibration():
     assert shifted.deviation_mm == pytest.approx(shifted.meas_length_mm - 600.0, abs=1e-6)
     assert str(getattr(plain.length_verdict, "value", plain.length_verdict)) == "OK"
     assert str(getattr(shifted.length_verdict, "value", shifted.length_verdict)) == "NG"
+
+
+def test_layout_gray_floor_and_dust():
+    """덜 검은 바닥(밝기 75)·먼지 점: 전역 Otsu 는 튜브를 가는 띠 둘로 갈라 두 배로 셌다(14 → 28)."""
+    img, gt = _scene(21, background="dark", n_tubes=14, arrangement="mixed", angle_deg=1.5, length_mm=300.0,
+                     diameter_mm=18.0, bg_level=75.0, dust=40, ruler=True)
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    unit = gt["spec"]["diameter_mm"] / gt["mm_per_px"]          # 기준정보 외경(현장 권장)
+    lay = find_layout(g, light=False, unit_px=unit)
+    assert lay.count == gt["n_tubes"], lay.notes
+    assert not lay.uncertain
+    # 외경이 없으면 튜브마다 밝기가 달라 한 개 폭 추정이 틀릴 수 있다 — 그때는 조용히 넘기지 않고 재확인
+    blind = find_layout(g, light=False)
+    assert blind.count == gt["n_tubes"] or blind.uncertain, blind.notes
+
+
+def test_field_kind_spec():
+    sp = random_spec(np.random.default_rng(3), kind="field", seed=1)
+    assert sp.background == "dark" and sp.bg_level is not None and 5 <= sp.n_tubes <= 40
