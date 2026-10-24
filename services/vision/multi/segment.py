@@ -282,6 +282,7 @@ def _segment_axis(
     expected_count: Optional[int],
     min_tubes: int,
     max_tubes: int,
+    valid: Optional[np.ndarray] = None,
 ) -> List[Tuple[int, int, int, int, float]]:
     """가로로 누운(행 방향으로 쌓인) 튜브 분할. (x0,y0,x1,y1,conf) 리스트."""
     h, w = gray.shape[:2]
@@ -290,9 +291,11 @@ def _segment_axis(
     if float(gray.max()) - float(gray.min()) < 20.0:
         return []
     if light_background(gray):
-        return _segment_light(gray, expected_count, min_tubes, max_tubes)
+        return _segment_light(gray, expected_count, min_tubes, max_tubes, valid=valid)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
     _t, binm = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    if valid is not None:
+        binm[valid == 0] = 0
     return _segment_band(gray, binm, expected_count, min_tubes, max_tubes)
 
 
@@ -301,6 +304,7 @@ def _segment_light(
     expected_count: Optional[int],
     min_tubes: int,
     max_tubes: int,
+    valid: Optional[np.ndarray] = None,
 ) -> List[Tuple[int, int, int, int, float]]:
     """밝은·무늬 배경(2026-10-21) — 떨어져 놓인 튜브는 덩어리 하나가 튜브 하나, 붙은 다발은 그 덩어리
     안에서 종전처럼 seam(어두운 골)으로 나눈다.
@@ -311,6 +315,8 @@ def _segment_light(
     기대 개수가 덩어리 수와 같으면 하나씩, 덩어리가 하나면 그 안을 기대 개수로 나눈다.
     """
     mask = contrast_mask(gray)
+    if valid is not None:
+        mask[valid == 0] = 0
     lab, blobs = label_blobs(mask)
     tubes = sorted(select_tubes(blobs), key=lambda b: b.cy)
     if not tubes:
@@ -421,6 +427,7 @@ def segment_tubes(
     min_tubes: int = 1,
     max_tubes: int = MAX_TUBES_HARD,
     area: Optional[InspectArea] = None,
+    valid: Optional[np.ndarray] = None,
 ) -> List[TubeROI]:
     """다중 튜브 프레임 → 튜브별 TubeROI 리스트(축 순서 index 1..N).
 
@@ -437,7 +444,8 @@ def segment_tubes(
     rect = area_rect(area, frame)
     if rect is not None:
         inner = segment_tubes(rect.crop(frame), axis=axis, expected_count=expected_count,
-                              min_tubes=min_tubes, max_tubes=max_tubes)
+                              min_tubes=min_tubes, max_tubes=max_tubes,
+                              valid=rect.crop(valid) if valid is not None else None)
         return [TubeROI(index=t.index, x0=t.x0 + rect.x0, y0=t.y0 + rect.y0,
                         x1=t.x1 + rect.x0, y1=t.y1 + rect.y0, confidence=t.confidence)
                 for t in inner]
@@ -453,11 +461,12 @@ def segment_tubes(
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     if axis == "vertical":
         # 전치해 세로 튜브를 가로 튜브 문제로 환원.
-        boxes_t = _segment_axis(gray.T.copy(), expected_count, min_tubes, max_tubes)
+        boxes_t = _segment_axis(gray.T.copy(), expected_count, min_tubes, max_tubes,
+                                valid=valid.T.copy() if valid is not None else None)
         # 전치 좌표(x',y') → 원본(x=y', y=x'): (y0,x0,y1,x1)로 스왑.
         boxes = [(y0, x0, y1, x1, c) for (x0, y0, x1, y1, c) in boxes_t]
     else:
-        boxes = _segment_axis(gray, expected_count, min_tubes, max_tubes)
+        boxes = _segment_axis(gray, expected_count, min_tubes, max_tubes, valid=valid)
 
     return [
         TubeROI(index=i + 1, x0=b[0], y0=b[1], x1=b[2], y1=b[3], confidence=round(b[4], 4))

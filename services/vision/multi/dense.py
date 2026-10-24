@@ -89,12 +89,14 @@ def axis_angle(gray: np.ndarray, work: int = 800) -> Optional[float]:
     return float(((a + 90.0) % 180.0) - 90.0)
 
 
-def _stripe_box(g: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+def _stripe_box(g: np.ndarray, valid: Optional[np.ndarray] = None) -> Optional[Tuple[int, int, int, int]]:
     """줄무늬 에너지(축 방향으로 흐린 뒤 축을 가로지르는 기울기의 밀도)가 센 가장 큰 덩어리."""
     h, w = g.shape
     d = max(h, w)
     S = cv2.blur(g, (_odd(0.03 * d), 1))
     gy = np.abs(cv2.Sobel(S, cv2.CV_32F, 0, 1, ksize=3))
+    if valid is not None and valid.shape == gy.shape:
+        gy[valid == 0] = 0
     E = cv2.blur(gy, (_odd(0.04 * d),) * 2)
     e8 = cv2.normalize(E, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     _t, m = cv2.threshold(e8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
@@ -347,31 +349,42 @@ class DenseBundle:
         반환: (crop, mask, length_px, center, direction)
         """
         uc = 0.5 * (t.u0 + t.u1)
-        m = self.slope(uc)
-        norm = float(np.hypot(1.0, m))
-        d = np.array([1.0 / norm, m / norm])
-        nvec = np.array([-d[1], d[0]])
-        p0 = np.array([t.x0, self.y_at(uc, t.x0)])
-        p1 = np.array([t.x1, self.y_at(uc, t.x1)])
-        length = float(np.linalg.norm(p1 - p0))
-        hgt = max(5, int(round(frac * (t.u1 - t.u0))))
-        wid = int(round(length)) + 2 * margin
-        cen = 0.5 * (p0 + p1)
-        # 출력(ox, oy) → 입력 = cen + (ox − W/2)·d + (oy − H/2)·n
-        M = np.array([[d[0], nvec[0], cen[0] - 0.5 * wid * d[0] - 0.5 * hgt * nvec[0]],
-                      [d[1], nvec[1], cen[1] - 0.5 * wid * d[1] - 0.5 * hgt * nvec[1]]], dtype=np.float64)
-        crop = cv2.warpAffine(img, M, (wid, hgt), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
-                              borderMode=cv2.BORDER_REPLICATE)
-        mask = np.zeros((hgt, wid), np.uint8)
-        lo = int(round(0.5 * wid - 0.5 * length))
-        mask[:, max(0, lo):min(wid, lo + int(round(length)))] = 255
-        return crop, mask, length, cen, d
+        p0 = (t.x0, self.y_at(uc, t.x0))
+        p1 = (t.x1, self.y_at(uc, t.x1))
+        return ribbon_crop(img, p0, p1, frac * (t.u1 - t.u0), margin=margin)
 
 
-def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3) -> Optional[DenseBundle]:
-    """정준 영상(튜브가 대략 가로)에서 붙은 다발을 찾는다. 못 찾거나 min_tubes 미만이면 None."""
+def ribbon_crop(img: np.ndarray, p0, p1, height: float, *, margin: int):
+    """p0→p1 선분을 가로로 편 띠 영상(회전만, 1:1) + 제품 마스크(선분 길이만큼).
+
+    반환: (crop, mask, length_px, center, direction) — 띠 x 는 center + (x − W/2)·direction.
+    """
+    p0, p1 = np.asarray(p0, dtype=np.float64), np.asarray(p1, dtype=np.float64)
+    length = float(np.linalg.norm(p1 - p0))
+    d = (p1 - p0) / max(length, 1e-9)
+    nvec = np.array([-d[1], d[0]])
+    hgt = max(5, int(round(height)))
+    wid = int(round(length)) + 2 * margin
+    cen = 0.5 * (p0 + p1)
+    # 출력(ox, oy) → 입력 = cen + (ox − W/2)·d + (oy − H/2)·n
+    M = np.array([[d[0], nvec[0], cen[0] - 0.5 * wid * d[0] - 0.5 * hgt * nvec[0]],
+                  [d[1], nvec[1], cen[1] - 0.5 * wid * d[1] - 0.5 * hgt * nvec[1]]], dtype=np.float64)
+    crop = cv2.warpAffine(img, M, (wid, hgt), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                          borderMode=cv2.BORDER_REPLICATE)
+    mask = np.zeros((hgt, wid), np.uint8)
+    lo = int(round(0.5 * wid - 0.5 * length))
+    mask[:, max(0, lo):min(wid, lo + int(round(length)))] = 255
+    return crop, mask, length, cen, d
+
+
+def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3,
+                      valid: Optional[np.ndarray] = None) -> Optional[DenseBundle]:
+    """정준 영상(튜브가 대략 가로)에서 붙은 다발을 찾는다. 못 찾거나 min_tubes 미만이면 None.
+
+    valid: 원래 사진이 있는 곳(255) — 돌려 세운 영상의 빈 모서리는 다발 위치 찾기에서 뺀다.
+    """
     g = gray.astype(np.float32)
-    box = _stripe_box(g)
+    box = _stripe_box(g, valid)
     if box is None:
         return None
     x0, y0, x1, y1 = box
@@ -401,6 +414,8 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3) -> Optional[Dense
         return float(np.clip(k * y + c, 0.5 * p0, 2 * p0))
 
     lo_y, hi_y = max(0, int(e_lo - 3 * p0)), min(len(Q) - 1, int(e_hi + 3 * p0))
+    if not (e_hi > e_lo and hi_y - lo_y >= 2 * p0):
+        return None
     lat = _lattice(Q, p0, k, c, lo_y, hi_y, e_lo, e_hi)
     a_in, b_in = e_lo + EDGE_SHRINK * pl(e_lo), e_hi - EDGE_SHRINK * pl(e_hi)
     cells = [(float(u), float(v)) for u, v in zip(lat[:-1], lat[1:]) if a_in <= 0.5 * (u + v) <= b_in]
@@ -467,4 +482,4 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3) -> Optional[Dense
                        count_check=check, margin=margin, notes=notes)
 
 
-__all__ = ["BundleTube", "DenseBundle", "MARGIN_MIN", "axis_angle", "find_dense_bundle"]
+__all__ = ["BundleTube", "DenseBundle", "MARGIN_MIN", "axis_angle", "find_dense_bundle", "ribbon_crop"]

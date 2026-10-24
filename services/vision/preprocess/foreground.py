@@ -21,8 +21,10 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
-#: Otsu 로 '밝은 쪽' 이 화면의 이 비율을 넘으면 밝은 배경으로 본다(튜브가 화면 절반을 덮는 일은 없다).
+#: (종전 규칙의 값 — 다른 곳에서 참조할 수 있어 남겨 둔다)
 LIGHT_BG_FRACTION = 0.5
+#: 화면 테두리 밝기 ÷ 가장 밝은 곳(99.5%)이 이 값 이상이면 밝은 배경.
+LIGHT_RING_RATIO = 0.4
 #: 배경 추정·형태 연산은 긴 변을 이 크기로 줄여 한다(속도 · 크기에 무관한 커널).
 _WORK_SIDE = 1000
 
@@ -33,12 +35,22 @@ def _odd(n: float) -> int:
 
 
 def light_background(gray: np.ndarray) -> bool:
-    """밝은 배경인가 — Otsu 의 밝은 쪽이 화면 절반을 넘으면(바닥이 제품보다 밝다)."""
+    """밝은 배경인가 — 화면 테두리(배경이 보이는 곳)의 밝기가 화면에서 가장 밝은 곳의 40% 이상이면.
+
+    종전(2026-10-21)에는 'Otsu 의 밝은 쪽이 화면 절반을 넘으면' 이었다. 직접 만든 장면 평가(2026-10-24)에서
+    두 가지로 틀렸다 — ① 어두운 바닥에 큰 다발을 올리면 밝은 튜브가 화면 절반을 넘어 밝은 배경으로,
+    ② 조명이 한쪽으로 기운 밝은 바닥은 Otsu 가 바닥의 어두운 쪽·밝은 쪽을 갈라 어두운 배경으로 봤다.
+    배경은 화면 가장자리에 보이고(다발이 테두리를 다 덮는 일은 없다), 무광 검정 바닥은 반사 띠(가장 밝은
+    곳)의 1/3 도 안 된다. 노출과 무관하게 비율로 본다.
+    """
     if float(gray.max()) - float(gray.min()) < 20.0:
         return False  # 평탄한 화면(빈 장면) — 판단할 것이 없다. 종전 경로 그대로.
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    t, _ = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return float((blur > t).mean()) > LIGHT_BG_FRACTION
+    h, w = blur.shape[:2]
+    k = max(2, int(0.04 * min(h, w)))
+    ring = np.concatenate([blur[:k].ravel(), blur[-k:].ravel(), blur[k:-k, :k].ravel(), blur[k:-k, -k:].ravel()])
+    top = float(np.percentile(blur, 99.5))
+    return float(np.median(ring)) >= LIGHT_RING_RATIO * max(top, 1.0)
 
 
 def _otsu_mask(gray: np.ndarray) -> np.ndarray:

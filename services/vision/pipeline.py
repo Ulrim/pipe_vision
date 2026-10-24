@@ -148,6 +148,8 @@ class FramePrep:
     """튜브마다 오류로 남길 사유(렌즈 보정 실패·기준자 읽기 실패) — 단일 경로와 같은 규칙."""
     light_bg: bool = False
     """배경이 제품보다 밝다(밝은 바닥 등) — 전체 프레임에서 한 번 정한다(foreground.py)."""
+    valid: Optional[np.ndarray] = None
+    """돌려 세운 프레임에서 원래 사진이 있는 곳(255) — 돌릴 때 생긴 빈 모서리는 검출에서 뺀다(2026-10-24)."""
 
 
 @dataclass(frozen=True)

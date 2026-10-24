@@ -26,8 +26,9 @@ from aivis_types import InspectionResult, ItemMaster, Verdict, VerdictResult
 from ..length.measure import END_MARGIN_PX, LengthSpan
 from ..pipeline import CropContext, FramePrep, InspectionPipeline
 from ..preprocess.area import InspectArea, area_rect
-from ..preprocess.foreground import angle_gap, contrast_mask, dominant_angle, light_background
-from .dense import axis_angle, find_dense_bundle
+from ..preprocess.foreground import angle_gap, contrast_mask, dominant_angle
+from .dense import axis_angle, find_dense_bundle, ribbon_crop
+from .layout import Layout, find_layout, layout_from_bundle
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 #: 튜브가 축(가로·세로)에서 이만큼 넘게 기울면 프레임을 돌려 바로 세운다(axis="auto" 일 때).
@@ -219,6 +220,10 @@ def inspect_batch(
     if axis == "auto":
         axis, frame, prep, area, rotation = _orient(frame, prep, area)
         view = frame if rotation else None
+        # 방향을 영상에서 정할 때는 배치 찾기(layout.py)로 센다 — 덩어리 먼저, 붙은 덩어리만 나누고
+        # 튜브마다 중심선을 따라 편 띠에서 잰다(어두운·밝은 배경 공통, 기울기·틈·기준자 대응).
+        return _inspect_layout(frame, prep=prep, pipe=pipe, item=item, stage=stage, axis=axis, area=area,
+                               rotation=rotation, view=view, expected_count=expected_count, t0=t0)
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
     # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
@@ -238,6 +243,7 @@ def inspect_batch(
         min_tubes=min_tubes,
         max_tubes=max_tubes,
         area=area,
+        valid=prep.valid,
     )
     count_detected = len(auto_rois)
 
@@ -245,7 +251,7 @@ def inspect_batch(
     # 0~5개). 줄무늬로 본 다발 분석(dense.py)이 더 많이 찾으면 그쪽으로 잰다. 떨어져 놓인 튜브는 위
     # 분할이 그대로 맞다(다발 분석은 이어진 덩어리만 세므로 개수가 같거나 적다).
     if prep.light_bg:
-        found = _dense_bundle(frame, axis, area)
+        found = _dense_bundle(frame, axis, area, valid=prep.valid)
         if found is not None and found[0].count > count_detected:
             return _inspect_dense(found, frame=frame, axis=axis, rotation=rotation, view=view,
                                   prep=prep, pipe=pipe, item=item, stage=stage,
@@ -260,6 +266,7 @@ def inspect_batch(
             min_tubes=min_tubes,
             max_tubes=max_tubes,
             area=area,
+            valid=prep.valid,
         )
     else:
         rois = auto_rois
@@ -270,6 +277,8 @@ def inspect_batch(
     # 밝은 배경: 제품 마스크를 전체 프레임에서 한 번 찾아 튜브마다 잘라 넘긴다(crop 에서 다시 찾으면
     # 튜브가 화면을 채워 틀린다). 끝단 바깥 배경도 더 넉넉히 담는다(배경 마스크는 덜 정확하다).
     full_mask = contrast_mask(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)) if prep.light_bg else None
+    if full_mask is not None and prep.valid is not None:
+        full_mask[prep.valid == 0] = 0
     tubes: List[TubeResult] = []
     for roi in rois:
         pad = None
@@ -331,7 +340,8 @@ def inspect_batch(
     )
 
 
-def _dense_bundle(frame: np.ndarray, axis: str, area: Optional[InspectArea]):
+def _dense_bundle(frame: np.ndarray, axis: str, area: Optional[InspectArea], *,
+                  valid: Optional[np.ndarray] = None):
     """붙은 다발 찾기 — (DenseBundle, 정준 영상, 정준→결과사진 좌표 함수) 또는 None.
 
     정준 영상 = 튜브가 가로(세로 축이면 시계방향으로 돌린 것). 검사 영역이 있으면 그 안만 본다.
@@ -341,7 +351,11 @@ def _dense_bundle(frame: np.ndarray, axis: str, area: Optional[InspectArea]):
     ox, oy = (rect.x0, rect.y0) if rect is not None else (0, 0)
     vertical = axis == "vertical"
     canon = cv2.rotate(base, cv2.ROTATE_90_CLOCKWISE) if vertical else base
-    bundle = find_dense_bundle(cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY))
+    vmask = None
+    if valid is not None:
+        vmask = rect.crop(valid) if rect is not None else valid
+        vmask = cv2.rotate(vmask, cv2.ROTATE_90_CLOCKWISE) if vertical else vmask
+    bundle = find_dense_bundle(cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY), valid=vmask)
     if bundle is None:
         return None
     hb = base.shape[0]
@@ -428,15 +442,165 @@ def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view
     )
 
 
-def _rotate_keep(img: np.ndarray, deg: float) -> np.ndarray:
-    """영상을 deg 만큼 돌린다(잘리지 않게 캔버스를 넓히고 가장자리는 이어 붙인다)."""
+def _canonical(frame: np.ndarray, axis: str, area: Optional[InspectArea], valid: Optional[np.ndarray]):
+    """정준 영상(튜브가 가로 — 세로 축이면 시계방향으로 돌림)과 좌표 변환.
+
+    반환: (정준 BGR, 정준 valid, 정준→결과사진 좌표 함수, 정준 x → 기준자 좌표 (원점, 방향)).
+    기준자 좌표 = 가로 축이면 프레임 x, 세로 축이면 프레임 y(파이프라인 CropContext 규약).
+    """
+    rect = area_rect(area, frame)
+    base = rect.crop(frame) if rect is not None else frame
+    ox, oy = (rect.x0, rect.y0) if rect is not None else (0, 0)
+    vertical = axis == "vertical"
+    canon = cv2.rotate(base, cv2.ROTATE_90_CLOCKWISE) if vertical else base
+    vmask = None
+    if valid is not None:
+        vmask = rect.crop(valid) if rect is not None else valid
+        vmask = cv2.rotate(vmask, cv2.ROTATE_90_CLOCKWISE) if vertical else vmask
+    hb = base.shape[0]
+    if vertical:
+        # 시계방향 회전: 정준 (x', y') = (H − 1 − y, x) → 원래 (x, y) = (y', H − 1 − x').
+        def to_view(x: float, y: float) -> Tuple[float, float]:
+            return float(y + ox), float(hb - 1 - x + oy)
+
+        def gauge_axis(x: float) -> Tuple[float, int]:
+            return float(hb - 1 - x + oy), -1
+    else:
+        def to_view(x: float, y: float) -> Tuple[float, float]:
+            return float(x + ox), float(y + oy)
+
+        def gauge_axis(x: float) -> Tuple[float, int]:
+            return float(x + ox), 1
+    return canon, vmask, to_view, gauge_axis
+
+
+def _unit_px(item) -> Optional[float]:
+    """기준정보 외경 ÷ 배율 = 튜브 한 개 폭(px). 없으면 None(덩어리들에서 추정)."""
+    get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
+    od, sc = get("outer_diameter_mm", None), get("px_to_mm_scale", None)
+    try:
+        od, sc = float(od), float(sc)
+    except (TypeError, ValueError):
+        return None
+    return od / sc if od > 0 and sc > 0 else None
+
+
+def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipeline, item, stage: Optional[str],
+                    axis: str, area: Optional[InspectArea], rotation: float, view: Optional[np.ndarray],
+                    expected_count: Optional[int], t0: float) -> BatchResult:
+    """axis="auto" 경로 — 배치 찾기(layout.py) → 튜브마다 중심선을 따라 편 띠(ribbon)를 단일 파이프라인으로.
+
+    띠는 회전만 한 1:1 영상이라 띠에서 잰 px 길이가 원본 px 길이다. 기준자가 이 프레임에서 읽혔고
+    영상을 돌리지 않았으면 띠 x 를 기준자 축에 1:1 로 대응시켜 국소 배율로 잰다(비스듬해도 실제 길이 —
+    배율은 방향과 무관하다). 개수가 애매하면 튜브 전부 재확인 + 배치 NG — 조용히 고르지 않는다.
+    밝은 배경에서 붙은 큰 다발은 제품 마스크에 안 잡혀(배경으로 보임) 화면 전체 줄무늬 분석이 더 많이
+    찾으면 그쪽을 쓴다.
+    """
+    canon, vmask, to_view, gauge_axis = _canonical(frame, axis, area, prep.valid)
+    gray = cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY)
+    lay: Layout = find_layout(gray, light=prep.light_bg, valid=vmask, unit_px=_unit_px(item))
+    if prep.light_bg:
+        # 밝은 배경: 붙은 큰 다발은 마스크에 안 잡히거나 트레이 테두리째 잡힌다 — 화면 전체 줄무늬 분석이
+        # 더 많이 찾거나, 덩어리 쪽이 불확실한데 줄무늬 쪽은 확실하면 줄무늬로.
+        # 단, 덩어리 쪽이 튜브 폭을 알고 있으면 줄무늬 간격이 그 폭과 맞아야 한다 — 떨어진 튜브 몇 개가 놓인
+        # 바닥 전체를 무늬로 잘게 썰어 수십~수백 개로 세는 일을 막는다(직접 만든 바닥 장면에서 155개).
+        bundle = find_dense_bundle(gray, valid=vmask)
+        if bundle is not None and (bundle.count > lay.count or (lay.uncertain and not bundle.uncertain)):
+            cell = float(np.median([t.u1 - t.u0 for t in bundle.tubes]))
+            if lay.unit_px is None or lay.count < 2 or 0.6 <= cell / lay.unit_px <= 1.6:
+                lay = layout_from_bundle(bundle)
+    notes = list(lay.notes)
+    if lay.rulers:
+        notes.append(f"기준자(눈금 띠) {lay.rulers}개는 개수에서 뺐다")
+    # 기준자는 가로 축으로 읽었다(auto 는 prepare_frame 에 horizontal 을 준다) — 세로로 판단되면 쓰지 않는다.
+    # 돌린 영상이면 _orient 가 이미 gauge 를 비웠다.
+    dprep = prep
+    if prep.gauge is not None and axis != "horizontal":
+        msg = "튜브가 세로로 놓여 가로 기준자를 쓰지 않았다(저장된 배율) — 기준자를 튜브와 나란히 두세요"
+        notes.append(msg)
+        dprep = FramePrep(frame=prep.frame, lens_applied=prep.lens_applied, gauge=None,
+                          gauge_read=prep.gauge_read, notes=tuple(list(prep.notes) + [msg]),
+                          light_bg=prep.light_bg, valid=prep.valid)
+    uncertain = lay.uncertain
+    tubes: List[TubeResult] = []
+    for i, g in enumerate(lay.tubes):
+        margin = max(4 * END_MARGIN_PX, int(0.08 * g.length))
+        crop, mask, _length, cen, d = ribbon_crop(canon, g.p0, g.p1, 0.6 * g.width, margin=margin)
+        # 띠 x = 0 인 점의 기준자 좌표 — 띠 화소 1px = 기준자 축 1px(배율은 방향과 무관). 기준자가 없으면 안 쓰인다.
+        origin, direction = gauge_axis(float(cen[0] - 0.5 * crop.shape[1] * d[0]))
+        # 밝은 배경은 제품 마스크(끝 출발점)를 넘긴다 — 띠에서 다시 찾으면 튜브가 화면을 채워 틀린다.
+        # 어두운 배경은 띠 안에서 Otsu 로 찾는 쪽이 끝 바깥 배경까지 정확하다.
+        ctx = CropContext(prep=dprep, origin=origin, direction=direction, mask=mask if prep.light_bg else None)
+        vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage, crop=ctx)
+        quad = [to_view(float(x), float(y)) for x, y in g.quad()]
+        xs, ys = [q[0] for q in quad], [q[1] for q in quad]
+        roi = TubeROI(index=i + 1, x0=int(np.floor(min(xs))), y0=int(np.floor(min(ys))),
+                      x1=int(np.ceil(max(xs))), y1=int(np.ceil(max(ys))),
+                      confidence=0.5 if uncertain else 1.0)
+        tube = _tube_from_verdict(i + 1, roi, vr, None)
+        tube.quad = quad
+        if crop_span is not None and crop_span.valid:
+            half = 0.5 * crop.shape[1]
+            pa = cen + (crop_span.left_x - half) * d
+            pb = cen + (crop_span.right_x - half) * d
+            tube.axis_line = (to_view(*pa), to_view(*pb))
+        # 비스듬하면 bbox 가 이웃을 품는다 — 라벨링용 위치(tube_bbox)는 비운다.
+        tube.rotated = bool(rotation) or abs(g.slope) > 0.02
+        if uncertain:
+            tube.review_flag = True
+        tubes.append(tube)
+
+    count_detected = len(tubes)
+    count_mismatch = expected_count is not None and count_detected != expected_count
+    count_ok = not count_mismatch
+    ng_count = sum(1 for t in tubes if t.final_verdict == Verdict.NG.value)
+    review_count = sum(1 for t in tubes if t.review_flag)
+    all_ok = count_detected > 0 and ng_count == 0
+    batch_verdict = Verdict.OK.value if (all_ok and count_ok and not uncertain) else Verdict.NG.value
+    total_ms = int(round((time.perf_counter() - t0) * 1000))
+    return BatchResult(
+        tubes=tubes,
+        count_detected=count_detected,
+        count_expected=expected_count,
+        count_ok=count_ok,
+        count_mismatch=count_mismatch,
+        batch_verdict=batch_verdict,
+        ng_count=ng_count,
+        review_count=review_count,
+        axis=axis,
+        proc_time_ms=total_ms,
+        per_tube_avg_ms=round(total_ms / count_detected, 3) if count_detected else 0.0,
+        rotation_deg=round(rotation, 1),
+        view=view,
+        dense=lay.dense,
+        count_uncertain=uncertain,
+        notes=notes,
+    )
+
+
+def _rotate_keep(img: np.ndarray, deg: float, *, with_valid: bool = False):
+    """영상을 deg 만큼 돌린다(잘리지 않게 캔버스를 넓힌다).
+
+    넓어진 빈 모서리는 사진의 중앙값 색으로 채운다 — 가장자리 화소를 늘여 붙이면 줄무늬가 생겨
+    '배경과 다른 곳' 으로 잡혔다(직접 만든 장면 평가에서 튜브 상자가 화면 끝까지 늘어남, 2026-10-24).
+    with_valid=True 면 원래 사진이 있는 곳(255) 마스크도 돌려준다(가장자리 몇 px 안쪽으로 줄여서).
+    """
     h, w = img.shape[:2]
     m = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), deg, 1.0)
     c, s = abs(m[0, 0]), abs(m[0, 1])
     nw, nh = int(h * s + w * c + 0.5), int(h * c + w * s + 0.5)
     m[0, 2] += nw / 2.0 - w / 2.0
     m[1, 2] += nh / 2.0 - h / 2.0
-    return cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+    fill = tuple(float(v) for v in np.median(img.reshape(-1, img.shape[2] if img.ndim == 3 else 1), axis=0))
+    out = cv2.warpAffine(img, m, (nw, nh), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+                         borderValue=fill if img.ndim == 3 else fill[0])
+    if not with_valid:
+        return out
+    valid = cv2.warpAffine(np.full((h, w), 255, np.uint8), m, (nw, nh), flags=cv2.INTER_NEAREST,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    k = max(3, int(0.01 * max(nw, nh)) | 1)
+    valid = cv2.erode(valid, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    return out, valid
 
 
 def _orient(frame: np.ndarray, prep: FramePrep, area: Optional[InspectArea]):
@@ -464,13 +628,13 @@ def _orient(frame: np.ndarray, prep: FramePrep, area: Optional[InspectArea]):
     dev = ang - target
     if abs(dev) < DESKEW_MIN_DEG:
         return axis, frame, prep, area, 0.0
-    turned = _rotate_keep(base, dev)
+    turned, valid = _rotate_keep(base, dev, with_valid=True)
     notes = list(prep.notes)
     if prep.gauge_read:
         notes.append(f"튜브가 {dev:+.0f}° 기울어 영상을 돌려 쟀다 — 기준자를 쓸 수 없다(카메라·치구 정렬 필요)")
-    light = light_background(cv2.cvtColor(turned, cv2.COLOR_BGR2GRAY))
+    # 배경 밝기는 돌리기 전 사진에서 정한 값 그대로 — 돌린 영상의 빈 모서리(중앙값 색)가 테두리를 바꾼다.
     new_prep = FramePrep(frame=turned, lens_applied=prep.lens_applied, gauge=None,
-                         gauge_read=prep.gauge_read, notes=tuple(notes), light_bg=light)
+                         gauge_read=prep.gauge_read, notes=tuple(notes), light_bg=prep.light_bg, valid=valid)
     return axis, turned, new_prep, None, dev
 
 
