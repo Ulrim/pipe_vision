@@ -75,6 +75,10 @@ def run(samples, predict) -> dict:
     return out
 
 
+def _pct(v) -> str:
+    return "-" if v is None else f"{v:.1%}"
+
+
 def _auto_thresholds(samples, target_fa: float = 0.02) -> List[float]:
     """고전 CV 점수로 항목마다 '그 항목이 없는 사진' 의 오경보가 target_fa 가 되는 임계(ONNX 와 같은 규칙)."""
     big = _item([1.0, 1.0, 1.0])
@@ -126,9 +130,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         r = res[name]
         for k in KEYS:
-            lines.append(f"| {name} | {k} | {r[k]['accuracy']:.1%} | {r[k]['accuracy_clear']:.1%} | "
-                         f"{r[k]['recall']:.1%} | {r[k]['false_alarm']:.1%} | {r['thresholds'][k]:.2f} |")
-        lines.append(f"| {name} | 정상 오경보 | {r['ok_false_alarm']:.1%} | | | | {r['ms_per_crop']} ms/장 |")
+            lines.append(f"| {name} | {k} | {_pct(r[k]['accuracy'])} | {_pct(r[k]['accuracy_clear'])} | "
+                         f"{_pct(r[k]['recall'])} | {_pct(r[k]['false_alarm'])} | {r['thresholds'][k]:.2f} |")
+        lines.append(f"| {name} | 정상 오경보 | {_pct(r['ok_false_alarm'])} | | | | {r['ms_per_crop']} ms/장 |")
     (out / "surface_eval.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
     return 0

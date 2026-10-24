@@ -413,17 +413,25 @@ def render_batch_overlay(
     exp_txt = "?" if expected is None else str(expected)
     hdr = f"{sym} BATCH: {batch_v}  tubes {detected}/{exp_txt}  NG {ng_count}"
     hscale = max(0.5, bar_h / 44.0)
+    warn = "! COUNT MISMATCH" if mismatch else ""
+    (hw, _hh), _ = cv2.getTextSize(hdr, _FONT, hscale, 2)
+    (ww, _wh), _ = cv2.getTextSize(warn, _FONT, hscale, 2) if warn else ((0, 0), 0)
+    if hw + 10 > w - 10:
+        # 좁은(세로) 사진: 헤더가 화면 폭을 넘으면 글자를 줄인다 — 잘리거나 경고와 겹치지 않게
+        hscale = max(0.35, hscale * (w - 20) / float(hw + 10))
+        (hw, _hh), _ = cv2.getTextSize(hdr, _FONT, hscale, 2)
+        (ww, _wh), _ = cv2.getTextSize(warn, _FONT, hscale, 2) if warn else ((0, 0), 0)
     cv2.putText(
         canvas, hdr, (10, int(bar_h * 0.72)), _FONT, hscale, _WHITE,
         thickness=2, lineType=cv2.LINE_AA,
     )
-    if mismatch:
-        warn = "! COUNT MISMATCH"
-        (ww, _wh), _ = cv2.getTextSize(warn, _FONT, hscale, 2)
-        cv2.putText(
-            canvas, warn, (max(10, w - ww - 12), int(bar_h * 0.72)),
-            _FONT, hscale, (0, 220, 255), thickness=2, lineType=cv2.LINE_AA,
-        )
+    if warn:
+        if 10 + hw + 20 + ww <= w - 12:
+            pos = (w - ww - 12, int(bar_h * 0.72))          # 같은 줄 오른쪽
+        else:
+            pos = (10, bar_h + int(bar_h * 0.72))           # 자리가 없으면 헤더 아래 줄(겹치지 않게)
+            cv2.rectangle(canvas, (0, bar_h), (min(w, ww + 24), 2 * bar_h), (0, 0, 0), thickness=-1)
+        cv2.putText(canvas, warn, pos, _FONT, hscale, (0, 220, 255), thickness=2, lineType=cv2.LINE_AA)
 
     # 2) 튜브별 박스 + 라벨(헤더 위에 그려 최상단 튜브도 온전히 노출).
     for t in tubes:
