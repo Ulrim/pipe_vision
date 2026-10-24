@@ -563,6 +563,13 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
     given = unit is not None
     if unit is None:
         unit = _estimate_unit(g, cand, phi_g, light=light)
+    else:
+        # 외경은 실제 지름이지만 마스크는 흐림·그림자·어둡게 찍힘으로 그보다 넓거나 좁다. 한 개짜리로 보이는
+        # 덩어리(외경의 0.7~1.4배)가 3개 이상이면 그 폭 중앙값으로 척도를 맞춘다(0.75~1.35배) — 외경 그대로 쓰면
+        # 흐린 장면에서 64px 덩어리(3개)를 3.4개분으로 보고 4개로 나눴다.
+        near = [f.width for f in cand if 0.7 * unit <= f.width <= 1.4 * unit and f.length / f.width >= 5.0]
+        if len(near) >= 3:
+            unit *= float(np.clip(np.median(near) / unit, 0.75, 1.35))
 
     tubes: List[TubeGeom] = []
     notes: List[str] = []
@@ -665,7 +672,7 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         tubes.extend(geoms)
 
     # 나눈 조각이 낱개 덩어리 폭의 절반도 안 되면 한 폭을 너무 작게 잡은 것이다(밝기가 고르지 않은 다발)
-    if not given and unit:
+    if unit:
         singles_w = [f.width for f in cand if f.length / f.width >= 5.0]
         pieces = [q.width for q in tubes if q.source in ("split", "dense")]
         if singles_w and pieces and min(pieces) < 0.45 * float(np.median(singles_w)):
