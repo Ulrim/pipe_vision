@@ -123,15 +123,19 @@ def label_blobs(mask: np.ndarray, *, min_area_frac: float = 0.0005):
         area = int(st[i, cv2.CC_STAT_AREA])
         if area < min_area:
             continue
-        ys, xs = np.nonzero(lab == i)
-        (cx, cy), (rw, rh), ang = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+        x, y, bw, bh = (int(st[i, k]) for k in (cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP,
+                                               cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
+        # 덩어리 상자 안에서만 찾는다(전체 영상과 비교하면 1200만 화소 × 덩어리 수 — 전체 해상도에서 1초 넘게 걸렸다).
+        # 회전 사각형은 외곽선 점으로 — 모든 화소로 잰 것과 같고 훨씬 빠르다.
+        sub = (lab[y:y + bh, x:x + bw] == i).astype(np.uint8)
+        cnts, _h = cv2.findContours(sub, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        pts = np.vstack([c.reshape(-1, 2) for c in cnts]).astype(np.float32) + np.float32([x, y])
+        (cx, cy), (rw, rh), ang = cv2.minAreaRect(pts)
         if rw >= rh:
             length, width, a = rw, rh, ang
         else:
             length, width, a = rh, rw, ang + 90.0
         a = ((a + 90.0) % 180.0) - 90.0  # (-90, 90]
-        x, y, bw, bh = (int(st[i, k]) for k in (cv2.CC_STAT_LEFT, cv2.CC_STAT_TOP,
-                                               cv2.CC_STAT_WIDTH, cv2.CC_STAT_HEIGHT))
         out.append(Blob(float(cx), float(cy), float(length), float(width), float(a), area,
                         label=i, x0=x, y0=y, x1=x + bw, y1=y + bh))
     out.sort(key=lambda b: -b.area)
@@ -179,7 +183,14 @@ def tube_blobs(gray: np.ndarray) -> List[Blob]:
 
 
 def dominant_angle(gray: np.ndarray) -> Optional[float]:
-    """튜브 긴 축의 대표 기울기(도). 가로 0, 세로 ±90. 튜브가 없으면 None."""
+    """튜브 긴 축의 대표 기울기(도). 가로 0, 세로 ±90. 튜브가 없으면 None.
+
+    각도는 크기와 무관하다 — 긴 변 _WORK_SIDE 로 줄여서 찾는다(전체 해상도 4608px 에서 1초 넘게 걸렸다).
+    """
+    h, w = gray.shape[:2]
+    s = min(1.0, _WORK_SIDE * 1.6 / float(max(h, w)))
+    if s < 1.0:
+        gray = cv2.resize(gray, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA)
     blobs = tube_blobs(gray)
     return _axis_mean(blobs) if blobs else None
 
