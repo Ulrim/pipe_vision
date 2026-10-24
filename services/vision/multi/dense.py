@@ -137,6 +137,11 @@ def _global_pitch(seg: np.ndarray) -> Optional[float]:
     return p
 
 
+def _hinted_pitch(seg: np.ndarray, hint: float) -> Optional[float]:
+    p, _ = _spec_pitch(seg, 0.8 * hint, 1.3 * hint)
+    return p
+
+
 def _fan_fit(g: np.ndarray, box, p_guess: float) -> Tuple[float, float, float, float]:
     """튜브 축 기울기장 m = a + b·(u − yc). 모든 튜브가 한 소실점을 지나는 꼴(원근)."""
     x0, y0, x1, y1 = box
@@ -239,6 +244,32 @@ def _edges(trow: np.ndarray, ref: float, p: float, y0: int, y1: int) -> Tuple[fl
         return float(i + (thr - a) / (b - a) * (j - i)) if b != a else float(i)
 
     return cross(max(0, lo - 1), lo), cross(hi, min(len(t) - 1, hi + 1))
+
+
+def _groups(trow: np.ndarray, ref: float, p: float, e_lo: float, e_hi: float) -> List[Tuple[float, float]]:
+    """다발 경계 [e_lo, e_hi] 안을 결 낮은 띠(틈, 0.35 피치 이상)로 가른 무리들. 틈이 없으면 [전체]."""
+    t = _gsmooth(trow, p / 6)
+    thr = EDGE_TEX_RATIO * ref
+    lo, hi = max(0, int(np.ceil(e_lo))), min(len(t) - 1, int(np.floor(e_hi)))
+    run_min = max(3, int(round(0.35 * p)))
+    out: List[Tuple[float, float]] = []
+    start = float(e_lo)
+    i = lo
+    while i <= hi:
+        if t[i] < thr:
+            j = i
+            while j <= hi and t[j] < thr:
+                j += 1
+            if j - i >= run_min and i > lo and j <= hi:
+                if i - start >= 0.5 * p:
+                    out.append((start, float(i)))
+                start = float(j)
+            i = j
+        else:
+            i += 1
+    if e_hi - start >= 0.5 * p:
+        out.append((start, float(e_hi)))
+    return out or [(float(e_lo), float(e_hi))]
 
 
 def _lattice(Q, p, k, c, lo_y, hi_y, e_lo, e_hi) -> np.ndarray:
@@ -377,11 +408,13 @@ def ribbon_crop(img: np.ndarray, p0, p1, height: float, *, margin: int):
     return crop, mask, length, cen, d
 
 
-def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3,
-                      valid: Optional[np.ndarray] = None) -> Optional[DenseBundle]:
+def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[np.ndarray] = None,
+                      pitch_hint: Optional[float] = None) -> Optional[DenseBundle]:
     """정준 영상(튜브가 대략 가로)에서 붙은 다발을 찾는다. 못 찾거나 min_tubes 미만이면 None.
 
     valid: 원래 사진이 있는 곳(255) — 돌려 세운 영상의 빈 모서리는 다발 위치 찾기에서 뺀다.
+    pitch_hint: 튜브 한 개 폭(px, 기준정보 외경 ÷ 배율). 주면 간격을 그 0.8~1.3배 안에서만 찾는다 —
+        틈이 섞인 다발에서 주기 추정이 엉뚱한 값(지름 32px 에 27px)으로 끌려가는 것을 막는다.
     """
     g = gray.astype(np.float32)
     box = _stripe_box(g, valid)
@@ -390,14 +423,14 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3,
     x0, y0, x1, y1 = box
     w = x1 - x0
     pc = g[y0:y1, int(x0 + 0.45 * w):int(x0 + 0.55 * w) + 1].mean(axis=1)
-    p_guess = _global_pitch(pc)
+    p_guess = _hinted_pitch(pc, pitch_hint) if pitch_hint else _global_pitch(pc)
     if not p_guess:
         return None
     a, b, xc, yc = _fan_fit(g, box, p_guess)
     R = _rectify(g, a, b, xc, yc)
     xa, xb = int(x0 + 0.2 * w), int(x0 + 0.8 * w) + 1
     Q = np.median(R[:, xa:xb], axis=1).astype(np.float64)
-    p0 = _global_pitch(Q[y0:y1])
+    p0 = _hinted_pitch(Q[y0:y1], pitch_hint) if pitch_hint else _global_pitch(Q[y0:y1])
     if not p0:
         return None
     T = _texture(R, p0)
@@ -413,22 +446,25 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3,
     def pl(y: float) -> float:
         return float(np.clip(k * y + c, 0.5 * p0, 2 * p0))
 
-    lo_y, hi_y = max(0, int(e_lo - 3 * p0)), min(len(Q) - 1, int(e_hi + 3 * p0))
-    if not (e_hi > e_lo and hi_y - lo_y >= 2 * p0):
+    if not (e_hi > e_lo and min(len(Q) - 1, int(e_hi + 3 * p0)) - max(0, int(e_lo - 3 * p0)) >= 2 * p0):
         return None
-    lat = _lattice(Q, p0, k, c, lo_y, hi_y, e_lo, e_hi)
-    a_in, b_in = e_lo + EDGE_SHRINK * pl(e_lo), e_hi - EDGE_SHRINK * pl(e_hi)
-    cells = [(float(u), float(v)) for u, v in zip(lat[:-1], lat[1:]) if a_in <= 0.5 * (u + v) <= b_in]
+    # 틈(바닥이 보이는 결 낮은 띠)으로 무리를 나눠 무리마다 격자를 맞춘다(2026-10-24) — 붙은 무리 사이에
+    # 틈이 있으면 격자 하나로는 틈마다 칸이 더 생기고(트레이 장면 +2~+10개) 위상도 어긋난다.
+    cells: List[Tuple[float, float]] = []
+    check = 0
+    margin = 0.5
+    for g_lo, g_hi in _groups(trow, ref, p0, e_lo, e_hi):
+        lo_y, hi_y = max(0, int(g_lo - 3 * p0)), min(len(Q) - 1, int(g_hi + 3 * p0))
+        lat = _lattice(Q, p0, k, c, lo_y, hi_y, g_lo, g_hi)
+        a_in, b_in = g_lo + EDGE_SHRINK * pl(g_lo), g_hi - EDGE_SHRINK * pl(g_hi)
+        cells.extend((float(u), float(v)) for u, v in zip(lat[:-1], lat[1:]) if a_in <= 0.5 * (u + v) <= b_in)
+        check += _local_count(g_lo, g_hi, seams, pl)
+        centers = 0.5 * (lat[:-1] + lat[1:])
+        for edge in (a_in, b_in):
+            dd = np.abs(centers - edge) / pl(edge)
+            margin = min(margin, float(dd.min()) if dd.size else 0.5)
     if len(cells) < min_tubes:
         return None
-    check = _local_count(e_lo, e_hi, seams, pl)
-    centers = 0.5 * (lat[:-1] + lat[1:])
-
-    def margin_at(edge: float) -> float:
-        d = np.abs(centers - edge) / pl(edge)
-        return float(d.min()) if d.size else 0.5
-
-    margin = min(margin_at(a_in), margin_at(b_in))
 
     # 끝: 띠마다 축을 가로지르는 기울기(원통 음영)가 끊기는 곳
     G = np.abs(cv2.Sobel(R, cv2.CV_32F, 0, 1, ksize=3))

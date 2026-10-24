@@ -474,6 +474,14 @@ def _canonical(frame: np.ndarray, axis: str, area: Optional[InspectArea], valid:
     return canon, vmask, to_view, gauge_axis
 
 
+def _separated_ok(lay: Layout) -> bool:
+    """덩어리 하나 = 튜브 하나로 2개 이상, 확실하고, 길이가 서로 30% 안 — 바닥 위에 떨어져 놓인 튜브."""
+    if lay.uncertain or lay.count < 2 or any(t.source != "blob" for t in lay.tubes):
+        return False
+    lens = [t.length for t in lay.tubes]
+    return max(lens) <= 1.3 * min(lens)
+
+
 def _unit_px(item) -> Optional[float]:
     """기준정보 외경 ÷ 배율 = 튜브 한 개 폭(px). 없으면 None(덩어리들에서 추정)."""
     get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
@@ -498,13 +506,15 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
     """
     canon, vmask, to_view, gauge_axis = _canonical(frame, axis, area, prep.valid)
     gray = cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY)
-    lay: Layout = find_layout(gray, light=prep.light_bg, valid=vmask, unit_px=_unit_px(item))
+    unit = _unit_px(item)
+    lay: Layout = find_layout(gray, light=prep.light_bg, valid=vmask, unit_px=unit)
     if prep.light_bg:
         # 밝은 배경: 붙은 큰 다발은 마스크에 안 잡히거나 트레이 테두리째 잡힌다 — 화면 전체 줄무늬 분석이
         # 더 많이 찾거나, 덩어리 쪽이 불확실한데 줄무늬 쪽은 확실하면 줄무늬로.
         # 단, 덩어리 쪽이 튜브 폭을 알고 있으면 줄무늬 간격이 그 폭과 맞아야 한다 — 떨어진 튜브 몇 개가 놓인
         # 바닥 전체를 무늬로 잘게 썰어 수십~수백 개로 세는 일을 막는다(직접 만든 바닥 장면에서 155개).
-        bundle = find_dense_bundle(gray, valid=vmask)
+        # 떨어진 튜브가 덩어리마다 하나씩, 폭·길이가 고르게 잡혔으면(바닥 위 낱개) 줄무늬 분석은 보지 않는다.
+        bundle = None if _separated_ok(lay) else find_dense_bundle(gray, valid=vmask, pitch_hint=unit)
         if bundle is not None and (bundle.count > lay.count or (lay.uncertain and not bundle.uncertain)):
             cell = float(np.median([t.u1 - t.u0 for t in bundle.tubes]))
             if lay.unit_px is None or lay.count < 2 or 0.6 <= cell / lay.unit_px <= 1.6:
@@ -528,9 +538,10 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
         crop, mask, _length, cen, d = ribbon_crop(canon, g.p0, g.p1, 0.6 * g.width, margin=margin)
         # 띠 x = 0 인 점의 기준자 좌표 — 띠 화소 1px = 기준자 축 1px(배율은 방향과 무관). 기준자가 없으면 안 쓰인다.
         origin, direction = gauge_axis(float(cen[0] - 0.5 * crop.shape[1] * d[0]))
-        # 밝은 배경은 제품 마스크(끝 출발점)를 넘긴다 — 띠에서 다시 찾으면 튜브가 화면을 채워 틀린다.
-        # 어두운 배경은 띠 안에서 Otsu 로 찾는 쪽이 끝 바깥 배경까지 정확하다.
-        ctx = CropContext(prep=dprep, origin=origin, direction=direction, mask=mask if prep.light_bg else None)
+        # 제품 마스크(배치 찾기가 준 끝 = 출발점)를 넘긴다 — 띠는 튜브가 화면 높이를 다 채워 띠 안에서 다시
+        # 찾으면 위아래 배경이 없어 끝단을 놓쳤다(어두운 바닥 장면에서 튜브 9개 중 4개). 정밀한 끝은 파이프라인이
+        # 출발점 양옆(END_MARGIN_PX)에서 서브픽셀로 다시 잰다.
+        ctx = CropContext(prep=dprep, origin=origin, direction=direction, mask=mask)
         vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage, crop=ctx)
         quad = [to_view(float(x), float(y)) for x, y in g.quad()]
         xs, ys = [q[0] for q in quad], [q[1] for q in quad]

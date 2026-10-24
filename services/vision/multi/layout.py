@@ -330,12 +330,59 @@ def _unit_from_widths(ws: List[float]) -> Optional[float]:
     return best[1] if best else None
 
 
+def _sub(f: _BlobFrame, lo: float, hi: float) -> _BlobFrame:
+    """덩어리의 축 가로 범위 [lo, hi) 만 — 같은 축 좌표계."""
+    sel = (f.b >= lo) & (f.b < hi)
+    return _BlobFrame(label=f.label, box=f.box, c=f.c, d=f.d, n=f.n, a=f.a[sel], b=f.b[sel],
+                      angle=f.angle, elong=f.elong)
+
+
+def _gap_groups(g: np.ndarray, mask: np.ndarray, f: _BlobFrame, unit: float) -> List[Tuple[float, float]]:
+    """밝은 바닥의 덩어리를 바닥 밝기 띠(틈, 0.3 폭 이상)로 가른 범위들(b 좌표). 틈이 없으면 [전체]."""
+    prof, b0 = _cross_profile(g, f)
+    x0, y0, x1, y1 = f.box
+    pad = int(round(unit))
+    h, w = g.shape
+    sub = g[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+    msub = mask[max(0, y0 - pad):min(h, y1 + pad), max(0, x0 - pad):min(w, x1 + pad)]
+    if not (msub == 0).any():
+        return [(f.b_lo, f.b_hi + 1.0)]
+    bgv = float(np.median(sub[msub == 0]))
+    c = np.abs(prof.astype(np.float64) - bgv)
+    level = float(np.percentile(c, 75))
+    if level < 8.0:
+        return [(f.b_lo, f.b_hi + 1.0)]
+    low = c < 0.25 * level
+    run_min = max(2, int(round(0.3 * unit)))
+    cuts: List[Tuple[int, int]] = []
+    i, n = 0, len(low)
+    while i < n:
+        if low[i]:
+            j = i
+            while j < n and low[j]:
+                j += 1
+            if j - i >= run_min and i > 0 and j < n:
+                cuts.append((i, j))
+            i = j
+        else:
+            i += 1
+    if not cuts:
+        return [(f.b_lo, f.b_hi + 1.0)]
+    edges = [0] + [x for c0, c1 in cuts for x in (c0, c1)] + [n]
+    out = []
+    for k in range(0, len(edges), 2):
+        lo, hi = edges[k], edges[k + 1]
+        if hi - lo >= max(2, 0.3 * unit):
+            out.append((b0 + lo, b0 + hi))
+    return out or [(f.b_lo, f.b_hi + 1.0)]
+
+
 def _single(f: _BlobFrame) -> TubeGeom:
     bm = 0.5 * (f.b_lo + f.b_hi)
     return TubeGeom(f.point(f.a_lo, bm), f.point(f.a_hi, bm), f.width, source="blob")
 
 
-def _dense_in_blob(g: np.ndarray, lab: np.ndarray, f: _BlobFrame, pad: int):
+def _dense_in_blob(g: np.ndarray, lab: np.ndarray, f: _BlobFrame, pad: int, hint: Optional[float] = None):
     """덩어리 하나만 남긴 영상(밖은 배경 밝기)에서 줄무늬 분석 — (TubeGeom 목록, DenseBundle) 또는 None."""
     h, w = g.shape
     x0, y0, x1, y1 = f.box
@@ -345,7 +392,7 @@ def _dense_in_blob(g: np.ndarray, lab: np.ndarray, f: _BlobFrame, pad: int):
     keep = cv2.dilate(own, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     bgv = float(np.median(sub[keep == 0])) if (keep == 0).any() else float(np.median(sub))
     clean = np.where(keep > 0, sub, bgv).astype(np.float32)
-    bundle = find_dense_bundle(clean, min_tubes=2, valid=keep * 255)
+    bundle = find_dense_bundle(clean, min_tubes=2, valid=keep * 255, pitch_hint=hint)
     if bundle is None:
         return None
     out = []
@@ -433,7 +480,8 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
 
     # 큰 덩어리(줄무늬 분석 대상)부터 — 믿을 만한 다발의 간격으로 한 폭을 바로잡는다
     big = [f for f in cand if unit is None or f.width / unit >= SPLIT_MAX + 0.5]
-    dense_res = {id(f): _dense_in_blob(g, lab, f, pad) for f in big}
+    hint = unit if given else None
+    dense_res = {id(f): _dense_in_blob(g, lab, f, pad, hint) for f in big}
     by_id = {id(f): f for f in big}
     # 칸 폭의 중앙값(실제로 나눈 폭) — 주기 추정값(pitch)은 반사 띠의 배음에 끌려 틀릴 때가 있다
     pitches = [float(np.median([t.width for t in got[0]])) for key, got in dense_res.items() if got is not None
@@ -446,7 +494,18 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
             unit = pu
             pad = int(round(unit))
 
+    # 밝은 바닥: 마스크를 다듬는 닫기 연산이 1지름 안팎의 틈을 메워 떨어진 튜브 둘이 한 덩어리가 된다.
+    # 덩어리 안에서 바닥 밝기 그대로인 띠(틈)로 먼저 가른다 — 붙은 튜브 사이 골은 어두워서 바닥 밝기가 아니다.
+    work: List[Tuple[_BlobFrame, bool]] = []
     for f in cand:
+        if light and unit and f.width / unit >= SINGLE_MAX:
+            groups = _gap_groups(g, mask, f, unit)
+            if len(groups) >= 2:
+                work.extend((_sub(f, lo, hi), True) for lo, hi in groups)
+                continue
+        work.append((f, False))
+
+    for f, parted in work:
         r = f.width / unit if unit else None
         if r is not None and r < SINGLE_MAX:
             tubes.append(_single(f))
@@ -456,8 +515,8 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         opts = []                                   # (이름, 튜브들, 줄무늬 DenseBundle 또는 None)
         if seams:
             opts.append(("valley", _cut(f, [b0 + x for x in seams]), None))
-        if r is None or r >= SPLIT_MAX + 0.5:
-            got = dense_res[id(f)] if id(f) in dense_res else _dense_in_blob(g, lab, f, pad)
+        if not parted and (r is None or r >= SPLIT_MAX + 0.5):
+            got = dense_res[id(f)] if id(f) in dense_res else _dense_in_blob(g, lab, f, pad, hint)
             # 줄무늬 칸들이 덩어리 폭을 대부분 덮어야 한다(엉뚱한 주기를 잡으면 몇 칸만 남는다)
             if got is not None and 0.75 <= sum(t.width for t in got[0]) / f.width <= 1.25:
                 opts.append(("dense", got[0], got[1]))

@@ -24,12 +24,14 @@ from aivis_types import ItemMaster
 from vision.multi.batch import inspect_batch
 
 
-def _item(gt: dict) -> ItemMaster:
+def _item(gt: dict, *, od: bool = False) -> ItemMaster:
+    """장면 정답의 기준정보. od=True 면 외경(기준정보 outer_diameter_mm)까지 — 튜브 한 개 폭을 안다."""
     sp = gt["spec"]
     return ItemMaster(item_code="HP12", item_name="synth", ref_length_mm=float(sp["length_mm"]),
                       tol_plus_mm=float(sp["tol_mm"]), tol_minus_mm=float(sp["tol_mm"]),
                       px_to_mm_scale=float(gt["mm_per_px"]), oil_threshold=0.3, discolor_threshold=0.2,
-                      scratch_threshold=0.15, expected_count=int(gt["n_tubes"]))
+                      scratch_threshold=0.15, expected_count=int(gt["n_tubes"]),
+                      outer_diameter_mm=float(sp["diameter_mm"]) if od else None)
 
 
 def _match_lengths(gt_tubes: List[dict], tubes) -> Optional[List[tuple]]:
@@ -46,7 +48,7 @@ def _match_lengths(gt_tubes: List[dict], tubes) -> Optional[List[tuple]]:
     return list(zip(gt_tubes, best))
 
 
-def evaluate(scene_dir: Path, *, mismatch_every: int = 4, limit: Optional[int] = None) -> dict:
+def evaluate(scene_dir: Path, *, mismatch_every: int = 4, limit: Optional[int] = None, od: bool = False) -> dict:
     files = sorted(scene_dir.rglob("*.json"))
     if limit:
         files = files[:limit]
@@ -58,7 +60,7 @@ def evaluate(scene_dir: Path, *, mismatch_every: int = 4, limit: Optional[int] =
             continue
         n = int(gt["n_tubes"])
         expected = n + 1 if (mismatch_every and k % mismatch_every == mismatch_every - 1) else n
-        item = _item(gt)
+        item = _item(gt, od=od)
         t0 = time.perf_counter()
         b = inspect_batch(img, item, axis="auto", expected_count=expected, stage="CUT_LENGTH")
         ms = (time.perf_counter() - t0) * 1000
@@ -67,7 +69,7 @@ def evaluate(scene_dir: Path, *, mismatch_every: int = 4, limit: Optional[int] =
                "detected": b.count_detected, "uncertain": bool(getattr(b, "count_uncertain", False)),
                "dense": bool(getattr(b, "dense", False)), "mismatch_flag": bool(b.count_mismatch),
                "perspective": bool(sp.get("keystone", 0) > 1e-6), "background": sp["background"],
-               "arrangement": sp["arrangement"], "angle": sp["angle_deg"], "ms": round(ms, 1)}
+               "arrangement": sp["arrangement"], "angle": sp["angle_deg"], "ms": round(ms, 1), "tol": float(sp["tol_mm"])}
         row["count_ok"] = row["detected"] == n
         if not row["perspective"] and row["count_ok"]:
             pairs = _match_lengths(gt["tubes"], b.tubes)
@@ -85,7 +87,9 @@ def evaluate(scene_dir: Path, *, mismatch_every: int = 4, limit: Optional[int] =
                 pred_len = abs(length - float(sp["length_mm"])) > float(sp["tol_mm"])
                 len_total += 1
                 len_ok += int(gt_len == pred_len)
-            row.update(len_errors=[round(e, 3) for e in errs], ends_missing=missing, len_ok=len_ok, len_total=len_total)
+            row.update(len_errors=[round(e, 3) for e in errs], ends_missing=missing, len_ok=len_ok, len_total=len_total,
+                       len_pairs=[[round(length - float(sp["length_mm"]), 3), "LEN" in gt_t["labels"]]
+                                  for gt_t, length in pairs if length is not None])
         rows.append(row)
     return summarize(rows)
 
@@ -104,6 +108,11 @@ def summarize(rows: List[dict]) -> dict:
         lt = sum(r.get("len_total", 0) for r in rs)
         lo = sum(r.get("len_ok", 0) for r in rs)
         mm = [r for r in rs if r["expected"] != r["n"]]
+        # 마스터 시료 보정 뒤(일정한 치우침을 뺀 뒤) LEN 판정 일치 — 현장에서는 길이를 아는 시료로 치우침을 잰다
+        tol = [r.get("tol", 0.5) for r in rs]
+        pairs = [(d - (float(np.mean(errs)) if errs.size else 0.0), lab, t) for r, t in zip(rs, tol)
+                 for d, lab in r.get("len_pairs", [])]
+        corr = round(sum((abs(d) > t) == lab for d, lab, t in pairs) / len(pairs), 4) if pairs else None
         return {
             "scenes": n,
             "count_accuracy": round(ok / n, 4),
@@ -120,6 +129,7 @@ def summarize(rows: List[dict]) -> dict:
             "length_bias_mm": round(float(np.mean(errs)), 4) if errs.size else None,
             "length_sd_mm": round(float(np.std(errs)), 4) if errs.size else None,
             "len_verdict_agreement": round(lo / lt, 4) if lt else None,
+            "len_verdict_agreement_bias_corrected": corr,
             "ms_mean": round(float(np.mean([r["ms"] for r in rs])), 1),
         }
     kinds = sorted({r["kind"] for r in rows})
@@ -136,8 +146,8 @@ def write_report(res: dict, out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     lines = ["# 장면 평가 — 개수·길이 (직접 만든 데이터, 인수 증빙 아님)", "",
-             "| 종류 | 장면 | 개수 정확도 | 틀림(불확실 표시/조용히) | 불일치 검출 | 끝 못 찾음 | 길이 MAE | 길이 p95 | 길이 치우침 | 길이 σ | LEN 판정 일치 | 판정 ms |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| 종류 | 장면 | 개수 정확도 | 틀림(불확실 표시/조용히) | 불일치 검출 | 끝 못 찾음 | 길이 MAE | 길이 p95 | 길이 치우침 | 길이 σ | LEN 판정 일치 | 보정 후 | 판정 ms |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for k, s in list(res["by_kind"].items()) + [("전체", res["overall"])]:
         if not s:
             continue
@@ -145,8 +155,9 @@ def write_report(res: dict, out: Path) -> None:
                      f"({s['wrong_but_flagged_uncertain']}/{s['silent_wrong']}) | {s['mismatch_detected']}/{s['mismatch_scenes']} | "
                      f"{f(s['ends_missing_rate'], True)} | {f(s['length_mae_mm'])} | {f(s['length_p95_abs_mm'])} | "
                      f"{f(s['length_bias_mm'])} | {f(s['length_sd_mm'])} | "
-                     f"{f(s['len_verdict_agreement'], True)} | {s['ms_mean']} |")
-    lines += ["", "길이는 원근 없는 장면에서 개수가 맞은 경우만(mm, 장면의 mm/px 기준).", ""]
+                     f"{f(s['len_verdict_agreement'], True)} | {f(s['len_verdict_agreement_bias_corrected'], True)} | {s['ms_mean']} |")
+    lines += ["", "길이는 원근 없는 장면에서 개수가 맞은 경우만(mm, 장면의 mm/px 기준). '보정 후' = 일정한 치우침(평균)을",
+              "뺀 LEN 판정 일치 — 현장에서는 길이를 아는 마스터 시료로 치우침을 잰다.", ""]
     (out / "report.md").write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -156,8 +167,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--report", required=True)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--mismatch-every", type=int, default=4)
+    ap.add_argument("--od", action="store_true", help="기준정보 외경을 넣고 잰다(튜브 한 개 폭을 안다)")
     a = ap.parse_args(argv)
-    res = evaluate(Path(a.scenes), mismatch_every=a.mismatch_every, limit=a.limit)
+    res = evaluate(Path(a.scenes), mismatch_every=a.mismatch_every, limit=a.limit, od=a.od)
     write_report(res, Path(a.report))
     print((Path(a.report) / "report.md").read_text(encoding="utf-8"))
     return 0
