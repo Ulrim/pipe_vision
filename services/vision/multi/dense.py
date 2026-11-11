@@ -291,6 +291,32 @@ def _lattice(Q, p, k, c, lo_y, hi_y, e_lo, e_hi) -> np.ndarray:
     return np.interp(kk + f0, phi, yy)
 
 
+def _background_cell(R: np.ndarray, cells, i: int, side: str, xa: int, xb: int) -> bool:
+    """바깥 칸 i 가 튜브가 아니라 배경(트레이)인가 — 칸 밝기가 안쪽 튜브들보다 배경 쪽으로 확실히 치우쳤나.
+
+    안쪽 튜브 밝기 중앙값 대비: 칸 바로 바깥(한 칸 폭)이 30% 넘게 다르고, 칸이 같은 방향으로 28% 넘게 다르고,
+    배경까지의 거리의 65% 넘게 배경 쪽이면 배경. (현장 트레이 사진: 트레이 벽 칸 1.31~1.42배, 바깥 튜브 ≤ 1.26배)
+    """
+    def mean(u: float, v: float) -> Optional[float]:
+        a, b = int(u + 0.2 * (v - u)), int(v - 0.2 * (v - u)) + 1
+        if a < 0 or b > R.shape[0] or b <= a:
+            return None
+        return float(R[a:b, xa:xb].mean())
+    inner = [mean(u, v) for u, v in cells[1:-1]]
+    inner = [x for x in inner if x is not None]
+    u, v = cells[i]
+    wd = v - u
+    m = mean(u, v)
+    out = mean(u - wd, u) if side == "lo" else mean(v, v + wd)
+    if not inner or m is None or out is None:
+        return False
+    med = float(np.median(inner))
+    if med <= 1e-6:
+        return False
+    rc, ro = m / med - 1.0, out / med - 1.0
+    return abs(ro) >= 0.3 and rc * ro > 0 and abs(rc) >= 0.28 and rc / ro >= 0.65
+
+
 def _local_count(e_lo, e_hi, seams, pl) -> int:
     """교차 확인: 경계 안의 골로 나눈 조각을 국소 피치로 반올림해 더한다(짧은 조각은 이웃과 합친다)."""
     a, b = e_lo + 0.3 * pl(e_lo), e_hi - 0.3 * pl(e_hi)
@@ -452,8 +478,9 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[n
     # 틈이 있으면 격자 하나로는 틈마다 칸이 더 생기고(트레이 장면 +2~+10개) 위상도 어긋난다.
     cells: List[Tuple[float, float]] = []
     check = 0
-    margin = 0.5
-    for g_lo, g_hi in _groups(trow, ref, p0, e_lo, e_hi):
+    edge_m: List[float] = []                 # 무리 경계마다 여유 — [0] 이 다발 맨 바깥 위, [-1] 이 맨 바깥 아래
+    groups = _groups(trow, ref, p0, e_lo, e_hi)
+    for g_lo, g_hi in groups:
         lo_y, hi_y = max(0, int(g_lo - 3 * p0)), min(len(Q) - 1, int(g_hi + 3 * p0))
         lat = _lattice(Q, p0, k, c, lo_y, hi_y, g_lo, g_hi)
         a_in, b_in = g_lo + EDGE_SHRINK * pl(g_lo), g_hi - EDGE_SHRINK * pl(g_hi)
@@ -462,9 +489,28 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[n
         centers = 0.5 * (lat[:-1] + lat[1:])
         for edge in (a_in, b_in):
             dd = np.abs(centers - edge) / pl(edge)
-            margin = min(margin, float(dd.min()) if dd.size else 0.5)
+            edge_m.append(float(dd.min()) if dd.size else 0.5)
     if len(cells) < min_tubes:
         return None
+    # 바깥 칸이 애매한 경계(여유 < MARGIN_MIN)에 걸쳤고 밝기가 확실히 배경 쪽이면 그 칸은 트레이 벽이다 — 뺀다.
+    # 현장 트레이 사진 100장에서 다발 맨 바깥에 트레이 벽 한 칸을 더 세는 일이 5장(19 → 20) 있었다(2026-11-11).
+    # 여유가 넉넉한 경계의 바깥 튜브는 건드리지 않는다(밝은 쪽 튜브도 있다 — 같은 사진들에서 1.26배까지).
+    xa_c, xb_c = int(x0 + 0.2 * w), int(x0 + 0.8 * w) + 1
+    resolved = []
+    for side in ("lo", "hi"):
+        i = 0 if side == "lo" else len(cells) - 1
+        m_edge = edge_m[0] if side == "lo" else edge_m[-1]
+        if len(cells) - len(resolved) <= min_tubes or m_edge >= MARGIN_MIN:
+            continue
+        if _background_cell(R, cells, i, side, xa_c, xb_c):
+            resolved.append(side)
+    if "hi" in resolved:
+        cells = cells[:-1]
+        edge_m[-1] = 0.5
+    if "lo" in resolved:
+        cells = cells[1:]
+        edge_m[0] = 0.5
+    margin = min(edge_m) if edge_m else 0.5
 
     # 끝: 띠마다 축을 가로지르는 기울기(원통 음영)가 끊기는 곳
     G = np.abs(cv2.Sobel(R, cv2.CV_32F, 0, 1, ksize=3))

@@ -215,3 +215,26 @@ def test_eval_counts_tool(tmp_path):
     evaluate(imgs, None, tmp_path / "out2")
     tpl = (tmp_path / "out2" / "counts_template.csv").read_text(encoding="utf-8-sig").splitlines()
     assert tpl[0].startswith("파일,실제개수") and len(tpl) == 3
+
+
+def test_background_edge_cell_rule():
+    """다발 맨 바깥 칸이 배경(트레이 벽) 쪽으로 확실히 치우쳤을 때만 배경으로 본다(밝은·어두운 바닥 모두)."""
+    from vision.multi.dense import _background_cell
+
+    def scene(edge, outside, inner=100.0):
+        R = np.full((120, 40), outside, np.float32)
+        cells = [(10.0 + 10 * k, 20.0 + 10 * k) for k in range(10)]       # 10칸, 칸 높이 10
+        for u, v in cells:
+            R[int(u):int(v)] = inner
+        u, v = cells[-1]
+        R[int(u):int(v)] = edge                                            # 맨 아래 칸
+        return R, cells
+
+    R, cells = scene(edge=140.0, outside=150.0)          # 밝은 트레이 벽 칸(현장 사진: 1.31~1.42배)
+    assert _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)
+    R, cells = scene(edge=125.0, outside=130.0)          # 조금 밝은 진짜 바깥 튜브(현장 사진: ≤ 1.26배)
+    assert not _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)
+    R, cells = scene(edge=55.0, outside=40.0)            # 어두운 바닥 쪽으로 치우친 칸
+    assert _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)
+    R, cells = scene(edge=90.0, outside=40.0)            # 그늘진 진짜 바깥 튜브
+    assert not _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)

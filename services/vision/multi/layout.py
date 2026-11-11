@@ -678,6 +678,12 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         if singles_w and pieces and min(pieces) < 0.45 * float(np.median(singles_w)):
             uncertain = True
             notes.append("나눈 조각이 낱개 튜브 폭의 절반도 안 됨 — 한 개 폭 추정이 의심스럽다(재확인, 기준정보 외경 입력 권장)")
+    # 골로 나눈 조각끼리 폭이 들쭉날쭉하면(가장 가는 조각이 중앙값의 절반 미만) 트레이 벽·그림자 골까지 나눈 것이다 —
+    # 현장 트레이 사진 100장 중 2장에서 이렇게 19 → 21·22 를 '확실' 로 냈다(2026-11-11). 줄무늬 칸은 고르게 나오므로 뺀다.
+    cut = [q.width for q in tubes if q.source == "split"]
+    if len(cut) >= 4 and min(cut) < 0.5 * float(np.median(cut)):
+        uncertain = True
+        notes.append(f"나눈 조각 폭이 들쭉날쭉함(최소 {min(cut):.0f}px, 중앙값 {float(np.median(cut)):.0f}px) — 재확인")
 
     # 헤더 파이프는 가늘고 길다 — 추정한 한 폭으로 길이/폭이 8 도 안 되면 폭 추정을 믿기 어렵다(원근·흐림)
     if not given and unit and tubes:
