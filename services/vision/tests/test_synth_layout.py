@@ -192,3 +192,26 @@ def test_low_resolution_count_goes_to_review():
     assert any("해상도" in n for n in b.notes)
     full = inspect_batch(img, _item(gt), axis="auto", expected_count=gt["n_tubes"], stage="CUT_LENGTH")
     assert not any("해상도" in n for n in full.notes)
+
+
+def test_eval_counts_tool(tmp_path):
+    """실물 사진 개수 평가 도구: 정답표(빈 칸은 제외)로 정확/재확인/조용히 틀림을 세고, 정답표가 없으면 빈칸 표를 만든다."""
+    from vision.tools.eval_counts import evaluate, read_truth
+
+    imgs = tmp_path / "photos"
+    imgs.mkdir()
+    truths = []
+    for seed in (51, 52):
+        img, gt = _scene(seed, background="dark", n_tubes=9, arrangement="gap", length_mm=300.0, diameter_mm=16.0)
+        cv2.imwrite(str(imgs / f"p{seed}.jpg"), img)
+        truths.append(gt["n_tubes"])
+    (tmp_path / "counts.csv").write_text(f"파일,실제개수\np51.jpg,{truths[0]}\np52,\n", encoding="utf-8-sig")
+    truth = read_truth(tmp_path / "counts.csv")
+    assert truth["p51"] == truths[0] and truth["p52"] is None
+    res = evaluate(imgs, truth, tmp_path / "out")
+    s = res["summary"]
+    assert s["photos"] == 2 and s["scored"] == 1 and s["exact"] == 1
+    assert (tmp_path / "out" / "overlay" / "p51.jpg").exists()
+    evaluate(imgs, None, tmp_path / "out2")
+    tpl = (tmp_path / "out2" / "counts_template.csv").read_text(encoding="utf-8-sig").splitlines()
+    assert tpl[0].startswith("파일,실제개수") and len(tpl) == 3
