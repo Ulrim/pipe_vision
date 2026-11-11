@@ -7,8 +7,9 @@
 (가까이 찍어 일부만 보이는 사진 등). 정답표가 없으면 검출 개수를 채운 표(`counts_template.csv`)를 만들어 준다 —
 사람이 '실제개수' 칸만 고쳐 다시 넣으면 된다.
 
-결과: 사진마다 결과 사진(튜브 테두리·번호), report.md/json — 정확 / 틀렸지만 '불확실→재확인' 표시 / 조용히 틀림.
-조용히 틀린 것이 현장에서 가장 위험하다(작업자가 모른 채 넘어간다).
+결과: 사진마다 결과 사진(튜브 테두리·번호), report.md/json — 정확 / 틀림(불확실 표시) / 틀림(표시 없음).
+기준정보에 개수(expected_count)를 넣고 쓰면 틀린 개수는 모두 '개수 불일치' 로 배치 NG 가 된다 — '표시 없음' 은
+개수를 모르고 쓸 때 조용히 넘어갈 수 있는 것이다(개수 세기 자체의 실력).
 현장 사진은 공개 저장소에 넣지 않는다 — 결과 폴더도 저장소 밖에 둔다.
 """
 from __future__ import annotations
@@ -63,23 +64,24 @@ def evaluate(images: Path, truth: Optional[Dict[str, Optional[int]]], out: Path,
         row = {"file": p.name, "detected": b.count_detected, "uncertain": bool(b.count_uncertain), "truth": n_true,
                "notes": list(b.notes)[:3]}
         if n_true is not None:
-            row["result"] = "정확" if b.count_detected == n_true else ("재확인 표시" if b.count_uncertain else "조용히 틀림")
+            row["result"] = "정확" if b.count_detected == n_true else ("틀림(불확실 표시)" if b.count_uncertain else "틀림(표시 없음)")
         rows.append(row)
     scored = [r for r in rows if r.get("truth") is not None]
     summary = {
         "photos": len(rows),
         "scored": len(scored),
         "exact": sum(r["result"] == "정확" for r in scored),
-        "wrong_flagged": sum(r["result"] == "재확인 표시" for r in scored),
-        "silent_wrong": sum(r["result"] == "조용히 틀림" for r in scored),
+        "wrong_flagged": sum(r["result"] == "틀림(불확실 표시)" for r in scored),
+        "silent_wrong": sum(r["result"] == "틀림(표시 없음)" for r in scored),
     }
     res = {"summary": summary, "rows": rows}
     (out / "report.json").write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding="utf-8")
     lines = ["# 실물 사진 개수 평가", ""]
     if scored:
         s = summary
-        lines += [f"정답이 있는 사진 {s['scored']}장: 정확 **{s['exact']}** · 틀렸지만 재확인 표시 {s['wrong_flagged']} · "
-                  f"**조용히 틀림 {s['silent_wrong']}**", ""]
+        lines += [f"정답이 있는 사진 {s['scored']}장: 정확 **{s['exact']}** · 틀림(불확실 표시) {s['wrong_flagged']} · "
+                  f"틀림(표시 없음) {s['silent_wrong']}", "",
+                  "기준정보에 개수를 넣고 쓰면 틀린 개수는 모두 '개수 불일치' 로 배치 NG(작업자 확인)가 된다.", ""]
     lines += ["| 파일 | 검출 | 실제 | 결과 | 비고 |", "|---|---|---|---|---|"]
     for r in rows:
         flag = " (불확실)" if r["uncertain"] else ""
