@@ -180,3 +180,15 @@ def test_calibrate_offset_tool(tmp_path):
             for t in inspect_batch(cv2.imread(p), fixed, axis="auto", stage="CUT_LENGTH").tubes]
     assert abs(float(np.mean(errs))) < 0.05
     assert cal_main([f"{p}:{L}" for p, L, _ in shots] + ["--scale", str(shots[0][2]), "--ref", "250"]) == 0
+
+
+def test_low_resolution_count_goes_to_review():
+    """튜브가 14px 보다 가늘면(사진 모음에서 잘라 낸 작은 사진 등) 개수가 맞아 보여도 재확인으로 보낸다."""
+    img, gt = _scene(41, background="dark", n_tubes=12, arrangement="touching", length_mm=300.0, diameter_mm=14.0)
+    small = cv2.resize(img, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
+    item = _item(gt).model_copy(update={"px_to_mm_scale": gt["mm_per_px"] * 4})
+    b = inspect_batch(small, item, axis="auto", expected_count=gt["n_tubes"], stage="CUT_LENGTH")
+    assert b.count_uncertain and b.batch_verdict == "NG"
+    assert any("해상도" in n for n in b.notes)
+    full = inspect_batch(img, _item(gt), axis="auto", expected_count=gt["n_tubes"], stage="CUT_LENGTH")
+    assert not any("해상도" in n for n in full.notes)

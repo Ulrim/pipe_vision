@@ -35,6 +35,11 @@ from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 #: 그 밑의 기울기는 길이 측정의 기울기 보정이 처리한다.
 DESKEW_MIN_DEG = 8.0
 
+#: 튜브 폭(px)이 이보다 가늘면 개수를 믿지 않는다(재확인). 사진 모음(콜라주)에서 잘라 낸 작은 사진은 튜브가
+#: 8px 안팎이라 틈·골이 화소 한두 개로 뭉개져 ±1~3개씩 조용히 틀렸다(2026-11-11). 현장 60cm·전체 해상도는
+#: 외경 12mm 가 약 68px 라 걸리지 않는다.
+MIN_TUBE_PX = 14.0
+
 #: 기대개수가 없을 때 **자동** 개수추정에 쓰는 보수적 상한.
 #: 하드 상한(MAX_TUBES_HARD)과 다르다 — 자동 추정은 상한이 크면 최소 피치가
 #: 작아져 없는 seam 까지 찾아 과분할한다. 기대개수를 주면 그만큼 올라간다.
@@ -539,6 +544,11 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
                           gauge_read=prep.gauge_read, notes=tuple(list(prep.notes) + [msg]),
                           light_bg=prep.light_bg, valid=prep.valid)
     uncertain = lay.uncertain
+    if lay.tubes:
+        tube_px = float(np.median([g.width for g in lay.tubes]))
+        if tube_px < MIN_TUBE_PX:
+            uncertain = True
+            notes.append(f"튜브 폭 {tube_px:.0f}px — 해상도가 낮아 개수를 믿기 어렵다(재확인, 원본 해상도 사진 필요)")
     tubes: List[TubeResult] = []
     for i, g in enumerate(lay.tubes):
         margin = max(4 * END_MARGIN_PX, int(0.08 * g.length))
