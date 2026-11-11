@@ -28,7 +28,7 @@ from ..pipeline import CropContext, FramePrep, InspectionPipeline
 from ..preprocess.area import InspectArea, area_rect
 from ..preprocess.foreground import angle_gap, contrast_mask, dominant_angle
 from .dense import axis_angle, find_dense_bundle, ribbon_crop
-from .layout import Layout, find_layout, layout_from_bundle
+from .layout import Layout, find_layout, layout_from_bundle, separated_hint
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 #: 튜브가 축(가로·세로)에서 이만큼 넘게 기울면 프레임을 돌려 바로 세운다(axis="auto" 일 때).
@@ -487,6 +487,22 @@ def _separated_ok(lay: Layout) -> bool:
     return max(lens) <= 1.3 * min(lens)
 
 
+def _spaced(lay: Layout) -> bool:
+    """낱개 튜브들이 서로 떨어져 있는가 — 이웃 중심 간격이 튜브 폭의 1.5배 이상.
+
+    반사 띠가 튜브 하나를 어두운 양옆 둘로 가르면 폭이 고른 '낱개' 둘이 바짝 붙어 나온다(개수 두 배) — 막는다.
+    """
+    ts = lay.tubes
+    if len(ts) < 2:
+        return False
+    d0 = ts[0].direction
+    d = np.mean([t.direction if float(t.direction @ d0) >= 0 else -t.direction for t in ts], axis=0)
+    n = np.array([-d[1], d[0]]) / max(float(np.linalg.norm(d)), 1e-9)
+    pos = sorted(float(t.center @ n) for t in ts)
+    w = float(np.median([t.width for t in ts]))
+    return min(np.diff(pos)) >= 1.5 * w
+
+
 def _unit_px(item) -> Optional[float]:
     """기준정보 외경 ÷ 배율 = 튜브 한 개 폭(px). 없으면 None(덩어리들에서 추정)."""
     get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
@@ -513,6 +529,13 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
     gray = cv2.cvtColor(canon, cv2.COLOR_BGR2GRAY)
     unit = _unit_px(item)
     lay: Layout = find_layout(gray, light=prep.light_bg, valid=vmask, unit_px=unit)
+    if prep.light_bg and not _separated_ok(lay) and separated_hint(gray, vmask):
+        # 밝은 트레이 위에 떨어져 놓인 튜브: '배경과 다른 곳' 마스크는 튜브 사이 트레이 바닥까지 한 덩어리로 묶는다
+        # (현장 트레이 사진: 5개를 1~3개로). '둘레보다 어두운 곳' 마스크가 덩어리 하나 = 튜브 하나로 고르게 나누면
+        # 그쪽 — 붙은 다발은 이 마스크에서 조각나므로(반사 띠) 낱개 판정을 통과하지 못하고 종전 경로 그대로다.
+        alt = find_layout(gray, light=True, valid=vmask, unit_px=unit, light_mask="dark")
+        if _separated_ok(alt) and _spaced(alt):
+            lay = alt
     if prep.light_bg:
         # 밝은 배경: 붙은 큰 다발은 마스크에 안 잡히거나 트레이 테두리째 잡힌다 — 화면 전체 줄무늬 분석이
         # 더 많이 찾거나, 덩어리 쪽이 불확실한데 줄무늬 쪽은 확실하면 줄무늬로.

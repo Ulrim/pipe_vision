@@ -167,6 +167,74 @@ def _dark_mask(g: np.ndarray) -> np.ndarray:
     return (diff > max(5.0 * sigma, 0.25 * level)).astype(np.uint8) * 255
 
 
+def _light_dark_mask(g: np.ndarray) -> np.ndarray:
+    """밝은 바닥(트레이) 위 금속 튜브 — 둘레보다 어두운 곳(검은 탑햇: 닫기로 지운 배경과의 차).
+
+    contrast_mask(배경과 다른 곳)는 반사 띠·가장자리 사이를 메우는 닫기 연산 때문에 떨어져 놓인 튜브들 사이의
+    트레이 바닥까지 한 덩어리로 묶었다(현장 트레이 사진: 튜브 5개를 1~3개로, 다발 + 낱개를 한 덩어리로).
+    닫기 창(짧은 변의 1/20)보다 좁은 어두운 것만 남으므로 트레이 바닥은 빠지고, 다발은 골이 어두워 덩어리로 남는다.
+    튜브 안 반사 띠(밝은 줄)는 작은 닫기로 메운다 — 튜브 사이 틈보다 작게.
+    """
+    short = min(g.shape[:2])
+    gf = cv2.GaussianBlur(g, (3, 3), 0)
+    ck = max(9, int(short / 20) | 1)
+    bg = cv2.morphologyEx(gf, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ck, ck)))
+    dd = cv2.GaussianBlur(cv2.subtract(bg, gf), (5, 5), 0)
+    _t, binm = cv2.threshold(dd, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    fk = max(3, int(short / 120) | 1)
+    binm = cv2.morphologyEx(binm, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (fk, fk)))
+    # 가는 반사 띠가 튜브를 어두운 양옆 둘로 가르면 덩어리 폭이 튜브의 절반 안팎이다 — 길쭉한 덩어리 폭 중앙값의
+    # 0.6배로 가로만 한 번 더 메운다(반사 띠 ≈ 튜브 폭 20~30% 는 메우고, 튜브 사이 틈(≥ 튜브 폭의 절반)은 남는다).
+    cnts, _h = cv2.findContours(binm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    ws = []
+    for c in cnts:
+        if cv2.contourArea(c) < 0.0003 * binm.size:
+            continue
+        (_cx, _cy), (a, b), _ang = cv2.minAreaRect(c)
+        if min(a, b) >= 2 and max(a, b) >= 5 * min(a, b):
+            ws.append(min(a, b))
+    if len(ws) >= 2:
+        k2 = int(round(0.6 * float(np.median(ws))))
+        if k2 > fk:
+            k2 |= 1
+            binm = cv2.morphologyEx(binm, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2)))
+    return binm
+
+
+def separated_hint(gray: np.ndarray, valid: Optional[np.ndarray] = None) -> bool:
+    """밝은 바닥에서 '떨어져 놓인 튜브들' 처럼 보이는가 — '둘레보다 어두운 곳' 마스크를 작게 줄여 빠르게 본다.
+
+    길쭉한(5:1 이상) 덩어리가 2개 이상이고 그것들이 마스크 면적의 대부분(70%)을 차지하면 참. 붙은 다발은
+    뚱뚱한 덩어리(또는 반사 띠로 조각난 가는 줄들)가 되어 거짓 — 그때는 두 번째 배치 찾기를 건너뛴다(시간).
+    """
+    h, w = gray.shape[:2]
+    s = min(1.0, 800.0 / float(max(h, w)))
+    g = gray if s == 1.0 else cv2.resize(gray, (max(1, int(w * s)), max(1, int(h * s))), interpolation=cv2.INTER_AREA)
+    m = _light_dark_mask(g)
+    if valid is not None:
+        vm = valid if s == 1.0 else cv2.resize(valid, (g.shape[1], g.shape[0]), interpolation=cv2.INTER_NEAREST)
+        m[vm == 0] = 0
+    n, lab, st, _c = cv2.connectedComponentsWithStats(m, connectivity=8)
+    comps = []
+    for i in range(1, n):
+        area = int(st[i, cv2.CC_STAT_AREA])
+        if area < 0.0003 * m.size:
+            continue
+        x, y, bw, bh = st[i, 0], st[i, 1], st[i, 2], st[i, 3]
+        ys, xs = np.nonzero(lab[y:y + bh, x:x + bw] == i)
+        _ctr, _ang, el = _pca(xs.astype(np.float64), ys.astype(np.float64))
+        # 고리(트레이 테두리)는 길쭉해도 자기 상자를 거의 못 채운다 — 채움 25% 미만은 뺀다
+        (_cx, _cy), (ra, rb), _a = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+        if area < 0.25 * max(ra * rb, 1.0):
+            continue
+        comps.append((area, el, max(ra, rb)))
+    if len(comps) < 2:
+        return False
+    lmax = max(c[2] for c in comps)
+    el = [a for a, e, ln in comps if e >= 5.0 and ln >= 0.5 * lmax]
+    return len(el) >= 2 and sum(el) >= 0.7 * sum(c[0] for c in comps)
+
+
 def _pca(xs: np.ndarray, ys: np.ndarray) -> Tuple[np.ndarray, float, float]:
     c = np.array([xs.mean(), ys.mean()])
     cov = np.cov(np.vstack([xs - c[0], ys - c[1]]))
@@ -506,7 +574,7 @@ def _scale(t: TubeGeom, k: float) -> TubeGeom:
 
 
 def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = None,
-                unit_px: Optional[float] = None) -> Layout:
+                unit_px: Optional[float] = None, light_mask: str = "contrast") -> Layout:
     """정준 영상(튜브가 대략 가로, ±8° 안)에서 튜브 배치를 찾는다.
 
     light: 배경이 밝은가(전체 프레임에서 정한 값). valid: 원래 사진이 있는 곳(255).
@@ -516,7 +584,10 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
     s = min(1.0, WORK_SIDE / float(max(h, w)))
     g = gray if s == 1.0 else cv2.resize(gray, (max(1, int(w * s)), max(1, int(h * s))),
                                          interpolation=cv2.INTER_AREA)
-    mask = tube_mask(g, light=True).copy() if light else _dark_mask(g)
+    if light:
+        mask = _light_dark_mask(g) if light_mask == "dark" else tube_mask(g, light=True).copy()
+    else:
+        mask = _dark_mask(g)
     if valid is not None:
         vm = valid if s == 1.0 else cv2.resize(valid, (g.shape[1], g.shape[0]), interpolation=cv2.INTER_NEAREST)
         mask[vm == 0] = 0
@@ -556,6 +627,22 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         return Layout(tubes=[], rulers=len(rulers))
     l_max = max(f.length for f in cand)
     cand = [f for f in cand if f.length >= max(20.0, 0.3 * l_max) and f.width >= 3.0]
+    split_pair = False
+    if light and light_mask == "dark" and len(cand) >= 3:
+        # 어두운 곳 마스크에는 트레이 레일·안쪽 테두리 그늘이 가는 줄로 남는다 — 튜브 폭의 40% 도 안 되면 뺀다.
+        # 단, 가는 줄 둘이 바짝 나란히 붙어 있으면 반사 띠가 튜브 하나를 양옆 둘로 가른 것이다 — 빼면 튜브 하나를
+        # 조용히 잃는다. 그때는 이 마스크의 결과를 '불확실' 로 돌려 종전 경로를 쓰게 한다.
+        wmed = float(np.median([f.width for f in cand]))
+        thin = [f for f in cand if f.width < 0.4 * wmed]
+        for i, f1 in enumerate(thin):
+            for f2 in thin[i + 1:]:
+                gap = abs(float((f2.c - f1.c) @ f1.n)) - 0.5 * (f1.width + f2.width)
+                along = abs(float((f2.c - f1.c) @ f1.d))
+                if gap <= 1.5 * max(f1.width, f2.width) and along <= 0.3 * max(f1.length, f2.length):
+                    split_pair = True
+        cand = [f for f in cand if f.width >= 0.4 * wmed]
+    if not cand:
+        return Layout(tubes=[], rulers=len(rulers))
 
     # 튜브 한 개 폭 — 기준정보 외경이 있으면 그것, 없으면 가늘고 긴 덩어리들의 폭이 '한 폭의 정수배' 로
     # 가장 잘 설명되는 값. 그 다음 큰 다발을 줄무늬로 나눠 얻은 간격(피치)이 더 믿을 만하면 그것으로 바꾼다.
@@ -685,6 +772,10 @@ def find_layout(gray: np.ndarray, *, light: bool, valid: Optional[np.ndarray] = 
         uncertain = True
         notes.append(f"나눈 조각 폭이 들쭉날쭉함(최소 {min(cut):.0f}px, 중앙값 {float(np.median(cut)):.0f}px) — 재확인")
 
+    if split_pair:
+        uncertain = True
+        notes.append("가는 줄 둘이 나란히 붙음 — 반사 띠가 튜브를 가른 것으로 보여 이 마스크는 믿지 않는다(재확인)")
+
     # 헤더 파이프는 가늘고 길다 — 추정한 한 폭으로 길이/폭이 8 도 안 되면 폭 추정을 믿기 어렵다(원근·흐림)
     if not given and unit and tubes:
         aspect = float(np.median([q.length for q in tubes])) / unit
@@ -711,4 +802,4 @@ def layout_from_bundle(bundle) -> Layout:
     return Layout(tubes=out, uncertain=bundle.uncertain, notes=list(bundle.notes), dense=True)
 
 
-__all__ = ["Layout", "TubeGeom", "find_layout", "layout_from_bundle"]
+__all__ = ["Layout", "TubeGeom", "find_layout", "layout_from_bundle", "separated_hint"]

@@ -238,3 +238,64 @@ def test_background_edge_cell_rule():
     assert _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)
     R, cells = scene(edge=90.0, outside=40.0)            # 그늘진 진짜 바깥 튜브
     assert not _background_cell(R, cells, len(cells) - 1, "hi", 0, 40)
+
+
+def test_refine_lattice_follows_perspective_seams():
+    """간격 직선이 원근을 덜 잡아 위상이 끝으로 밀린 격자를 실제 골 위치에 다시 맞춘다."""
+    from vision.multi.dense import _refine_lattice
+
+    j = np.arange(21, dtype=float)
+    true = 100.0 + 10.0 * j + 0.04 * j ** 2                # 간격 10 → 11.6 px (원근)
+    seams = [int(round(x)) for x in true[1:-1]]
+    lat = 204.0 + 10.8 * (j - 10)                           # 가운데 위상·간격만 맞은 격자 — 끝에서 0.4 칸 어긋남
+    assert np.abs(lat - true).max() >= 4.0
+    ref = _refine_lattice(lat, seams, 10.8, true[1], true[-2])
+    assert np.abs(ref - true)[1:-1].max() < 0.6
+    # 골이 너무 적으면 그대로
+    assert np.array_equal(_refine_lattice(lat, seams[:4], 10.8, true[1], true[4]), lat)
+
+
+def test_edge_cell_shape_rules():
+    """바깥 칸 모양: 그늘(어둡고 꼴이 뒤집힘)은 튜브가 아니고, 결·꼴이 튜브 그대로인 칸은 튜브다."""
+    from vision.multi.dense import _cell_shape
+
+    p = 12
+    one = np.concatenate([np.linspace(60, 160, p // 2), np.linspace(160, 60, p - p // 2)])   # 골 → 반사 띠 → 골
+    Q = np.concatenate([np.full(3 * p, 150.0)] + [one] * 10 + [np.full(p, 70.0)] + [np.full(3 * p, 150.0)])
+    trow = np.concatenate([np.full(3 * p, 2.0), np.full(10 * p, 20.0), np.full(p, 15.0), np.full(3 * p, 2.0)])
+    cells = [(3 * p + k * p, 3 * p + (k + 1) * p) for k in range(10)]
+    m, sd, ncc, tx = _cell_shape(Q, trow, cells, 5)
+    assert abs(m - 1) < 0.05 and ncc > 0.95 and tx > 0.95                       # 안쪽 튜브
+    m, sd, ncc, tx = _cell_shape(Q, trow, cells + [(13 * p, 14 * p)], 10)      # 다발 끝 그늘 띠
+    assert m < 0.85 and sd < 0.85
+    m, sd, ncc, tx = _cell_shape(Q, trow, cells, (14 * p, 15 * p))             # 트레이 바닥
+    assert tx < 0.85 and sd < 0.85
+
+
+def test_separated_tubes_on_light_tray():
+    """밝은 트레이 위 떨어진 튜브 5개 + 가는 레일 줄 — 낱개 5개로 센다.
+
+    종전 '배경과 다른 곳' 마스크는 튜브 사이 트레이 바닥(밝기가 기운)까지 한 덩어리로 묶어 1개(불확실)로 셌다.
+    """
+    from aivis_types import ItemMaster
+
+    rng = np.random.default_rng(7)
+    yy, xx = np.mgrid[0:640, 0:640]
+    f = np.full((640, 640), 200.0)
+    plate = (xx > 60) & (xx < 580) & (yy > 40) & (yy < 600)
+    f[plate] = (185 + 15 * (xx - 320) / 320.0)[plate]                         # 트레이 바닥(밝기가 한쪽으로 기움)
+    img = np.clip(f, 0, 255).astype(np.uint8)
+    cv2.rectangle(img, (60, 40), (580, 600), 150, 3)                          # 트레이 테두리
+    cv2.line(img, (90, 80), (90, 560), 120, 4)                                # 가는 레일 줄
+    for k in range(5):
+        x = 320 - 2 * 58 + 58 * k
+        for dx in range(-14, 15):
+            t = dx / 14.0
+            cv2.line(img, (x + dx, 110), (x + dx, 520), int(60 + 60 * (1 - t * t)), 1)   # 둥근 금속 음영
+    img = np.clip(img.astype(float) + rng.normal(0, 3, img.shape), 0, 255).astype(np.uint8)
+    bgr = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    item = ItemMaster(item_code="T", item_name="t", ref_length_mm=250.0, tol_plus_mm=1.0, tol_minus_mm=1.0,
+                      px_to_mm_scale=0.6, oil_threshold=0.5, discolor_threshold=0.5, scratch_threshold=0.5,
+                      expected_count=5)
+    b = inspect_batch(bgr, item, axis="auto", expected_count=5, stage="CUT_LENGTH")
+    assert b.count_detected == 5 and not b.count_uncertain

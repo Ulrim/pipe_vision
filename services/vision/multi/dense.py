@@ -40,6 +40,10 @@ EDGE_TEX_RATIO = 0.5
 END_GRAD_RATIO = 0.3
 #: 경계 여유(피치 비)가 이보다 작으면 개수를 '불확실'로 — 바깥 칸이 튜브인지 트레이인지 반반이다.
 MARGIN_MIN = 0.12
+#: 격자를 골 위치에 2차식으로 다시 맞춘다(_refine_lattice).
+REFINE_LATTICE = True
+#: 다발 안쪽에 튜브 같지 않은 칸(단면 꼴 상관 < 0.1 또는 밝기 < 0.6)이 이만큼 있으면 개수 '불확실'.
+ODD_CELLS_MAX = 2
 
 
 def _odd(n: float) -> int:
@@ -291,6 +295,51 @@ def _lattice(Q, p, k, c, lo_y, hi_y, e_lo, e_hi) -> np.ndarray:
     return np.interp(kk + f0, phi, yy)
 
 
+def _refine_lattice(lat: np.ndarray, seams: List[int], p: float, g_lo: float, g_hi: float) -> np.ndarray:
+    """격자를 실제 골에 다시 맞춘다 — 골마다 격자 번호를 붙이고 위치 = 2차식(번호)을 강건하게 맞춘다.
+
+    간격 직선 p(y) 는 이웃 골 간격(잡음이 큰 차분)으로 맞춰 원근을 덜 잡기 쉽다. 그러면 위상은 가운데에서
+    맞아도 다발 끝으로 갈수록 반 칸까지 밀려, 끝 칸이 튜브 반쪽 + 그늘에 걸쳐 하나 더 세진다(현장 트레이
+    사진 0101~0200 에서 19 → 20 이 10장). 골 위치를 번호에 대해 직접 맞추면 누적 오차가 없다.
+    """
+    lat = np.asarray(lat, dtype=np.float64)
+    s = np.array([x for x in seams if g_lo - 0.5 * p <= x <= g_hi + 0.5 * p], dtype=np.float64)
+    if len(lat) < 6 or len(s) < 6:
+        return lat
+    idx = np.arange(len(lat), dtype=np.float64)
+    cur = lat
+    for _ in range(3):
+        j = np.interp(s, cur, idx)
+        jr = np.round(j)
+        ok = np.abs(j - jr) < 0.35
+        best: dict = {}
+        for jj, ss, good in zip(jr, s, ok):
+            if good:
+                d = abs(ss - float(np.interp(jj, idx, cur)))
+                if jj not in best or d < best[jj][0]:
+                    best[jj] = (d, ss)
+        if len(best) < 6:
+            break
+        jj = np.array(sorted(best), dtype=np.float64)
+        ss = np.array([best[k][1] for k in sorted(best)], dtype=np.float64)
+        if jj[-1] - jj[0] < 5:
+            break
+        coef = np.polyfit(jj, ss, 2)
+        for _ in range(4):
+            r = ss - np.polyval(coef, jj)
+            sc = max(1.4826 * float(np.median(np.abs(r))), 0.05 * p)
+            coef = np.polyfit(jj, ss, 2, w=1 / (1 + (r / (2 * sc)) ** 2))
+        new = np.polyval(coef, idx)
+        d = np.diff(new)
+        if d.min() < 0.5 * p or d.max() > 2 * p:
+            break
+        if np.abs(new - cur).max() < 0.05 * p:
+            cur = new
+            break
+        cur = new
+    return cur
+
+
 def _background_cell(R: np.ndarray, cells, i: int, side: str, xa: int, xb: int) -> bool:
     """바깥 칸 i 가 튜브가 아니라 배경(트레이)인가 — 칸 밝기가 안쪽 튜브들보다 배경 쪽으로 확실히 치우쳤나.
 
@@ -315,6 +364,37 @@ def _background_cell(R: np.ndarray, cells, i: int, side: str, xa: int, xb: int) 
         return False
     rc, ro = m / med - 1.0, out / med - 1.0
     return abs(ro) >= 0.3 and rc * ro > 0 and abs(rc) >= 0.28 and rc / ro >= 0.65
+
+
+def _cell_shape(Q: np.ndarray, trow: np.ndarray, cells, i_or_cell) -> Optional[Tuple[float, float, float, float]]:
+    """칸 하나가 튜브처럼 보이는가 — (밝기, 단면 흔들림, 단면 모양 상관, 표면 결), 모두 안쪽 칸들의 중앙값 대비.
+
+    단면 = 칸을 가로지르는 밝기(편 영상 중앙값) 16점. 튜브는 칸마다 같은 꼴(반사 띠 + 양옆 골)이라 안쪽 칸들의
+    중앙값 꼴과 상관이 높다. 그늘·반쪽 칸은 어둡고 꼴이 뒤집히며, 트레이 바닥은 흔들림·결이 거의 없다.
+    """
+    def prof(u: float, v: float) -> np.ndarray:
+        return np.interp(np.linspace(u, v, 16), np.arange(len(Q)), Q)
+
+    def tex(u: float, v: float) -> float:
+        return float(np.interp(np.linspace(u, v, 9), np.arange(len(trow)), trow).mean())
+
+    inner = cells[1:-1]
+    if len(inner) < 3:
+        return None
+    u, v = cells[i_or_cell] if isinstance(i_or_cell, int) else i_or_cell
+    if u < 0 or v > len(Q) - 1:
+        return None
+    P = np.array([prof(a, b) for a, b in inner])
+    tmpl = np.median(P, axis=0)
+    mi = float(np.median(P.mean(axis=1)))
+    sd = float(np.median(P.std(axis=1)))
+    tr = float(np.median([tex(a, b) for a, b in inner]))
+    if mi <= 1e-6 or sd <= 1e-6 or tr <= 1e-6:
+        return None
+    c = prof(u, v)
+    a, b = c - c.mean(), tmpl - tmpl.mean()
+    ncc = float((a * b).sum() / (np.sqrt((a * a).sum() * (b * b).sum()) + 1e-9))
+    return float(c.mean() / mi), float(c.std() / sd), ncc, tex(u, v) / tr
 
 
 def _local_count(e_lo, e_hi, seams, pl) -> int:
@@ -376,6 +456,7 @@ class DenseBundle:
     count_check: int              # 교차 확인 개수(골 간격 반올림) — 참고값
     margin: float                 # 경계에서 가장 가까운 칸 중심까지(피치 비, 0~0.5) — 작을수록 애매
     notes: List[str] = field(default_factory=list)
+    odd_cells: int = 0            # 다발 안쪽 칸 중 튜브 같지 않은 칸 수(틈·낱개·그늘이 섞임)
 
     @property
     def count(self) -> int:
@@ -384,7 +465,8 @@ class DenseBundle:
     @property
     def uncertain(self) -> bool:
         """개수를 믿기 어렵다 — 바깥 칸이 경계에 걸쳤거나 두 셈이 2개 이상 다르다."""
-        return self.margin < MARGIN_MIN or abs(self.count_check - self.count) >= 2
+        return (self.margin < MARGIN_MIN or abs(self.count_check - self.count) >= 2
+                or self.odd_cells >= ODD_CELLS_MAX)
 
     def slope(self, u: float) -> float:
         return self.a + self.b * (u - self.yc)
@@ -483,6 +565,8 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[n
     for g_lo, g_hi in groups:
         lo_y, hi_y = max(0, int(g_lo - 3 * p0)), min(len(Q) - 1, int(g_hi + 3 * p0))
         lat = _lattice(Q, p0, k, c, lo_y, hi_y, g_lo, g_hi)
+        if REFINE_LATTICE:
+            lat = _refine_lattice(lat, seams, p0, g_lo, g_hi)
         a_in, b_in = g_lo + EDGE_SHRINK * pl(g_lo), g_hi - EDGE_SHRINK * pl(g_hi)
         cells.extend((float(u), float(v)) for u, v in zip(lat[:-1], lat[1:]) if a_in <= 0.5 * (u + v) <= b_in)
         check += _local_count(g_lo, g_hi, seams, pl)
@@ -510,6 +594,25 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[n
     if "lo" in resolved:
         cells = cells[1:]
         edge_m[0] = 0.5
+    # 바깥 칸을 모양으로 한 번 더 본다(2026-11-11, 현장 트레이 사진 0001~0300).
+    #  · 뺀다: 튜브보다 어둡고(안쪽 밝기 0.85 미만) 단면 꼴이 튜브와 반대(상관 < 0) — 튜브 반쪽 + 그늘에 걸친 칸.
+    #    다발 끝의 그늘 띠가 결이 세서 결 경계가 밖으로 나가면 생긴다(19 → 20·21, 4장).
+    #  · 더한다: 경계 바로 바깥 칸이 결·흔들림·꼴 모두 튜브(0.85·0.85·0.8 이상) — 결 경계가 바깥 튜브 하나를 잘랐다.
+    #    정답 개수였던 사진 210장의 바깥 칸·경계 칸에서 두 규칙 모두 한 번도 걸리지 않았다.
+    if len(cells) > min_tubes + 2:
+        for side in ("lo", "hi"):
+            i = 0 if side == "lo" else len(cells) - 1
+            sh = _cell_shape(Q, trow, cells, i)
+            if sh is not None and sh[0] < 0.85 and sh[2] < 0.0:
+                cells = cells[1:] if side == "lo" else cells[:-1]
+                edge_m[0 if side == "lo" else -1] = 0.5
+                continue
+            u, v = cells[i]
+            out = (u - (v - u), u) if side == "lo" else (v, v + (v - u))
+            sh = _cell_shape(Q, trow, cells, out)
+            if sh is not None and sh[3] >= 0.85 and sh[1] >= 0.85 and sh[2] >= 0.8:
+                cells = [out] + cells if side == "lo" else cells + [out]
+                edge_m[0 if side == "lo" else -1] = 0.5
     margin = min(edge_m) if edge_m else 0.5
 
     # 끝: 띠마다 축을 가로지르는 기울기(원통 음영)가 끊기는 곳
@@ -555,13 +658,21 @@ def find_dense_bundle(gray: np.ndarray, *, min_tubes: int = 3, valid: Optional[n
             e, adj = kr * i + cr, True
         adjusted += int(adj)
         tubes.append(BundleTube(index=i + 1, u0=u, u1=v, x0=float(s), x1=float(e), end_adjusted=adj))
+    # 다발 안쪽 칸이 튜브 같은가 — 틈·떨어진 낱개·그늘이 섞인 '다발' 은 격자가 틈마다 칸을 만들어 더 센다.
+    # 직접 만든 트레이·어려운 장면에서 줄무늬 셈이 틀린 36장 중 30장이 이런 칸 2개 이상, 정답 개수였던 현장 사진
+    # 200장 중 2장(1%)만 걸렸다(2026-11-11). 개수는 그대로 두고 재확인으로 보낸다.
+    odd = 0
+    for i in range(1, len(cells) - 1):
+        sh = _cell_shape(Q, trow, cells, i)
+        if sh is not None and (sh[2] < 0.1 or sh[0] < 0.6):
+            odd += 1
     notes = []
-    if margin < MARGIN_MIN or abs(check - len(tubes)) >= 2:
-        notes.append(f"다발 개수 불확실(경계 여유 {margin:.2f}, 골 간격 셈 {check}) — 재확인")
+    if margin < MARGIN_MIN or abs(check - len(tubes)) >= 2 or odd >= ODD_CELLS_MAX:
+        notes.append(f"다발 개수 불확실(경계 여유 {margin:.2f}, 골 간격 셈 {check}, 튜브 같지 않은 칸 {odd}) — 재확인")
     if adjusted:
         notes.append(f"끝 위치를 이웃으로 맞춘 튜브 {adjusted}개")
     return DenseBundle(tubes=tubes, pitch=float(p0), a=a, b=b, xc=xc, yc=yc, box=box,
-                       count_check=check, margin=margin, notes=notes)
+                       count_check=check, margin=margin, notes=notes, odd_cells=odd)
 
 
 __all__ = ["BundleTube", "DenseBundle", "MARGIN_MIN", "axis_angle", "find_dense_bundle", "ribbon_crop"]
