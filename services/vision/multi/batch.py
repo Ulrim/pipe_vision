@@ -463,6 +463,7 @@ def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view
         dense=True,
         count_uncertain=uncertain,
         notes=notes,
+        edge_check=edge_info,
     )
 
 
