@@ -28,6 +28,8 @@ from ..pipeline import CropContext, FramePrep, InspectionPipeline
 from ..preprocess.area import InspectArea, area_rect
 from ..preprocess.foreground import angle_gap, contrast_mask, dominant_angle
 from .dense import axis_angle, find_dense_bundle, ribbon_crop
+from .edge_check import MIN_TUBES as EDGE_MIN_TUBES
+from .edge_check import default_checker as edge_checker
 from .layout import Layout, find_layout, layout_from_bundle, separated_hint
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
@@ -101,6 +103,8 @@ class BatchResult:
     dense: bool = False
     count_uncertain: bool = False
     notes: List[str] = field(default_factory=list)
+    #: 맨 바깥 칸 확인(edge_check.py, 모델이 있을 때만) — 네 칸의 '튜브일 확률'과 셈과의 불일치.
+    edge_check: Optional[Dict[str, Any]] = None
 
 
 def _v(x) -> str:
@@ -419,6 +423,21 @@ def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view
             tube.review_flag = True
         tubes.append(tube)
 
+    # 맨 바깥 칸 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역). 셈과 다르면 개수를 고치지 않고 재확인.
+    edge_info = None
+    checker = edge_checker() if prep.light_bg and len(tubes) >= EDGE_MIN_TUBES else None
+    if checker is not None:
+        ec = checker.check(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), [np.asarray(t.quad, np.float64) for t in tubes])
+        if ec is not None:
+            edge_info = {"p_lo_edge": round(ec.p_lo_edge, 4), "p_lo_out": round(ec.p_lo_out, 4),
+                         "p_hi_edge": round(ec.p_hi_edge, 4), "p_hi_out": round(ec.p_hi_out, 4),
+                         "disagree": ec.disagree}
+            if ec.disagree:
+                uncertain = True
+                notes.append(ec.note())
+                for t in tubes:
+                    t.review_flag = True
+
     count_detected = len(tubes)
     count_mismatch = expected_count is not None and count_detected != expected_count
     count_ok = not count_mismatch
@@ -601,6 +620,21 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
             tube.review_flag = True
         tubes.append(tube)
 
+    # 맨 바깥 칸 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역). 셈과 다르면 개수를 고치지 않고 재확인.
+    edge_info = None
+    checker = edge_checker() if prep.light_bg and len(tubes) >= EDGE_MIN_TUBES else None
+    if checker is not None:
+        ec = checker.check(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), [np.asarray(t.quad, np.float64) for t in tubes])
+        if ec is not None:
+            edge_info = {"p_lo_edge": round(ec.p_lo_edge, 4), "p_lo_out": round(ec.p_lo_out, 4),
+                         "p_hi_edge": round(ec.p_hi_edge, 4), "p_hi_out": round(ec.p_hi_out, 4),
+                         "disagree": ec.disagree}
+            if ec.disagree:
+                uncertain = True
+                notes.append(ec.note())
+                for t in tubes:
+                    t.review_flag = True
+
     count_detected = len(tubes)
     count_mismatch = expected_count is not None and count_detected != expected_count
     count_ok = not count_mismatch
@@ -626,6 +660,7 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
         dense=lay.dense,
         count_uncertain=uncertain,
         notes=notes,
+        edge_check=edge_info,
     )
 
 
