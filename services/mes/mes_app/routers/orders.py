@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from mes_app.common import next_no
 from mes_app.db import get_db
 from mes_app.models import SalesOrder, Shipment, WorkOrder
+from mes_app.plant import ensure_operations, sync_produce_txn
 from mes_app.production import progress_pct, records_for, summarize
 from mes_app.schemas import (
     ProductionOut,
@@ -149,6 +150,7 @@ def create_work_order(body: WorkOrderIn, db: Session = Depends(get_db),
             status.HTTP_409_CONFLICT, f"작업지시번호 또는 LOT 중복: {wo.wo_no} / {wo.lot}"
         ) from None
     db.refresh(wo)
+    ensure_operations(db, wo)  # 공정 목록을 지금 라우팅에서 복사한다(docs/MES.md §11.2)
     # 검사결과가 먼저 들어와 있던 LOT(작업지시를 늦게 만든 경우)은 바로 진행 중으로 —
     # 시작 시각은 첫 검사.
     prod = summarize(records_for(db, wo))
@@ -191,6 +193,8 @@ def patch_work_order(wo_id: int, body: WorkOrderPatch, db: Session = Depends(get
         wo.status = new_status
     for k, v in data.items():
         setattr(wo, k, v)
+    # 완료하면 양품만큼 생산 입고, 완료를 되돌리면 그 입고를 지운다(docs/MES.md §11.3).
+    sync_produce_txn(db, wo, user.username)
     db.commit()
     db.refresh(wo)
     return _wo_out(db, wo)

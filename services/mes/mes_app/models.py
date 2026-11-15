@@ -12,12 +12,14 @@ from datetime import date, datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     Float,
     ForeignKey,
     Index,
     Integer,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -156,3 +158,141 @@ class IntakeRun(Base):
     received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# ==== 2026-11-15 범위 확대 (docs/MES.md §11) ============================================
+
+class Item(Base):
+    """품목 기준정보(원자재 RAW · 제품 FG · 부자재 SUB). 제품 코드는 AIVIS 품목 코드와 같게 쓴다."""
+
+    __tablename__ = "mes_item"
+
+    item_code: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    item_type: Mapped[str] = mapped_column(Text, nullable=False, default="FG")
+    unit: Mapped[str] = mapped_column(Text, nullable=False, default="EA")
+    safety_stock: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    spec: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), server_default=func.now())
+
+
+class Bom(Base):
+    """BOM 한 줄: 제품(parent) 1개에 자재(component)가 qty_per 만큼 든다."""
+
+    __tablename__ = "mes_bom"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    parent_code: Mapped[str] = mapped_column(Text, nullable=False)
+    component_code: Mapped[str] = mapped_column(Text, nullable=False)
+    qty_per: Mapped[float] = mapped_column(Float, nullable=False)
+    scrap_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (UniqueConstraint("parent_code", "component_code", name="uq_mesbom_pair"),)
+
+
+class Process(Base):
+    """공정. auto_from_inspection = 검사 공정(양품·불량을 AIVIS 검사결과에서 가져온다)."""
+
+    __tablename__ = "mes_process"
+
+    code: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_from_inspection: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class Routing(Base):
+    """라우팅 한 단계. item_code 가 '*' 면 공통 라우팅."""
+
+    __tablename__ = "mes_routing"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_code: Mapped[str] = mapped_column(Text, nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    process_code: Mapped[str] = mapped_column(Text, nullable=False)
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    std_sec_per_ea: Mapped[float | None] = mapped_column(Float)
+
+    __table_args__ = (UniqueConstraint("item_code", "seq", name="uq_mesrouting_seq"),)
+
+
+class Equipment(Base):
+    """설비. 현재 상태는 저장하지 않고 마지막 상태 구간(EquipmentEvent)에서 읽는다."""
+
+    __tablename__ = "mes_equipment"
+
+    code: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    process_code: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class EquipmentEvent(Base):
+    """설비 상태 구간 하나(RUN 가동 · IDLE 대기 · DOWN 고장 · PM 계획정지). 진행 중이면 ended_at NULL."""
+
+    __tablename__ = "mes_equipment_event"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    equipment_code: Mapped[str] = mapped_column(Text, nullable=False)
+    state: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    wo_id: Mapped[int | None] = mapped_column(Integer)
+    created_by: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (Index("ix_meseqev_eq_time", "equipment_code", "started_at"),)
+
+
+class WoOperation(Base):
+    """작업지시의 공정 하나. 작업지시를 만들 때 라우팅에서 복사한다."""
+
+    __tablename__ = "mes_wo_operation"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    wo_id: Mapped[int] = mapped_column(Integer, ForeignKey("mes_work_order.id"), nullable=False)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    process_code: Mapped[str] = mapped_column(Text, nullable=False)
+    process_name: Mapped[str] = mapped_column(Text, nullable=False)
+    equipment_code: Mapped[str | None] = mapped_column(Text)
+    # PENDING → RUNNING → DONE | SKIPPED
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="PENDING")
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    ended_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    good_qty: Mapped[int | None] = mapped_column(Integer)
+    defect_qty: Mapped[int | None] = mapped_column(Integer)
+    worker: Mapped[str | None] = mapped_column(Text)
+    note: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (UniqueConstraint("wo_id", "seq", name="uq_meswoop_seq"),)
+
+
+class StockTxn(Base):
+    """수불(재고 이동) 1건. 현재고 = 품목별 qty 합(저장하지 않는다).
+
+    qty 는 부호가 있다: RECEIPT 입고 +, PRODUCE 생산 입고 +, ISSUE 투입 −, SHIP 출하 −, ADJUST ±.
+    ref_key 는 자동 기록(작업지시 완료·출하)이 두 번 들어가지 않게 하는 열쇠다.
+    """
+
+    __tablename__ = "mes_stock_txn"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
+    item_code: Mapped[str] = mapped_column(Text, nullable=False)
+    lot: Mapped[str | None] = mapped_column(Text)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    txn_type: Mapped[str] = mapped_column(Text, nullable=False)
+    wo_id: Mapped[int | None] = mapped_column(Integer)
+    shipment_id: Mapped[int | None] = mapped_column(Integer)
+    ref_key: Mapped[str | None] = mapped_column(Text, unique=True)
+    note: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_messtock_item", "item_code"),
+        Index("ix_messtock_wo", "wo_id"),
+    )

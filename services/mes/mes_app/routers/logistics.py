@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from mes_app.common import next_no, today_kst
 from mes_app.db import get_db
 from mes_app.kpi import month_bounds, monthly
-from mes_app.models import Claim, SalesOrder, Shipment
+from mes_app.models import Claim, SalesOrder, Shipment, StockTxn
 from mes_app.schemas import (
     ClaimIn,
     ClaimOut,
@@ -76,6 +76,11 @@ def create_shipment(body: ShipmentIn, db: Session = Depends(get_db),
         db.rollback()
         raise HTTPException(status.HTTP_409_CONFLICT, f"출하번호 중복: {s.ship_no}") from None
     db.refresh(s)
+    # 재고에서 뺀다(docs/MES.md §11.3). ref_key 로 한 번만.
+    db.add(StockTxn(ts=datetime.now(timezone.utc), item_code=s.item_code, lot=s.lot,
+                    qty=-float(s.qty), txn_type="SHIP", shipment_id=s.id,
+                    ref_key=f"SHIP:{s.id}", note=f"출하 {s.ship_no}", created_by=user.username))
+    db.commit()
     return _ship_out(db, s)
 
 

@@ -14,7 +14,8 @@ from mes_app.config import get_settings
 from mes_app.db import SessionLocal, engine, init_db, interface_engine
 from mes_app.intake import InterfaceReader, Poller
 from mes_app.prefix import StripPathPrefix, path_prefix_from_env
-from mes_app.routers import intake, logistics, orders
+from mes_app.plant import seed_processes
+from mes_app.routers import equipment, intake, logistics, master, orders, shopfloor, stock
 
 log = logging.getLogger("mes")
 
@@ -23,6 +24,8 @@ log = logging.getLogger("mes")
 async def lifespan(app: FastAPI):
     # 없는 테이블을 만들고, 있는 테이블에는 빠진 컬럼을 메운다. 스키마 변경 규칙은 docs/MES.md §8.5.
     init_db()
+    with SessionLocal() as _db:
+        seed_processes(_db)  # 공정 표가 비어 있을 때만 기본 공정(절단~포장)
     s = get_settings()
     app.state.poller = None
     eng = interface_engine()
@@ -53,6 +56,10 @@ app.add_middleware(
 app.include_router(orders.router)
 app.include_router(logistics.router)
 app.include_router(intake.router)
+app.include_router(master.router)
+app.include_router(shopfloor.router)
+app.include_router(stock.router)
+app.include_router(equipment.router)
 
 # 한 도메인 아래 `/mes-api` 로 물린 배포(Vercel services)는 경로를 그대로 넘긴다 — 앞의 접두어를 벗긴다.
 # 마지막에 더해 가장 바깥에서 돈다. 접두어 없이 온 요청(바인딩 주소로 직접)은 그대로(mes_app/prefix.py).

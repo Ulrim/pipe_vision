@@ -31,8 +31,10 @@ from sqlalchemy import (  # noqa: E402
 from mes_app.db import SessionLocal, init_db  # noqa: E402
 from mes_app.main import app  # noqa: E402
 from mes_app.models import (  # noqa: E402
-    Claim, IntakeRun, QualityRecord, SalesOrder, Shipment, WorkOrder,
+    Bom, Claim, Equipment, EquipmentEvent, IntakeRun, Item, Process, QualityRecord, Routing,
+    SalesOrder, Shipment, StockTxn, WoOperation, WorkOrder,
 )
+from mes_app.plant import seed_processes  # noqa: E402
 
 
 def iface_table(md: MetaData, *, new_columns: bool = True) -> Table:
@@ -121,9 +123,11 @@ def client():
 def _clean():
     db = SessionLocal()
     try:
-        for m in (Shipment, Claim, QualityRecord, WorkOrder, SalesOrder, IntakeRun):
+        for m in (StockTxn, WoOperation, EquipmentEvent, Equipment, Routing, Bom, Item, Process,
+                  Shipment, Claim, QualityRecord, WorkOrder, SalesOrder, IntakeRun):
             db.query(m).delete()
         db.commit()
+        seed_processes(db)
     finally:
         db.close()
     with IFACE_ENGINE.begin() as conn:

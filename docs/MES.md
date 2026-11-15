@@ -3,7 +3,8 @@
 > 결정(2026-10-14): 도입기업에 연계할 MES 가 없다. 그래서 인수 지표 4 "데이터 저장 & MES
 > 연계율 100%" 를 **상대가 실제로 받았는지**로 보일 수 있도록 **품질·생산실적 범위의 MES 를
 > 직접 만든다.** 개발지침 §2.2 는 "MES 솔루션 본체" 를 범위 밖으로 두었으므로, 이것은
-> **범위를 넓힌 결정**이다. 공정 라우팅·설비 가동·자재/재고·BOM 은 여전히 범위 밖이다.
+> **범위를 넓힌 결정**이다. ~~공정 라우팅·설비 가동·자재/재고·BOM 은 여전히 범위 밖이다.~~
+> → **2026-11-15 에 이것들도 넣었다(§11).**
 >
 > 구현: `services/mes`(별도 서비스) · 화면: 대시보드 메뉴 "MES …" · 연계 규격: `docs/MES_INTERFACE.md`
 
@@ -199,10 +200,99 @@ API 와 함께 자동으로 뜬다(`AIVIS_RUN_MES=true`, `MES_PORT=8100`). API v
 
 - `services/mes/tests` — 수신(표시 순서·재확인 재수신·읽는 중 변경·예전 테이블·REST·토큰),
   생산실적(단계별·재확인·크레이트·작업지시 매칭·미배정 LOT), 출하·클레임·월 KPI, 권한, UTC,
-  예전 DB 컬럼 보정(`test_schema_upgrade.py`).
+  예전 DB 컬럼 보정(`test_schema_upgrade.py`), 기준정보·공정 진행·자재/재고·설비 가동(`test_plant.py`).
 - `tests/e2e/test_mes_e2e.py` — **AIVIS → MES 종단**: AIVIS 에 검사결과 적재 → MES 폴링 →
   AIVIS KPI `mes_consumed_count` = 적재 건수, 연계율 100% → 재확인이 MES 실적까지 바뀐다.
   로그인은 AIVIS 토큰 하나.
 - `services/api/tests/test_mes_link.py` — AIVIS 쪽 보강(개수 저장·스테이징 값·재확인 되돌림·
   워치독 기동·KPI 부분 갱신·모드 보존·REST 토큰).
 - 대시보드 `src/pages/Mes*.test.tsx`, `src/api/mes.test.ts`.
+
+---
+
+## 11. 범위 확대(2026-11-15) — 기준정보·BOM / 공정 진행 / 자재·재고 / 설비 가동
+
+> 결정(2026-11-15, 도입기업): 품질·생산실적에 더해 **MES 전체 범위**를 같은 서비스(`services/mes`)에
+> 넣는다. §1 의 "공정 라우팅·설비 가동·자재/재고·BOM 은 범위 밖" 은 이 결정으로 **대체**된다.
+> AIVIS 와의 연계 인터페이스(§7, `docs/MES_INTERFACE.md`)는 바뀌지 않는다.
+
+### 11.1 화면 (대시보드 메뉴)
+
+| 메뉴 | 경로 | 하는 일 |
+|---|---|---|
+| **MES 기준정보** | `/mes/master` | 품목(원자재·제품·부자재, 안전재고) · BOM(제품 1개당 소요량·손실률) · 공정 · 라우팅(품목별 공정 순서, 공통 `*`) · 설비 |
+| **MES 공정진행** | `/mes/operations` | 작업지시를 고르면 공정별 카드 — 시작·완료(양품·불량 입력)·건너뛰기. 검사 공정은 AIVIS 수치가 자동으로 보인다. 자재 소요·투입(부족 표시) |
+| **MES 자재·재고** | `/mes/stock` | 품목별 현재고(안전재고 미달 경고) · 입고 · 조정 · 수불 이력 |
+| **MES 설비가동** | `/mes/equipment` | 설비별 현재 상태(가동·대기·고장·점검) 전환, 기간별 가동률·고장 횟수·MTTR·MTBF, 상태 이력 |
+
+권한: 조회·공정 시작/완료·설비 상태 전환·입고·자재 투입은 **작업자 이상**(라인에서 하는 일).
+기준정보 등록·수정, 재고 조정, 공정 건너뛰기는 **품질관리자 이상**.
+
+### 11.2 데이터 (모두 `mes_` 접두어)
+
+| 테이블 | 뜻 | 핵심 컬럼 |
+|---|---|---|
+| `mes_item` | 품목 | item_code(PK), 이름, 유형 RAW/FG/SUB, 단위, 안전재고, 사용 여부 |
+| `mes_bom` | BOM | parent_code, component_code(쌍 UNIQUE), qty_per, scrap_pct |
+| `mes_process` | 공정 | code(PK), 이름, 순서, `auto_from_inspection`(검사 공정), 사용 여부. **처음 기동 때 절단·디버링·세척·검사·포장을 넣는다** |
+| `mes_routing` | 라우팅 | item_code(`*` = 공통), seq, process_code, 설비, 표준시간(초/개) |
+| `mes_equipment` | 설비 | code(PK), 이름, 공정, 사용 여부 |
+| `mes_equipment_event` | 설비 상태 구간 | 설비, 상태 RUN/IDLE/DOWN/PM, 사유, 시작, 끝(진행 중이면 NULL), 작업지시 |
+| `mes_wo_operation` | 작업지시의 공정 1개 | wo_id, seq(쌍 UNIQUE), 공정, 설비, PENDING→RUNNING→DONE/SKIPPED, 시작·끝, 양품·불량, 작업자 |
+| `mes_stock_txn` | 수불(재고 이동) 1건 | 시각, 품목, LOT, **부호 있는 수량**, 유형 RECEIPT/ISSUE/PRODUCE/SHIP/ADJUST, 작업지시, 출하, `ref_key`(UNIQUE — 자동 기록의 중복 방지) |
+
+- **재고는 저장하지 않는다** — 현재고 = 수불 수량의 합. 품목 단위로 센다(LOT 은 수불 이력에 남아 추적에 쓴다).
+- **라우팅 찾기**: 그 품목 전용 → 공통(`*`) → 없으면 사용 중인 공정 전부(순서대로).
+- **공정 목록은 작업지시를 만들 때** 라우팅에서 복사한다(그 뒤 라우팅을 바꿔도 진행 중인 지시는 그대로).
+  이 기능 전에 만든 작업지시는 공정진행 화면에서 처음 열 때 만든다.
+
+### 11.3 자동으로 일어나는 일
+
+| 언제 | 무엇 |
+|---|---|
+| 공정 **시작** | 작업지시가 PLANNED 면 RUNNING. 설비를 골랐으면 그 설비가 **가동(RUN)** |
+| 공정 **완료** | 그 설비가 이 작업지시로 가동 중이면 **대기(IDLE)** |
+| 작업지시 **완료(DONE)** | 양품 수량만큼 **생산 입고(PRODUCE)** — 양품 = 생산실적(§4)의 양품, 검사결과가 없으면 마지막으로 완료한 공정의 양품. 완료를 되돌리면 그 입고를 지운다 |
+| **출하** 등록 | 그 수량만큼 **출하(SHIP)** 차감 |
+| 자재 **투입** | BOM 기준 남은 필요량(지시수량 × 소요량 × (1+손실률) − 이미 투입)을 **ISSUE** 로 차감. 재고가 모자라면 409 로 부족 품목을 알려 준다(`allow_negative` 로 강행) |
+
+> 완료 뒤에 재확인으로 양품 수가 바뀌면 생산 입고는 **완료 시점 값**으로 남는다 — 재고 조정(ADJUST)으로 맞춘다.
+
+### 11.4 설비 가동률
+
+- 가동률(%) = 가동 ÷ (가동 + 대기 + 고장) × 100. **계획정지(PM)와 기록이 없는 시간은 분모에서 뺀다.**
+- MTTR(분) = 고장 시간 ÷ 고장 횟수, MTBF(분) = 가동 시간 ÷ 고장 횟수(고장이 없으면 비운다).
+- 기간은 KST 날짜(`date_from`~`date_to`, 둘 다 포함, 비우면 오늘). 진행 중인 구간은 지금까지로 센다.
+
+### 11.5 API (`mes_app/routers/master.py`·`shopfloor.py`·`stock.py`·`equipment.py`)
+
+| 메서드 | 경로 | 권한 | 설명 |
+|---|---|---|---|
+| GET | `/items?item_type=&active=` | operator+ | 품목 목록 |
+| POST | `/items` | quality+ | 등록(중복 409) |
+| PATCH | `/items/{item_code}` | quality+ | 수정·사용 중지 |
+| GET | `/bom?parent=` | operator+ | BOM 줄(`parent` 비우면 전체) |
+| PUT | `/bom/{parent_code}` | quality+ | 그 제품의 BOM 을 **통째로 교체** `{lines:[…]}`(빈 목록 = 삭제) |
+| GET | `/processes` | operator+ | 공정 목록(순서대로) |
+| POST | `/processes` | quality+ | 등록 |
+| PATCH | `/processes/{code}` | quality+ | 수정·사용 중지 |
+| GET | `/routings/{item_code}` | operator+ | 그 품목에 **적용되는** 라우팅(`source` 로 전용/공통/공정 전부 구분). `*` = 공통 |
+| PUT | `/routings/{item_code}` | quality+ | 통째로 교체 `{steps:[…]}`(seq 는 10,20,… 자동, 빈 목록 = 전용 라우팅 삭제) |
+| GET | `/equipment` | operator+ | 설비 목록 + 현재 상태 |
+| POST | `/equipment` | quality+ | 등록 |
+| PATCH | `/equipment/{code}` | quality+ | 수정·사용 중지 |
+| POST | `/equipment/{code}/state` | operator+ | 상태 전환 `{state, reason}` — DOWN·PM 은 사유 필수(422). 같은 상태면 그대로 |
+| GET | `/equipment/{code}/events?limit=` | operator+ | 상태 이력(최근 순) |
+| GET | `/equipment-utilization?date_from=&date_to=` | operator+ | 가동률(§11.4) |
+| GET | `/work-orders/{id}/operations` | operator+ | 공정 목록(없으면 라우팅에서 만든다) |
+| POST | `/work-orders/{id}/operations/{op_id}/start` | operator+ | `{equipment_code?, worker?}` |
+| POST | `/work-orders/{id}/operations/{op_id}/complete` | operator+ | `{good_qty?, defect_qty, note?}` — 검사 공정이 아니면 good_qty 필수(422) |
+| POST | `/work-orders/{id}/operations/{op_id}/skip` | quality+ | 건너뛰기 |
+| GET | `/work-orders/{id}/materials` | operator+ | 자재 소요·투입·현재고·부족 |
+| POST | `/work-orders/{id}/materials/issue` | operator+ | 자재 투입(§11.3) → 갱신된 소요표 |
+| GET | `/stock?item_type=` | operator+ | 품목별 현재고(품목 기준정보에 없어도 수불이 있으면 나온다) |
+| GET | `/stock/txns?item_code=&wo_id=&limit=` | operator+ | 수불 이력(최근 순) |
+| POST | `/stock/receipts` | operator+ | 입고 — 품목 기준정보에 있는 품목만(404) |
+| POST | `/stock/adjustments` | quality+ | 조정(부호 있는 수량, 사유 필수, 0 은 422) |
+
+응답 모양은 `services/mes/mes_app/schemas.py` 의 "2026-11-15 범위 확대" 아래 클래스 그대로다.
