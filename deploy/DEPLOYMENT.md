@@ -4,6 +4,11 @@
 > 구성으로 바꿨다. 검사는 현장 라즈베리파이가 하고, 결과·사진은 클라우드로 올라가며, 화면은
 > 어디서든 브라우저로 본다. 현장 단독(오프라인) 구성은 `docs/OPERATIONS_PI.md` 를 따른다.
 
+- **구성 확정(2026-11-15)**: 화면 = Vercel(프로젝트 2개), API·MES = Render, DB·사진 = Supabase.
+  10/21 에 초안으로 넣었던 'Vercel 한 프로젝트에 전부'(루트 `vercel.json`)는 **폐기**했다 — API 는
+  실시간 WebSocket·라이브 뷰 메모리 중계·MES 폴링/재전송 워치독처럼 계속 떠 있어야 하는 기능을 쓰는데,
+  Vercel 서버리스에서는 그대로 동작하지 않는다. 경로 접두어 미들웨어(`AIVIS_PATH_PREFIX`·
+  `MES_PATH_PREFIX`)는 역프록시 뒤에서 쓸 수 있어 코드에 남겼다(기본 꺼짐).
 - 소유: devops. 배포 메타: 이 문서, `render.yaml`, `apps/*/vercel.json`, `apps/*/.env.example`,
   `deploy/aivis-worker.env.example`.
 
