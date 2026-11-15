@@ -31,6 +31,8 @@ from .dense import axis_angle, find_dense_bundle, ribbon_crop
 from .edge_check import MIN_TUBES as EDGE_MIN_TUBES
 from .edge_check import default_checker as edge_checker
 from .layout import Layout, find_layout, layout_from_bundle, separated_hint
+from .ridge_check import MIN_TUBES as RIDGE_MIN_TUBES
+from .ridge_check import default_checker as ridge_checker
 from .segment import MAX_TUBES_HARD, TubeROI, segment_tubes
 
 #: 튜브가 축(가로·세로)에서 이만큼 넘게 기울면 프레임을 돌려 바로 세운다(axis="auto" 일 때).
@@ -105,6 +107,8 @@ class BatchResult:
     notes: List[str] = field(default_factory=list)
     #: 맨 바깥 칸 확인(edge_check.py, 모델이 있을 때만) — 네 칸의 '튜브일 확률'과 셈과의 불일치.
     edge_check: Optional[Dict[str, Any]] = None
+    #: 튜브 중심선 확인(ridge_check.py, 모델이 있을 때만) — 뺀 칸·더한 튜브 수와 맨 바깥 칸 지지값.
+    ridge_check: Optional[Dict[str, Any]] = None
 
 
 def _v(x) -> str:
@@ -224,6 +228,7 @@ def inspect_batch(
     prep = pipe.prepare_frame(frame, axis="vertical" if axis == "vertical" else "horizontal",
                               stage=stage, item=item)
     frame = prep.frame
+    ref_side = int(max(frame.shape[:2]))          # 돌리거나 자르기 전 긴 변 — 중심선 확인 배율
     rotation = 0.0
     view: Optional[np.ndarray] = None
     if axis == "auto":
@@ -232,7 +237,8 @@ def inspect_batch(
         # 방향을 영상에서 정할 때는 배치 찾기(layout.py)로 센다 — 덩어리 먼저, 붙은 덩어리만 나누고
         # 튜브마다 중심선을 따라 편 띠에서 잰다(어두운·밝은 배경 공통, 기울기·틈·기준자 대응).
         return _inspect_layout(frame, prep=prep, pipe=pipe, item=item, stage=stage, axis=axis, area=area,
-                               rotation=rotation, view=view, expected_count=expected_count, t0=t0)
+                               rotation=rotation, view=view, expected_count=expected_count, t0=t0,
+                               ref_side=ref_side)
 
     # 자동 개수 추정은 상한이 커질수록 불안정하다. 상한이 크면 최소 피치가
     # 작아져 없는 seam 까지 찾아내 과분할한다(6개 프레임을 7개로 셌다).
@@ -264,7 +270,7 @@ def inspect_batch(
         if found is not None and found[0].count > count_detected:
             return _inspect_dense(found, frame=frame, axis=axis, rotation=rotation, view=view,
                                   prep=prep, pipe=pipe, item=item, stage=stage,
-                                  expected_count=expected_count, t0=t0)
+                                  expected_count=expected_count, t0=t0, ref_side=ref_side)
 
     # 자동 개수가 기대와 같을 때만 expected 로 경계를 정밀 보정(더 안정적).
     if expected_count is not None and count_detected == expected_count:
@@ -378,9 +384,62 @@ def _dense_bundle(frame: np.ndarray, axis: str, area: Optional[InspectArea], *,
     return bundle, canon, to_view
 
 
+def _ridge_adjust(frame: np.ndarray, tubes: List[TubeResult], *, prep: FramePrep, pipe: InspectionPipeline,
+                  item, stage: Optional[str], rotation: float, uncertain: bool, ref_side: Optional[int],
+                  notes: List[str]) -> Tuple[List[TubeResult], Optional[Dict[str, Any]]]:
+    """튜브 중심선 확인(ridge_check.py) — 뺄 칸은 빼고 더할 튜브는 같은 방식(띠 + 단일 파이프라인)으로 잰다.
+
+    frame 은 칸(tube.quad)과 같은 좌표의 영상(돌렸으면 돌린 영상). 모델이 없거나 어두운 배경이면 그대로 둔다.
+    """
+    if not prep.light_bg or len(tubes) < RIDGE_MIN_TUBES or any(t.quad is None for t in tubes):
+        return tubes, None
+    rc = ridge_checker()
+    if rc is None:
+        return tubes, None
+    res = rc.check(frame, [np.asarray(t.quad, np.float64) for t in tubes], ref_side=ref_side)
+    if res is None:
+        return tubes, None
+    if res.changed:
+        drop = set(res.removed)
+        out = [t for i, t in enumerate(tubes) if i not in drop]
+        # 더한 튜브는 기준자 없이 저장된 배율로 잰다(칸 좌표가 기준자 축과 이어져 있지 않다).
+        nprep = FramePrep(frame=prep.frame, lens_applied=prep.lens_applied, gauge=None,
+                          gauge_read=prep.gauge_read, notes=prep.notes, light_bg=prep.light_bg, valid=prep.valid)
+        for a, b, wd in res.added:
+            length = float(np.linalg.norm(np.asarray(b) - np.asarray(a)))
+            margin = max(4 * END_MARGIN_PX, int(0.08 * length))
+            crop, mask, _length, cen, d = ribbon_crop(frame, a, b, 0.6 * wd, margin=margin)
+            ctx = CropContext(prep=nprep, origin=0.0, direction=1, mask=mask)
+            vr, crop_span = pipe.run_with_geometry(crop, item, stage=stage, crop=ctx)
+            nv = np.array([-d[1], d[0]]) * 0.5 * wd
+            a_, b_ = np.asarray(a, np.float64), np.asarray(b, np.float64)
+            quad = [tuple(map(float, p)) for p in (a_ + nv, b_ + nv, b_ - nv, a_ - nv)]
+            xs, ys = [q[0] for q in quad], [q[1] for q in quad]
+            idx = len(out) + 1
+            roi = TubeROI(index=idx, x0=int(np.floor(min(xs))), y0=int(np.floor(min(ys))),
+                          x1=int(np.ceil(max(xs))), y1=int(np.ceil(max(ys))),
+                          confidence=0.5 if uncertain else 1.0)
+            tube = _tube_from_verdict(idx, roi, vr, None)
+            tube.quad = quad
+            if crop_span is not None and crop_span.valid:
+                half = 0.5 * crop.shape[1]
+                pa = cen + (crop_span.left_x - half) * d
+                pb = cen + (crop_span.right_x - half) * d
+                tube.axis_line = ((float(pa[0]), float(pa[1])), (float(pb[0]), float(pb[1])))
+            tube.rotated = bool(rotation) or min(abs(float(d[0])), abs(float(d[1]))) > 0.02
+            if uncertain:
+                tube.review_flag = True
+            out.append(tube)
+        for i, t in enumerate(out, 1):
+            t.index = i
+        notes.append(res.note())
+        tubes = out
+    return tubes, res.info()
+
+
 def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view: Optional[np.ndarray],
                    prep: FramePrep, pipe: InspectionPipeline, item, stage: Optional[str],
-                   expected_count: Optional[int], t0: float) -> BatchResult:
+                   expected_count: Optional[int], t0: float, ref_side: Optional[int] = None) -> BatchResult:
     """붙은 다발: 튜브마다 중심선을 따라 편 띠(ribbon)를 단일 파이프라인으로 잰다.
 
     띠는 회전만 한 1:1 영상이라 띠에서 잰 px 길이가 원본 px 길이다. 끝은 다발 분석이 준 위치를
@@ -423,6 +482,11 @@ def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view
             tube.review_flag = True
         tubes.append(tube)
 
+    # 튜브 중심선 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역): 중심선 없는 맨 바깥 칸은 빼고, 다발 밖
+    # 튜브는 더한다. 맨 바깥 칸 확인은 고친 결과를 다시 본다.
+    tubes, ridge_info = _ridge_adjust(frame, tubes, prep=prep, pipe=pipe, item=item, stage=stage,
+                                      rotation=rotation, uncertain=uncertain, ref_side=ref_side, notes=notes)
+
     # 맨 바깥 칸 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역). 셈과 다르면 개수를 고치지 않고 재확인.
     edge_info = None
     checker = edge_checker() if prep.light_bg and len(tubes) >= EDGE_MIN_TUBES else None
@@ -464,6 +528,7 @@ def _inspect_dense(found, *, frame: np.ndarray, axis: str, rotation: float, view
         count_uncertain=uncertain,
         notes=notes,
         edge_check=edge_info,
+        ridge_check=ridge_info,
     )
 
 
@@ -536,7 +601,7 @@ def _unit_px(item) -> Optional[float]:
 
 def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipeline, item, stage: Optional[str],
                     axis: str, area: Optional[InspectArea], rotation: float, view: Optional[np.ndarray],
-                    expected_count: Optional[int], t0: float) -> BatchResult:
+                    expected_count: Optional[int], t0: float, ref_side: Optional[int] = None) -> BatchResult:
     """axis="auto" 경로 — 배치 찾기(layout.py) → 튜브마다 중심선을 따라 편 띠(ribbon)를 단일 파이프라인으로.
 
     띠는 회전만 한 1:1 영상이라 띠에서 잰 px 길이가 원본 px 길이다. 기준자가 이 프레임에서 읽혔고
@@ -621,6 +686,11 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
             tube.review_flag = True
         tubes.append(tube)
 
+    # 튜브 중심선 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역): 중심선 없는 맨 바깥 칸은 빼고, 다발 밖
+    # 튜브는 더한다. 맨 바깥 칸 확인은 고친 결과를 다시 본다.
+    tubes, ridge_info = _ridge_adjust(frame, tubes, prep=prep, pipe=pipe, item=item, stage=stage,
+                                      rotation=rotation, uncertain=uncertain, ref_side=ref_side, notes=notes)
+
     # 맨 바깥 칸 확인(모델이 있고 밝은 배경일 때만 — 학습한 영역). 셈과 다르면 개수를 고치지 않고 재확인.
     edge_info = None
     checker = edge_checker() if prep.light_bg and len(tubes) >= EDGE_MIN_TUBES else None
@@ -662,6 +732,7 @@ def _inspect_layout(frame: np.ndarray, *, prep: FramePrep, pipe: InspectionPipel
         count_uncertain=uncertain,
         notes=notes,
         edge_check=edge_info,
+        ridge_check=ridge_info,
     )
 
 
