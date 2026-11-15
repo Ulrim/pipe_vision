@@ -21,7 +21,7 @@ log = logging.getLogger("mes")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # MES 테이블은 create_all 로 만든다(없는 테이블만). 스키마 변경 규칙은 docs/MES.md §8.
+    # 없는 테이블을 만들고, 있는 테이블에는 빠진 컬럼을 메운다. 스키마 변경 규칙은 docs/MES.md §8.5.
     init_db()
     s = get_settings()
     app.state.poller = None

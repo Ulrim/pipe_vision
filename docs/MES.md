@@ -171,8 +171,16 @@ API 와 함께 자동으로 뜬다(`AIVIS_RUN_MES=true`, `MES_PORT=8100`). API v
 - 클라우드 대시보드는 `VITE_MES_API_BASE=https://<mes 주소>` 로 빌드한다(`apps/dashboard/.env.example`).
 
 ### 8.5 스키마 변경
-MES 테이블은 기동 시 `create_all`(없는 테이블만 만든다)로 만든다. 컬럼을 추가하게 되면
-AIVIS 의 `reconcile_sqlite_schema` 처럼 추가 컬럼 보정 또는 Alembic 을 도입한다(현재 v1).
+기동할 때마다 `init_db()` 가 ① 없는 테이블을 만들고(`create_all`) ② **이미 있는 테이블에 빠진
+컬럼을 메운다**(`mes_app/db.py` `reconcile_schema`, 2026-11-15 — sqlite·Postgres 공통). 그래서
+모델에 컬럼을 더하고 새 코드로 올리면 예전 DB 도 그대로 동작한다. 추가한 컬럼은 로그에 남는다.
+
+- 기본값이 있는 NOT NULL 컬럼은 기존 행을 그 기본값으로 채운다. `func.now()` 같은 식 기본값은
+  기존 행에 채우지 않는다(NULL).
+- **기본값 없는 NOT NULL 컬럼은 자동으로 못 더한다**(기존 행을 채울 값이 없다) — 로그에 오류로
+  남고 그 컬럼을 쓰는 기능은 동작하지 않는다. 새 컬럼은 NULL 허용이거나 기본값을 둔다.
+- **추가 컬럼만** 다룬다. 컬럼 삭제·타입 변경·제약 변경이 필요해지면 그때 Alembic 을 들인다
+  (클라우드는 AIVIS 와 같은 DB 라 버전 표를 따로 둬야 한다 — `version_table="mes_alembic_version"`).
 
 ## 9. 이번에 AIVIS 쪽에서 함께 고친 것 (2026-10-14)
 
@@ -190,7 +198,8 @@ AIVIS 의 `reconcile_sqlite_schema` 처럼 추가 컬럼 보정 또는 Alembic �
 ## 10. 검증
 
 - `services/mes/tests` — 수신(표시 순서·재확인 재수신·읽는 중 변경·예전 테이블·REST·토큰),
-  생산실적(단계별·재확인·크레이트·작업지시 매칭·미배정 LOT), 출하·클레임·월 KPI, 권한, UTC.
+  생산실적(단계별·재확인·크레이트·작업지시 매칭·미배정 LOT), 출하·클레임·월 KPI, 권한, UTC,
+  예전 DB 컬럼 보정(`test_schema_upgrade.py`).
 - `tests/e2e/test_mes_e2e.py` — **AIVIS → MES 종단**: AIVIS 에 검사결과 적재 → MES 폴링 →
   AIVIS KPI `mes_consumed_count` = 적재 건수, 연계율 100% → 재확인이 MES 실적까지 바뀐다.
   로그인은 AIVIS 토큰 하나.
