@@ -203,7 +203,7 @@ pipe = InspectionPipeline(surface_model=OnnxSurfaceModel())  # 모델 없으면 
 
 - 모델 경로: 생성자 인자 > `AIVIS_SURFACE_ONNX` > 기본 `models/surface.onnx`.
 - 모델 없음/`onnxruntime` 미설치/로드 실패 → **자동 고전 CV 폴백**(미판정 0).
-- export 골격: `python -m services.vision.models.export_surface_onnx --weights ... --out models/surface.onnx [--int8 --calib-dir ...]`.
+- 학습·ONNX 내보내기: `python -m vision.models.train_surface --train ... --test ... --out runs/surface_v1` (`models/README.md`).
 - 임계는 모델이 아니라 ItemMaster 에서(하드코딩 금지). ONNX 는 score 만 산출.
 
 ## 디버그 도구 — 길이 측정 시각화 진단 (`tools/debug_length.py`)

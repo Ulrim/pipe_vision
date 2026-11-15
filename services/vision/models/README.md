@@ -6,13 +6,13 @@
 
 ## 배치 방법
 
-1. 학습 환경에서 export(골격: `export_surface_onnx.py`):
+1. 학습 환경(torch 필요)에서 학습하면 ONNX 까지 한 번에 나온다(`train_surface.py`):
    ```bash
-   python -m services.vision.models.export_surface_onnx \
-       --weights runs/surface_best.pt \
-       --out services/vision/models/surface.onnx \
-       --input-size 256 --opset 17
+   python -m vision.models.train_surface \
+       --train <data>/train --test <data>/test --out runs/surface_v1
    ```
+   산출물: `surface.onnx` + `surface.json`(사이드카: kind=surface3) + `metrics.json`(권장 임계).
+   **기준정보 임계를 `metrics.json` 권장값으로 바꿔야 한다** — 고전 CV 점수와 척도가 다르다.
 2. 모델 파일을 다음 중 한 곳에 둔다:
    - 기본 경로: `services/vision/models/surface.onnx` (자동 인식)
    - 또는 임의 경로 + 환경변수: `export AIVIS_SURFACE_ONNX=/path/to/surface.onnx`
@@ -40,12 +40,11 @@
 - 실행 프로바이더: `AIVIS_ONNX_PROVIDERS`(쉼표구분, 예
   `CUDAExecutionProvider,CPUExecutionProvider`) > CPU.
 
-## INT8 / 양자화 (엣지 가속, 300ms KPI)
+## 속도
 
-- `export_surface_onnx.py --int8 --calib-dir <대표이미지폴더>` 로 정적 양자화
-  (QDQ) 골격을 제공한다. CalibrationDataReader 결선은 학습/배포 환경에서 한다.
-- GPU 가용 시 FP16 + CUDA/TensorRT EP 도 후보. 1,000장 배치 p50/p95/p99 를
-  프로파일링(QA §1.2)해 가장 빠른 조합을 채택한다.
+표면 모델은 작은 CNN(약 0.1M 파라미터, 입력 3×64×512)이라 파이 CPU 에서 수 ms 다 — 양자화 없이
+300ms 예산 안에 든다. 더 큰 모델로 바꾸게 되면 그때 INT8 양자화나 GPU 프로바이더를 검토한다
+(종전 `export_surface_onnx.py` 는 구현 없는 골격이어서 2026-11-15 에 지웠다).
 
 > 현재 저장소에는 학습 데이터/가중치가 없으므로 `.onnx` 산출물을 커밋하지 않는다.
 > 모델 미배포가 정상 상태이며 고전 CV 폴백으로 전 파이프라인이 동작한다.
