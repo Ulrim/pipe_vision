@@ -295,4 +295,5 @@ API 와 함께 자동으로 뜬다(`AIVIS_RUN_MES=true`, `MES_PORT=8100`). API v
 | POST | `/stock/receipts` | operator+ | 입고 — 품목 기준정보에 있는 품목만(404) |
 | POST | `/stock/adjustments` | quality+ | 조정(부호 있는 수량, 사유 필수, 0 은 422) |
 
-응답 모양은 `services/mes/mes_app/schemas.py` 의 "2026-11-15 범위 확대" 아래 클래스 그대로다.
+공정 시작·완료·건너뛰기는 **그 작업지시의 공정 목록 전체**를 돌려준다. 재고 부족 409 의 `detail` 은
+문자열("재고 부족: AL-TUBE 6")이다. 그 밖의 응답 모양은 `services/mes/mes_app/schemas.py` 의 "2026-11-15 범위 확대" 아래 클래스 그대로다.

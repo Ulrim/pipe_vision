@@ -23,6 +23,10 @@ export const NAV: NavItem[] = [
   { to: "/mes/production", label: "MES 생산실적" },
   { to: "/mes/shipping", label: "MES 출하·클레임" },
   { to: "/mes/link", label: "MES 연계현황" },
+  { to: "/mes/master", label: "MES 기준정보" },
+  { to: "/mes/operations", label: "MES 공정진행" },
+  { to: "/mes/stock", label: "MES 자재·재고" },
+  { to: "/mes/equipment", label: "MES 설비가동" },
   { to: "/monitor", label: "시스템 모니터링" },
   { to: "/update", label: "프로그램 업데이트" },
 ];

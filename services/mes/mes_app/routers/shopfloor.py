@@ -178,10 +178,10 @@ def issue_materials(wo_id: int, body: MaterialIssueIn, db: Session = Depends(get
         need[code] = need.get(code, 0.0) + qty
     short = {c: round(q - on_hand(db, c), 6) for c, q in need.items() if q - on_hand(db, c) > 1e-9}
     if short and not body.allow_negative:
-        raise HTTPException(status.HTTP_409_CONFLICT, {
-            "message": "재고 부족: " + ", ".join(f"{c} {q:g}" for c, q in sorted(short.items())),
-            "shortage": short,
-        })
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "재고 부족: " + ", ".join(f"{c} {q:g}" for c, q in sorted(short.items())),
+        )
     now = now_utc()
     for code, qty, lot in lines:
         db.add(StockTxn(ts=now, item_code=code, lot=lot, qty=-qty, txn_type="ISSUE",

@@ -248,7 +248,7 @@ def test_material_requirement_and_issue(client):
 
     url = f"/work-orders/{wo['id']}/materials/issue"
     r = client.post(url, headers=OP, json={})
-    assert r.status_code == 409 and r.json()["detail"]["shortage"] == {"AL-TUBE": 6}
+    assert r.status_code == 409 and r.json()["detail"] == "재고 부족: AL-TUBE 6"
     assert client.get("/stock/txns", headers=OP, params={"wo_id": wo["id"]}).json() == [], \
         "부족하면 아무것도 투입하지 않는다"
 

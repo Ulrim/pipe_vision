@@ -14,6 +14,10 @@ import { MesOrdersPage } from "@/pages/MesOrdersPage";
 import { MesProductionPage } from "@/pages/MesProductionPage";
 import { MesShippingPage } from "@/pages/MesShippingPage";
 import { MesLinkPage } from "@/pages/MesLinkPage";
+import { MesMasterPage } from "@/pages/MesMasterPage";
+import { MesOperationsPage } from "@/pages/MesOperationsPage";
+import { MesStockPage } from "@/pages/MesStockPage";
+import { MesEquipmentPage } from "@/pages/MesEquipmentPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { NavMenu, useCurrentNavLabel } from "@/components/NavMenu";
 
@@ -165,6 +169,39 @@ export default function App(): JSX.Element {
             element={
               <ProtectedRoute>
                 <MesLinkPage />
+              </ProtectedRoute>
+            }
+          />
+          {/* MES 범위 확대(2026-11-15, docs/MES.md §11) — 기준정보·공정진행·재고·설비. */}
+          <Route
+            path="/mes/master"
+            element={
+              <ProtectedRoute>
+                <MesMasterPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/operations"
+            element={
+              <ProtectedRoute>
+                <MesOperationsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/stock"
+            element={
+              <ProtectedRoute>
+                <MesStockPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mes/equipment"
+            element={
+              <ProtectedRoute>
+                <MesEquipmentPage />
               </ProtectedRoute>
             }
           />

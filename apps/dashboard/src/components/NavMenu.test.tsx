@@ -44,7 +44,7 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
     expect(screen.getByRole("menuitem", { name: "프로그램 업데이트" })).toBeInTheDocument();
   });
 
-  it("MES 화면 4개가 /mes/* 경로로 들어 있다(별도 서버 화면임을 라벨로 구분)", async () => {
+  it("MES 화면 8개가 /mes/* 경로로 들어 있다(별도 서버 화면임을 라벨로 구분)", async () => {
     const user = userEvent.setup();
     renderNavMenu();
     await user.click(screen.getByTestId("nav-menu-button"));
@@ -53,10 +53,15 @@ describe("NavMenu (평소엔 심플 — 메뉴 버튼만 노출, 클릭 시 펼�
       ["MES 생산실적", "/mes/production"],
       ["MES 출하·클레임", "/mes/shipping"],
       ["MES 연계현황", "/mes/link"],
+      ["MES 기준정보", "/mes/master"],
+      ["MES 공정진행", "/mes/operations"],
+      ["MES 자재·재고", "/mes/stock"],
+      ["MES 설비가동", "/mes/equipment"],
     ];
     for (const [label, to] of mes) {
       expect(screen.getByRole("menuitem", { name: label })).toHaveAttribute("href", to);
     }
+    expect(NAV.filter((n) => n.to.startsWith("/mes/"))).toHaveLength(mes.length);
     // 경로 중복이 없어야 App.tsx 라우트와 1:1 이 성립한다.
     expect(new Set(NAV.map((n) => n.to)).size).toBe(NAV.length);
   });

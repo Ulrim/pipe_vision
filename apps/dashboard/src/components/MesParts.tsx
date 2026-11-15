@@ -241,3 +241,34 @@ export function ResultLine({
     </div>
   );
 }
+
+/** 표·카드 안의 작은 버튼(기준정보·공정진행·재고·설비 화면 공용). */
+export function RowButton({
+  children,
+  onClick,
+  disabled,
+  primary,
+  danger,
+  testid,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+  danger?: boolean;
+  testid?: string;
+}): JSX.Element {
+  const base = primary ? "btn-primary" : "btn-ghost";
+  const tone = danger ? " border-ng text-ng-fg" : "";
+  return (
+    <button
+      type="button"
+      className={`${base}${tone} whitespace-nowrap px-2 py-1 text-xs`}
+      disabled={disabled}
+      onClick={onClick}
+      data-testid={testid}
+    >
+      {children}
+    </button>
+  );
+}

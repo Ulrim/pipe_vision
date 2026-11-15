@@ -43,6 +43,37 @@ vi.mock("@/api/mes", () => ({
   pollIntake: vi.fn(),
 }));
 
+// MES 범위 확대분(기준정보·공정진행·재고·설비)도 같은 방식 — 빈 목록으로 렌더만 확인.
+vi.mock("@/api/mesPlant", () => ({
+  ROUTING_DEFAULT: "*",
+  fetchMesItems: vi.fn().mockResolvedValue([]),
+  fetchBom: vi.fn().mockResolvedValue([]),
+  fetchProcesses: vi.fn().mockResolvedValue([]),
+  fetchRouting: vi.fn().mockResolvedValue({ item_code: "*", source: "processes", steps: [] }),
+  fetchEquipment: vi.fn().mockResolvedValue([]),
+  fetchEquipmentEvents: vi.fn().mockResolvedValue([]),
+  fetchUtilization: vi.fn().mockResolvedValue({ date_from: "2026-11-15", date_to: "2026-11-15", rows: [] }),
+  fetchOperations: vi.fn().mockResolvedValue([]),
+  fetchMaterials: vi.fn().mockResolvedValue({ wo_id: 1, plan_qty: 0, lines: [] }),
+  fetchStock: vi.fn().mockResolvedValue([]),
+  fetchStockTxns: vi.fn().mockResolvedValue([]),
+  createMesItem: vi.fn(),
+  patchMesItem: vi.fn(),
+  putBom: vi.fn(),
+  createProcess: vi.fn(),
+  patchProcess: vi.fn(),
+  putRouting: vi.fn(),
+  createEquipment: vi.fn(),
+  patchEquipment: vi.fn(),
+  setEquipmentState: vi.fn(),
+  startOperation: vi.fn(),
+  completeOperation: vi.fn(),
+  skipOperation: vi.fn(),
+  issueMaterials: vi.fn(),
+  createReceipt: vi.fn(),
+  createAdjustment: vi.fn(),
+}));
+
 beforeEach(() => {
   // 각 테스트 전 인증 스토어 초기화(persist 잔여 제거).
   useAuthStore.getState().clear();
